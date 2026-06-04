@@ -110,3 +110,11 @@ services:
 volumes:
   postgres_data:
   minio_data:
+
+# Pin the network name so it doesn't depend on the project directory. Backend
+# joins per-user kernel containers to this network via KERNEL_DOCKER_NETWORK,
+# which defaults to "sparklabx_default" — keep that working regardless of
+# where the repo is checked out.
+networks:
+  default:
+    name: sparklabx_default
