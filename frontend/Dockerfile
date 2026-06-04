@@ -29,7 +29,11 @@ COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
 
 EXPOSE 80
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD wget -qO- http://localhost/ || exit 1
+# Use 127.0.0.1 instead of `localhost` — Alpine's wget tries IPv6 first
+# and nginx only binds IPv4 (no `listen [::]:80;` in the conf), so
+# `wget http://localhost/` returns "connection refused" and marks the
+# container unhealthy even though it serves traffic fine on IPv4.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD wget -qO- http://127.0.0.1/ || exit 1
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["nginx", "-g", "daemon off;"]

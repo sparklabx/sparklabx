@@ -136,6 +136,18 @@ KERNEL_POD_MAX_TOTAL=50
 KERNEL_DOCKER_NETWORK=sparklabx_default
 ```
 
+The shared `jupyter` service in both compose files is gated behind the
+`shared` Docker Compose profile, so it stays off unless you ask for it.
+Only bring it up when `KERNEL_MODE=shared`:
+
+```bash
+docker compose --profile shared up -d
+```
+
+For `docker_per_user` and `k8s_per_user`, leave the profile off and the
+backend will spawn per-user kernels on demand — the shared container
+would just sit idle eating RAM.
+
 `docker_per_user` requires the backend container to have access to the
 host Docker socket. `docker-compose.yml` already wires this with
 `/var/run/docker.sock:/var/run/docker.sock`.
