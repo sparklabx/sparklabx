@@ -17,16 +17,17 @@ env:
   IMAGE_OWNER: ${{ github.repository_owner }}   # "sparklabx" when run in the org
 
 jobs:
-  # Detect which top-level directory changed so a backend-only commit
-  # doesn't trigger an 8-minute kernel rebuild. Tags and manual dispatches
-  # bypass this entirely (see the build-job `if` below) — those always
-  # build everything because they're release/recovery events.
+  # Compute the build matrix dynamically so a backend-only commit doesn't
+  # trigger an 8-minute kernel rebuild. Tags and workflow_dispatch always
+  # produce the full set (release / manual recovery).
+  #
+  # GitHub Actions does NOT allow `matrix` in a job-level `if:` (matrix is
+  # expanded after `if:` is evaluated), so we can't filter via `if:` —
+  # instead we emit the matrix array itself with only the images we want.
   detect:
     runs-on: ubuntu-latest
     outputs:
-      backend:  ${{ steps.changes.outputs.backend }}
-      frontend: ${{ steps.changes.outputs.frontend }}
-      kernel:   ${{ steps.changes.outputs.kernel }}
+      matrix: ${{ steps.compute.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -39,18 +40,30 @@ jobs:
               - 'frontend/**'
             kernel:
               - 'kernel/**'
+      - id: compute
+        env:
+          BACKEND:    ${{ steps.changes.outputs.backend }}
+          FRONTEND:   ${{ steps.changes.outputs.frontend }}
+          KERNEL:     ${{ steps.changes.outputs.kernel }}
+          ALWAYS_ALL: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          items=()
+          if [[ "$ALWAYS_ALL" == "true" || "$BACKEND" == "true" ]]; then
+            items+=('{"image":"backend","context":".","dockerfile":"backend/Dockerfile"}')
+          fi
+          if [[ "$ALWAYS_ALL" == "true" || "$FRONTEND" == "true" ]]; then
+            items+=('{"image":"frontend","context":"./frontend","dockerfile":"./frontend/Dockerfile"}')
+          fi
+          if [[ "$ALWAYS_ALL" == "true" || "$KERNEL" == "true" ]]; then
+            items+=('{"image":"kernel","context":"./kernel","dockerfile":"./kernel/Dockerfile"}')
+          fi
+          IFS=,
+          echo "matrix=[${items[*]}]" >> "$GITHUB_OUTPUT"
 
   build:
     name: ${{ matrix.image }}
     needs: detect
-    # Always build on tag pushes (release) and manual dispatches (recovery).
-    # For ordinary commits on main, only build images whose source changed.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      startsWith(github.ref, 'refs/tags/') ||
-      (matrix.image == 'backend'  && needs.detect.outputs.backend  == 'true') ||
-      (matrix.image == 'frontend' && needs.detect.outputs.frontend == 'true') ||
-      (matrix.image == 'kernel'   && needs.detect.outputs.kernel   == 'true')
+    if: ${{ needs.detect.outputs.matrix != '[]' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -59,16 +72,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - image: backend
-            context: .
-            dockerfile: backend/Dockerfile
-          - image: frontend
-            context: ./frontend
-            dockerfile: ./frontend/Dockerfile
-          - image: kernel
-            context: ./kernel
-            dockerfile: ./kernel/Dockerfile
+        include: ${{ fromJSON(needs.detect.outputs.matrix) }}
 
     steps:
       - uses: actions/checkout@v4
