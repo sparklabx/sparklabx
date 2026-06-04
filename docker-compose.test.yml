@@ -1,0 +1,109 @@
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID}
+        VITE_MICROSOFT_CLIENT_ID: ${VITE_MICROSOFT_CLIENT_ID}
+        VITE_MICROSOFT_TENANT_ID: ${VITE_MICROSOFT_TENANT_ID}
+    container_name: sparklabx-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: sparklabx-backend
+    ports:
+      - "10000:10000"
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgres://sparklabx:sparklabx@postgres:5432/sparklabx?sslmode=disable}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - JWT_EXPIRE_MINUTES=${JWT_EXPIRE_MINUTES:-480}
+      - SEED_ADMIN_USERNAME=${SEED_ADMIN_USERNAME}
+      - SEED_ADMIN_EMAIL=${SEED_ADMIN_EMAIL}
+      - SEED_ADMIN_PASSWORD=${SEED_ADMIN_PASSWORD}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - MICROSOFT_CLIENT_ID=${MICROSOFT_CLIENT_ID}
+      - MICROSOFT_CLIENT_SECRET=${MICROSOFT_CLIENT_SECRET}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_ACCESS_KEY=rustfs
+      - MINIO_SECRET_KEY=rustfs123
+      - JUPYTER_GATEWAY_URL=http://jupyter:8888
+      - KERNEL_MODE=${KERNEL_MODE:-shared}
+      - KERNEL_POD_IMAGE=${KERNEL_POD_IMAGE:-ghcr.io/sparklabx/kernel:latest}
+      - KERNEL_DOCKER_NETWORK=${KERNEL_DOCKER_NETWORK:-sparklabx_default}
+      - SERVICE_PORT=10000
+      - ENVIRONMENT=production
+      - LOG_LEVEL=info
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
+    volumes:
+      # Required when KERNEL_MODE=docker_per_user (see comment in docker-compose.yml).
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - postgres
+      - jupyter
+    restart: unless-stopped
+
+  jupyter:
+    image: ghcr.io/sparklabx/kernel:latest
+    container_name: sparklabx-jupyter
+    environment:
+      - AWS_ACCESS_KEY_ID=rustfs
+      - AWS_SECRET_ACCESS_KEY=rustfs123
+      - S3_ENDPOINT=http://minio:9000
+    volumes:
+      - ./kernel/entrypoint.sh:/home/exam/entrypoint.sh
+    depends_on:
+      - minio
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: sparklabx-minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: rustfs       # kept env value for backward compat with backend creds
+      MINIO_ROOT_PASSWORD: rustfs123
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+  # tunnel:
+  #   image: cloudflare/cloudflared:latest
+  #   container_name: sparklabx-tunnel
+  #   command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+  #   depends_on:
+  #     - frontend
+  #   restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: sparklabx-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sparklabx}
+      POSTGRES_USER: ${POSTGRES_USER:-sparklabx}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sparklabx}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  minio_data:

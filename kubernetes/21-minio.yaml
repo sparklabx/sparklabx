@@ -1,0 +1,84 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: sparklabx
+spec:
+  clusterIP: None
+  ports:
+    - name: api
+      port: 9000
+      targetPort: 9000
+    - name: console
+      port: 9001
+      targetPort: 9001
+  selector:
+    app: minio
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+  namespace: sparklabx
+spec:
+  serviceName: minio
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      # NFS mount may have restrictive ownership/permissions. chmod once before
+      # the main container starts so RustFS can write.
+      initContainers:
+        - name: chmod-data
+          image: busybox:1.36
+          command: ["sh", "-c", "mkdir -p /data && chmod -R 777 /data"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      containers:
+        - name: minio
+          image: rustfs/rustfs:latest
+          args: ["server", "/data", "--console-address", ":9001"]
+          ports:
+            - containerPort: 9000
+            - containerPort: 9001
+          env:
+            - name: RUSTFS_ROOT_USER
+              valueFrom: { secretKeyRef: { name: sparklabx-secrets, key: MINIO_ROOT_USER } }
+            - name: RUSTFS_ROOT_PASSWORD
+              valueFrom: { secretKeyRef: { name: sparklabx-secrets, key: MINIO_ROOT_PASSWORD } }
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+          # RustFS (S3-compatible) doesn't expose MinIO-style /minio/health/*
+          # endpoints (they fall through to S3 API → 403). TCP probe is sufficient.
+          readinessProbe:
+            tcpSocket:
+              port: 9000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 9000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      # /shared is an NFS mount available on every node, so the pod can land
+      # on any node and still see the same data. hostPath is used because the
+      # mount happens at OS level (no in-cluster NFS provisioner needed).
+      volumes:
+        - name: data
+          hostPath:
+            path: /shared/kubernetes/sparklabx/minio
+            type: DirectoryOrCreate

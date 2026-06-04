@@ -1,0 +1,77 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: sparklabx
+spec:
+  clusterIP: None  # headless for StatefulSet
+  ports:
+    - port: 5432
+      targetPort: 5432
+  selector:
+    app: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: sparklabx
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      # NFS share permissions are restrictive — chown to postgres uid (70 in alpine)
+      # so PGDATA can be created/written.
+      initContainers:
+        - name: chown-data
+          image: busybox:1.36
+          command: ["sh", "-c", "mkdir -p /var/lib/postgresql/data && chown -R 70:70 /var/lib/postgresql/data && chmod 700 /var/lib/postgresql/data"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              valueFrom: { configMapKeyRef: { name: sparklabx-config, key: POSTGRES_DB } }
+            - name: POSTGRES_USER
+              valueFrom: { configMapKeyRef: { name: sparklabx-config, key: POSTGRES_USER } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: sparklabx-secrets, key: POSTGRES_PASSWORD } }
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "sparklabx"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "sparklabx"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        - name: data
+          hostPath:
+            path: /shared/kubernetes/sparklabx/postgres
+            type: DirectoryOrCreate

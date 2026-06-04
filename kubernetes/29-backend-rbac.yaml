@@ -1,0 +1,38 @@
+# RBAC giving the backend pod permission to spawn / reap per-user kernel pods.
+# Only needed when KERNEL_MODE=k8s_per_user. Safe to apply unconditionally.
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sparklabx-backend
+  namespace: sparklabx
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sparklabx-backend
+  namespace: sparklabx
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete", "deletecollection"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sparklabx-backend
+  namespace: sparklabx
+subjects:
+  - kind: ServiceAccount
+    name: sparklabx-backend
+    namespace: sparklabx
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sparklabx-backend

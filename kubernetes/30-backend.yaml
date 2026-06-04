@@ -1,0 +1,93 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: sparklabx
+spec:
+  ports:
+    - port: 10000
+      targetPort: 10000
+  selector:
+    app: backend
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: sparklabx
+spec:
+  # NOTE: Keep replicas=1 until WebSocket session state moves to a shared store.
+  # Multiple replicas would break kernel proxy stickiness (state in-memory).
+  replicas: 1
+  strategy:
+    type: Recreate  # ensures only one backend at a time during deploy
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      # ServiceAccount for K8sPerUserGateway (pod create/delete in sparklabx ns).
+      # Defined in 29-backend-rbac.yaml. Safe to use even when KERNEL_MODE=shared.
+      serviceAccountName: sparklabx-backend
+      # ghcr.io images published by this repo are public — no pull secret needed.
+      # For private forks, uncomment the imagePullSecrets block below and create
+      # the secret via:
+      #   kubectl -n sparklabx create secret docker-registry ghcr-secret \
+      #     --docker-server=ghcr.io --docker-username=<your-github-user> \
+      #     --docker-password=<your-github-pat-read:packages>
+      # imagePullSecrets:
+      #   - name: ghcr-secret
+      containers:
+        - name: backend
+          image: ghcr.io/sparklabx/backend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 10000
+          envFrom:
+            - configMapRef:
+                name: sparklabx-config
+          env:
+            # POSTGRES_PASSWORD must be declared BEFORE DATABASE_URL because
+            # $(VAR) interpolation in env: only sees vars defined earlier in the list.
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: sparklabx-secrets, key: POSTGRES_PASSWORD } }
+            - name: DATABASE_URL
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)?sslmode=disable"
+            - name: JWT_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: sparklabx-secrets, key: JWT_SECRET_KEY } }
+            - name: SEED_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: sparklabx-secrets, key: SEED_ADMIN_PASSWORD } }
+            - name: GOOGLE_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: sparklabx-secrets, key: GOOGLE_CLIENT_SECRET } }
+            - name: MICROSOFT_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: sparklabx-secrets, key: MICROSOFT_CLIENT_SECRET } }
+            - name: MINIO_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: sparklabx-secrets, key: MINIO_ROOT_PASSWORD } }
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 10000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 10000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          # Graceful shutdown: give 30s for in-flight WS connections to drain
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 30"]
+      terminationGracePeriodSeconds: 60

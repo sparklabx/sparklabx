@@ -1,0 +1,742 @@
+package services
+
+import (
+	"context"
+	"crypto/sha1"
+	"encoding/hex"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/rs/zerolog/log"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/apimachinery/pkg/watch"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+
+	"github.com/sparklabx/sparklabx/backend/internal/database"
+)
+
+// Pod lifecycle phases written to user_kernel_pods.status.
+// FE consumes via /spawn-status; reaper / capacity counting also keyed off these.
+const (
+	PhaseSpawning    = "spawning"    // K8s Create issued, pod not yet scheduled
+	PhasePulling     = "pulling"     // node pulling image (the slow case)
+	PhaseStarting    = "starting"    // container running, kernel booting
+	PhaseReady       = "ready"       // probe green, URL usable
+	PhaseTerminating = "terminating" // Destroy in progress; concurrent spawns must wait
+	PhaseFailed      = "failed"      // unrecoverable; FE shows error, must retry
+)
+
+// Spawn cap: hard wall on total pod startup time. Most spawns complete in 5-15s
+// once image is cached on node. Cold pulls of the 2GB kernel image can take 60-90s
+// over slow networks. 5min gives generous buffer without hanging FE forever.
+const spawnTimeout = 5 * time.Minute
+
+// UserCredsResolver returns per-user MinIO IAM credentials. Called once per
+// pod spawn so the kernel inherits the user's scoped policy — true isolation,
+// not app-layer-only. Return ("", "", nil) to fall back to root creds (e.g.
+// when IAM is not configured).
+type UserCredsResolver func(userID string) (accessKey, secretKey string, err error)
+
+// pullSecretRefs returns a single-element ImagePullSecrets slice when name is
+// set, or nil to leave the field empty (skips imagePullSecrets entirely).
+func pullSecretRefs(name string) []corev1.LocalObjectReference {
+	if name == "" {
+		return nil
+	}
+	return []corev1.LocalObjectReference{{Name: name}}
+}
+
+// K8sPerUserConfig configures the dynamic per-user gateway.
+type K8sPerUserConfig struct {
+	Namespace     string            // K8s namespace where kernel pods live
+	PodImage      string            // image to run for each user pod
+	IdleTimeout   time.Duration     // delete pod after this long without activity
+	MaxPods       int               // hard cap on concurrent pods cluster-wide
+	PullSecret    string            // optional imagePullSecret name; empty → none
+	CredsResolver UserCredsResolver // nil → use root creds from sparklabx-secrets (legacy)
+}
+
+// PodStatus is the spawn progress snapshot returned to FE for live UI updates.
+type PodStatus struct {
+	Phase   string `json:"phase"`             // one of the Phase* constants, or "" if no row
+	Message string `json:"message"`           // human-readable; safe to display verbatim
+	URL     string `json:"url,omitempty"`     // populated only when phase=ready
+	PodName string `json:"pod_name,omitempty"`
+}
+
+// K8sPerUserGateway spawns one Jupyter pod per user on demand and reaps idle ones.
+//
+// Lifecycle (Silver design):
+//   1. GetGatewayURL → handles terminating handshake, then watches pod events for
+//      phase transitions, updating DB so FE polling sees live progress.
+//   2. Touch → buffered last_used_at update (batched 10s) to avoid DB hammer.
+//   3. Destroy → marks terminating, deletes pod gracefully, background goroutine
+//      removes DB row when pod is fully gone.
+//   4. Reaper → deletes idle pods + reconciles stuck rows (failed spawns, etc).
+//
+// Pod naming: sha1(user_id)[:6] → "kernel-<12 hex>" (DNS-safe, deterministic
+// so backend restarts still find existing pods).
+type K8sPerUserGateway struct {
+	cfg      K8sPerUserConfig
+	client   *kubernetes.Clientset
+	touchMu  sync.Mutex
+	touchBuf map[string]time.Time
+	stopCh   chan struct{}
+}
+
+func NewK8sPerUserGateway(cfg K8sPerUserConfig) (*K8sPerUserGateway, error) {
+	if cfg.PodImage == "" {
+		cfg.PodImage = DefaultKernelImage
+	}
+	if cfg.Namespace == "" {
+		return nil, fmt.Errorf("K8sPerUserConfig.Namespace is required (set KERNEL_POD_NAMESPACE)")
+	}
+	restCfg, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("k8s in-cluster config: %w (backend must run inside the cluster with a ServiceAccount)", err)
+	}
+	client, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		return nil, fmt.Errorf("k8s client: %w", err)
+	}
+
+	gw := &K8sPerUserGateway{
+		cfg:      cfg,
+		client:   client,
+		touchBuf: make(map[string]time.Time),
+		stopCh:   make(chan struct{}),
+	}
+
+	go gw.reaperLoop()
+	go gw.flushTouchLoop()
+	return gw, nil
+}
+
+func (g *K8sPerUserGateway) IdleTimeout() time.Duration { return g.cfg.IdleTimeout }
+func (g *K8sPerUserGateway) Mode() string               { return "k8s_per_user" }
+
+// podNameForUser returns a DNS-safe, deterministic pod name for a user ID.
+func podNameForUser(userID string) string {
+	h := sha1.Sum([]byte(userID))
+	return "kernel-" + hex.EncodeToString(h[:6])
+}
+
+// Status returns the current spawn phase for FE polling. Returns empty phase
+// (not an error) when no row exists — caller treats that as "no spawn in flight".
+func (g *K8sPerUserGateway) Status(userID string) (PodStatus, error) {
+	if userID == "" {
+		return PodStatus{}, nil
+	}
+	var s PodStatus
+	err := database.GetDB().QueryRow(
+		`SELECT status, phase_message, pod_url, pod_name FROM user_kernel_pods WHERE user_id = $1`,
+		userID,
+	).Scan(&s.Phase, &s.Message, &s.URL, &s.PodName)
+	if err != nil {
+		return PodStatus{}, nil // no row → empty status
+	}
+	return s, nil
+}
+
+// updatePhase writes the current phase + message so FE polling sees progress.
+// Best-effort: a DB blip here just means one fewer progress tick to FE.
+func (g *K8sPerUserGateway) updatePhase(userID, phase, msg string) {
+	_, err := database.GetDB().Exec(
+		`UPDATE user_kernel_pods SET status = $1, phase_message = $2 WHERE user_id = $3`,
+		phase, msg, userID,
+	)
+	if err != nil {
+		log.Warn().Err(err).Str("user_id", userID).Str("phase", phase).Msg("updatePhase failed")
+	}
+}
+
+// GetGatewayURL — fast path returns cached URL if pod ready. If not ready,
+// kicks off async spawn and returns ErrPodNotReady so caller can poll Status
+// instead of blocking. Old blocking behavior is preserved for non-Connect
+// callers (WS proxy, ProxyHTTP) by waiting briefly after EnsureSpawning.
+func (g *K8sPerUserGateway) GetGatewayURL(ctx context.Context, userID string) (string, error) {
+	if userID == "" {
+		return "", fmt.Errorf("userID is required")
+	}
+	db := database.GetDB()
+	podName := podNameForUser(userID)
+
+	// Fast path: ready row + pod actually healthy
+	var dbURL, dbStatus string
+	row := db.QueryRow(
+		`SELECT pod_url, status FROM user_kernel_pods WHERE user_id = $1`,
+		userID,
+	)
+	if err := row.Scan(&dbURL, &dbStatus); err == nil {
+		if dbStatus == PhaseReady && dbURL != "" && g.podHealthy(ctx, podName) {
+			g.bufferTouch(userID)
+			return dbURL, nil
+		}
+		if dbStatus == PhaseReady {
+			// Pod gone but row says ready — clean up and respawn
+			db.Exec(`DELETE FROM user_kernel_pods WHERE user_id = $1`, userID)
+		}
+	}
+
+	// Not ready — for legacy callers (WS/ProxyHTTP), kick off spawn and block
+	// briefly. The Connect handler doesn't go through here anymore (it uses
+	// EnsureSpawning + Status to stay non-blocking) so this path is only hit
+	// when something tries to proxy through a dead pod.
+	if err := g.EnsureSpawning(userID); err != nil {
+		return "", err
+	}
+	url, spawnErr := g.spawnAndWait(ctx, userID, podName)
+	if spawnErr != nil {
+		g.updatePhase(userID, PhaseFailed, spawnErr.Error())
+		return "", spawnErr
+	}
+	_, err := db.Exec(
+		`UPDATE user_kernel_pods SET pod_url = $1, status = $2, phase_message = $3, last_used_at = $4 WHERE user_id = $5`,
+		url, PhaseReady, "Kernel ready", time.Now(), userID,
+	)
+	if err != nil {
+		log.Warn().Err(err).Str("user_id", userID).Msg("failed to mark pod ready in db")
+	}
+	return url, nil
+}
+
+// EnsureSpawning kicks off pod spawn in a goroutine if no spawn is in flight
+// and pod isn't already ready. Returns immediately. Idempotent: safe to call
+// many times — only the first call from a fresh state triggers actual work.
+func (g *K8sPerUserGateway) EnsureSpawning(userID string) error {
+	if userID == "" {
+		return fmt.Errorf("userID is required")
+	}
+	db := database.GetDB()
+	podName := podNameForUser(userID)
+
+	var dbStatus, dbURL string
+	err := db.QueryRow(
+		`SELECT status, pod_url FROM user_kernel_pods WHERE user_id = $1`,
+		userID,
+	).Scan(&dbStatus, &dbURL)
+	if err == nil {
+		switch dbStatus {
+		case PhaseReady:
+			// Verify pod still alive. If yes, nothing to do.
+			if dbURL != "" && g.podHealthy(context.Background(), podName) {
+				return nil
+			}
+			// Stale ready row — pod is gone. Clean up and re-spawn.
+			db.Exec(`DELETE FROM user_kernel_pods WHERE user_id = $1`, userID)
+		case PhaseSpawning, PhasePulling, PhaseStarting:
+			return nil // spawn already in flight
+		case PhaseTerminating:
+			// Predecessor is mid-shutdown; spawnAndWait's step 1 will drain it.
+			// Fall through to start fresh attempt.
+		case PhaseFailed:
+			// Previous attempt failed — retry.
+		}
+	}
+
+	// Capacity check
+	var podCount int
+	db.QueryRow(
+		`SELECT COUNT(*) FROM user_kernel_pods WHERE status IN ($1, $2, $3, $4, $5)`,
+		PhaseSpawning, PhasePulling, PhaseStarting, PhaseReady, PhaseTerminating,
+	).Scan(&podCount)
+	if podCount >= g.cfg.MaxPods {
+		return fmt.Errorf("cluster at capacity (%d active pods); try again later", podCount)
+	}
+
+	// Insert spawning row — ON CONFLICT serializes concurrent EnsureSpawning calls.
+	_, err = db.Exec(
+		`INSERT INTO user_kernel_pods (user_id, pod_name, pod_namespace, status, phase_message, created_at, last_used_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $6)
+		 ON CONFLICT (user_id) DO UPDATE SET status = $4, phase_message = $5, created_at = $6, last_used_at = $6, pod_url = ''`,
+		userID, podName, g.cfg.Namespace, PhaseSpawning, "Preparing kernel pod...", time.Now(),
+	)
+	if err != nil {
+		return fmt.Errorf("db insert: %w", err)
+	}
+
+	// Detached spawn goroutine. Use background context with explicit deadline so
+	// the spawn outlives the HTTP request that triggered it.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), spawnTimeout+30*time.Second)
+		defer cancel()
+		url, spawnErr := g.spawnAndWait(ctx, userID, podName)
+		if spawnErr != nil {
+			g.updatePhase(userID, PhaseFailed, spawnErr.Error())
+			log.Warn().Err(spawnErr).Str("user_id", userID).Msg("background spawn failed")
+			return
+		}
+		_, err := database.GetDB().Exec(
+			`UPDATE user_kernel_pods SET pod_url = $1, status = $2, phase_message = $3, last_used_at = $4 WHERE user_id = $5`,
+			url, PhaseReady, "Kernel ready", time.Now(), userID,
+		)
+		if err != nil {
+			log.Warn().Err(err).Str("user_id", userID).Msg("failed to mark pod ready in db")
+		}
+	}()
+	return nil
+}
+
+// spawnAndWait: 3 stages —
+//   1. drain any previous pod still terminating (grace ≤60s)
+//   2. K8s Create (idempotent vs AlreadyExists)
+//   3. Watch event stream until Ready or timeout (5min)
+//
+// Phase is written to DB on every meaningful transition so FE polling shows
+// "Pulling image…" / "Container starting…" / etc. without guessing.
+func (g *K8sPerUserGateway) spawnAndWait(ctx context.Context, userID, podName string) (string, error) {
+	pods := g.client.CoreV1().Pods(g.cfg.Namespace)
+
+	// Step 1 — handle terminating predecessor
+	if existing, err := pods.Get(ctx, podName, metav1.GetOptions{}); err == nil {
+		if existing.DeletionTimestamp != nil {
+			g.updatePhase(userID, PhaseTerminating, "Cleaning up previous kernel...")
+			if err := g.waitForGone(ctx, podName, 60*time.Second); err != nil {
+				return "", fmt.Errorf("previous pod still terminating after 60s: %w", err)
+			}
+		}
+	}
+
+	// Step 2 — Create (idempotent)
+	pod := g.buildPodSpec(userID, podName)
+	if _, err := pods.Create(ctx, pod, metav1.CreateOptions{}); err != nil {
+		if !errors.IsAlreadyExists(err) {
+			return "", fmt.Errorf("pod create: %w", err)
+		}
+		// Already exists (and not terminating per step 1) → reuse, fall through to Watch.
+		log.Info().Str("pod", podName).Msg("pod already exists, reusing for watch")
+	}
+
+	// Step 3 — Watch loop with phase updates
+	return g.watchUntilReady(ctx, userID, podName)
+}
+
+func (g *K8sPerUserGateway) watchUntilReady(ctx context.Context, userID, podName string) (string, error) {
+	pods := g.client.CoreV1().Pods(g.cfg.Namespace)
+
+	deadline := time.Now().Add(spawnTimeout)
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+
+	// Initial snapshot — pod may already be Ready before Watch opens.
+	if p, err := pods.Get(ctx, podName, metav1.GetOptions{}); err == nil {
+		if url := readyURL(p); url != "" {
+			return url, nil
+		}
+		phase, msg := derivePhase(p)
+		g.updatePhase(userID, phase, msg)
+		if phase == PhaseFailed {
+			return "", fmt.Errorf("%s", msg)
+		}
+	}
+
+	// Watch loop — auto-reconnect on channel close (Watch can drop after ~30min).
+	for {
+		w, err := pods.Watch(ctx, metav1.ListOptions{
+			FieldSelector: "metadata.name=" + podName,
+		})
+		if err != nil {
+			return "", fmt.Errorf("watch pod: %w", err)
+		}
+
+		url, done, err := g.consumeWatch(ctx, w, userID, podName)
+		w.Stop()
+		if err != nil {
+			return "", err
+		}
+		if done {
+			return url, nil
+		}
+		// Channel closed without verdict — retry if still time left.
+		if time.Now().After(deadline) {
+			g.updatePhase(userID, PhaseFailed, "Pod did not become ready within 5 minutes")
+			return "", fmt.Errorf("pod %s did not become ready within %v", podName, spawnTimeout)
+		}
+	}
+}
+
+// consumeWatch drains one Watch session. Returns (url, done, err):
+//   - done=true, url set: pod is Ready
+//   - done=false, err=nil: channel closed; caller should reopen Watch
+//   - err set: hard failure (FE shouldn't retry without user action)
+func (g *K8sPerUserGateway) consumeWatch(ctx context.Context, w watch.Interface, userID, podName string) (string, bool, error) {
+	var lastPhase string
+	for {
+		select {
+		case <-ctx.Done():
+			g.updatePhase(userID, PhaseFailed, "Pod did not become ready within 5 minutes")
+			return "", false, fmt.Errorf("pod %s did not become ready within %v: %w", podName, spawnTimeout, ctx.Err())
+		case event, ok := <-w.ResultChan():
+			if !ok {
+				return "", false, nil // channel closed, caller reopens
+			}
+			p, ok := event.Object.(*corev1.Pod)
+			if !ok {
+				continue
+			}
+			if url := readyURL(p); url != "" {
+				return url, true, nil
+			}
+			phase, msg := derivePhase(p)
+			if phase != lastPhase {
+				g.updatePhase(userID, phase, msg)
+				lastPhase = phase
+				log.Info().Str("user_id", userID).Str("pod", podName).Str("phase", phase).Msg(msg)
+			}
+			if phase == PhaseFailed {
+				return "", false, fmt.Errorf("%s", msg)
+			}
+		}
+	}
+}
+
+// readyURL returns http://podIP:8888 if the container is Ready, else "".
+func readyURL(p *corev1.Pod) string {
+	if p == nil || p.DeletionTimestamp != nil || p.Status.PodIP == "" {
+		return ""
+	}
+	for _, cs := range p.Status.ContainerStatuses {
+		if cs.Ready {
+			return fmt.Sprintf("http://%s:8888", p.Status.PodIP)
+		}
+	}
+	return ""
+}
+
+// derivePhase reads the pod's K8s state and maps it to one of our user-facing phases.
+// Order matters: terminating > failed > pulling > starting > spawning.
+func derivePhase(p *corev1.Pod) (phase, message string) {
+	if p == nil {
+		return PhaseSpawning, "Waiting for pod..."
+	}
+	if p.DeletionTimestamp != nil {
+		return PhaseTerminating, "Pod is terminating"
+	}
+
+	// Failed container states bubble up first — no point reporting "pulling" if
+	// the pull already failed.
+	for _, cs := range p.Status.ContainerStatuses {
+		if cs.State.Waiting != nil {
+			switch cs.State.Waiting.Reason {
+			case "ImagePullBackOff", "ErrImagePull":
+				return PhaseFailed, "Failed to pull kernel image: " + cs.State.Waiting.Message
+			case "CrashLoopBackOff":
+				return PhaseFailed, "Kernel container crashed: " + cs.State.Waiting.Message
+			case "CreateContainerConfigError", "CreateContainerError":
+				return PhaseFailed, "Container config error: " + cs.State.Waiting.Message
+			}
+		}
+		if cs.State.Terminated != nil && cs.State.Terminated.ExitCode != 0 {
+			return PhaseFailed, fmt.Sprintf("Kernel exited (code %d): %s",
+				cs.State.Terminated.ExitCode, cs.State.Terminated.Message)
+		}
+	}
+
+	if p.Status.Phase == corev1.PodFailed {
+		return PhaseFailed, "Pod failed: " + p.Status.Message
+	}
+
+	// Pending — distinguish image pull from "waiting for node"
+	if p.Status.Phase == corev1.PodPending {
+		for _, cs := range p.Status.ContainerStatuses {
+			if cs.State.Waiting != nil && cs.State.Waiting.Reason == "ContainerCreating" {
+				return PhasePulling, "Pulling kernel image (first time may take a minute)..."
+			}
+		}
+		return PhaseSpawning, "Pod scheduled, waiting for node..."
+	}
+
+	if p.Status.Phase == corev1.PodRunning {
+		return PhaseStarting, "Container started, waiting for kernel..."
+	}
+	return PhaseSpawning, ""
+}
+
+func (g *K8sPerUserGateway) buildPodSpec(userID, podName string) *corev1.Pod {
+	// Resolve per-user MinIO creds. Empty creds → fall back to root creds via
+	// SecretKeyRef (legacy / IAM-not-configured). Per-user creds are injected
+	// as plain env values; the pod is per-user and ephemeral so leakage risk
+	// is bounded to the pod's lifetime.
+	var (
+		userAccessKey, userSecretKey string
+		usePerUserCreds              bool
+	)
+	if g.cfg.CredsResolver != nil {
+		ak, sk, err := g.cfg.CredsResolver(userID)
+		if err != nil {
+			log.Warn().Err(err).Str("user", userID).Msg("CredsResolver failed; falling back to root creds")
+		} else if ak != "" && sk != "" {
+			userAccessKey, userSecretKey = ak, sk
+			usePerUserCreds = true
+		}
+	}
+
+	var awsEnv []corev1.EnvVar
+	if usePerUserCreds {
+		awsEnv = []corev1.EnvVar{
+			{Name: "AWS_ACCESS_KEY_ID", Value: userAccessKey},
+			{Name: "AWS_SECRET_ACCESS_KEY", Value: userSecretKey},
+		}
+	} else {
+		awsEnv = []corev1.EnvVar{
+			{
+				Name: "AWS_ACCESS_KEY_ID",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "sparklabx-secrets"},
+						Key:                  "MINIO_ROOT_USER",
+					},
+				},
+			},
+			{
+				Name: "AWS_SECRET_ACCESS_KEY",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "sparklabx-secrets"},
+						Key:                  "MINIO_ROOT_PASSWORD",
+					},
+				},
+			},
+		}
+	}
+
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podName,
+			Namespace: g.cfg.Namespace,
+			Labels: map[string]string{
+				"app":            "kernel-pod",
+				"managed-by":     "sparklabx",
+				"sparklabx-user": labelSafe(userID),
+			},
+		},
+		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyOnFailure,
+			// imagePullSecrets only attached for private registries (cfg.PullSecret
+			// set via KERNEL_PULL_SECRET env). Public ghcr.io images don't need it.
+			ImagePullSecrets: pullSecretRefs(g.cfg.PullSecret),
+			Containers: []corev1.Container{
+				{
+					Name:            "jupyter-kernel",
+					Image:           g.cfg.PodImage,
+					ImagePullPolicy: corev1.PullIfNotPresent,
+					Ports: []corev1.ContainerPort{
+						{ContainerPort: 8888, Protocol: corev1.ProtocolTCP},
+					},
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("500m"),
+							corev1.ResourceMemory: resource.MustParse("1Gi"),
+						},
+						Limits: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("2000m"),
+							corev1.ResourceMemory: resource.MustParse("4Gi"),
+						},
+					},
+					// Spark s3a reads these from env to build core-site.xml / spark-defaults
+					// at boot. Without them the kernel can't talk to MinIO/S3.
+					// awsEnv carries either per-user IAM creds (true isolation) or root
+					// creds (legacy fallback). S3_ENDPOINT always comes from ConfigMap.
+					Env: append(awsEnv, corev1.EnvVar{
+						Name: "S3_ENDPOINT",
+						ValueFrom: &corev1.EnvVarSource{
+							ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "sparklabx-config"},
+								Key:                  "MINIO_ENDPOINT",
+							},
+						},
+					}),
+					ReadinessProbe: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt(8888)},
+						},
+						InitialDelaySeconds: 5,
+						PeriodSeconds:       3,
+					},
+				},
+			},
+		},
+	}
+}
+
+// podHealthy returns true if the pod exists and is in Running state.
+func (g *K8sPerUserGateway) podHealthy(ctx context.Context, podName string) bool {
+	p, err := g.client.CoreV1().Pods(g.cfg.Namespace).Get(ctx, podName, metav1.GetOptions{})
+	if err != nil {
+		return false
+	}
+	return p.Status.Phase == corev1.PodRunning && p.DeletionTimestamp == nil
+}
+
+func (g *K8sPerUserGateway) Touch(userID string) {
+	g.bufferTouch(userID)
+}
+
+func (g *K8sPerUserGateway) bufferTouch(userID string) {
+	g.touchMu.Lock()
+	g.touchBuf[userID] = time.Now()
+	g.touchMu.Unlock()
+}
+
+// Destroy marks the row terminating, deletes the pod gracefully, and clears the
+// row in background once the pod is fully gone. A concurrent GetGatewayURL
+// sees PhaseTerminating and spawnAndWait's step 1 drains the predecessor.
+func (g *K8sPerUserGateway) Destroy(userID string) error {
+	db := database.GetDB()
+	podName := podNameForUser(userID)
+
+	g.updatePhase(userID, PhaseTerminating, "Shutting down kernel...")
+
+	err := g.client.CoreV1().Pods(g.cfg.Namespace).Delete(
+		context.Background(), podName, metav1.DeleteOptions{},
+	)
+	if err != nil && !errors.IsNotFound(err) {
+		// DB row still says terminating — reaper will eventually clean up.
+		return err
+	}
+	if errors.IsNotFound(err) {
+		// Pod already gone (e.g. reaper beat us) — clear the row now.
+		db.Exec(`DELETE FROM user_kernel_pods WHERE user_id = $1`, userID)
+		return nil
+	}
+
+	// Background: wait for pod fully gone, then drop the row so the next spawn
+	// from this user starts cleanly without bumping into the terminating-handshake path.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		_ = g.waitForGone(ctx, podName, 90*time.Second)
+		db.Exec(`DELETE FROM user_kernel_pods WHERE user_id = $1`, userID)
+		log.Info().Str("user_id", userID).Str("pod", podName).Msg("terminating handshake complete")
+	}()
+	return nil
+}
+
+// waitForGone polls until the pod returns NotFound or the timeout fires.
+func (g *K8sPerUserGateway) waitForGone(ctx context.Context, podName string, timeout time.Duration) error {
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return wait.PollUntilContextTimeout(waitCtx, 1*time.Second, timeout, true, func(ctx context.Context) (bool, error) {
+		_, err := g.client.CoreV1().Pods(g.cfg.Namespace).Get(ctx, podName, metav1.GetOptions{})
+		return errors.IsNotFound(err), nil
+	})
+}
+
+func (g *K8sPerUserGateway) flushTouchLoop() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-g.stopCh:
+			return
+		case <-ticker.C:
+			g.touchMu.Lock()
+			if len(g.touchBuf) == 0 {
+				g.touchMu.Unlock()
+				continue
+			}
+			snapshot := g.touchBuf
+			g.touchBuf = make(map[string]time.Time)
+			g.touchMu.Unlock()
+
+			db := database.GetDB()
+			for userID, ts := range snapshot {
+				_, _ = db.Exec(`UPDATE user_kernel_pods SET last_used_at = $1 WHERE user_id = $2`, ts, userID)
+			}
+		}
+	}
+}
+
+// reaperLoop deletes idle pods AND reconciles stuck rows:
+//   - status=ready  + last_used_at < cutoff → kill (normal idle reap)
+//   - status=failed + older than 60s        → drop row so FE doesn't see stale error
+//   - status=spawning/pulling/starting + older than spawn timeout → assume crashed, drop
+func (g *K8sPerUserGateway) reaperLoop() {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-g.stopCh:
+			return
+		case <-ticker.C:
+			g.reapOnce()
+		}
+	}
+}
+
+func (g *K8sPerUserGateway) reapOnce() {
+	db := database.GetDB()
+	cutoff := time.Now().Add(-g.cfg.IdleTimeout)
+
+	rows, err := db.Query(
+		`SELECT user_id, pod_name FROM user_kernel_pods
+		 WHERE status = $1 AND last_used_at < $2`,
+		PhaseReady, cutoff,
+	)
+	if err != nil {
+		log.Error().Err(err).Msg("reaper: query idle pods")
+		return
+	}
+	defer rows.Close()
+
+	type victim struct{ userID, podName string }
+	var victims []victim
+	for rows.Next() {
+		var v victim
+		if err := rows.Scan(&v.userID, &v.podName); err == nil {
+			victims = append(victims, v)
+		}
+	}
+	rows.Close()
+
+	for _, v := range victims {
+		err := g.client.CoreV1().Pods(g.cfg.Namespace).Delete(context.Background(), v.podName, metav1.DeleteOptions{})
+		if err != nil && !errors.IsNotFound(err) {
+			log.Warn().Err(err).Str("pod", v.podName).Msg("reaper: failed to delete pod")
+			continue
+		}
+		db.Exec(`DELETE FROM user_kernel_pods WHERE user_id = $1`, v.userID)
+		log.Info().Str("user_id", v.userID).Str("pod", v.podName).Msg("reaper: deleted idle pod")
+	}
+
+	// Drop stale failed/stuck rows so they don't poison capacity counting or FE polling.
+	staleCutoff := time.Now().Add(-spawnTimeout)
+	res, _ := db.Exec(
+		`DELETE FROM user_kernel_pods
+		 WHERE (status = $1 AND created_at < $2)
+		    OR (status IN ($3, $4, $5) AND created_at < $2)`,
+		PhaseFailed, staleCutoff,
+		PhaseSpawning, PhasePulling, PhaseStarting,
+	)
+	if res != nil {
+		if n, _ := res.RowsAffected(); n > 0 {
+			log.Info().Int64("rows", n).Msg("reaper: cleaned up stale spawn rows")
+		}
+	}
+}
+
+// labelSafe sanitizes a string for use as a K8s label value.
+func labelSafe(s string) string {
+	const max = 63
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.':
+			out = append(out, c)
+		default:
+			out = append(out, '_')
+		}
+		if len(out) >= max {
+			break
+		}
+	}
+	return string(out)
+}

@@ -1,0 +1,34 @@
+# Binaries
+*.exe
+*.bin
+backend/bin/
+
+# Dependencies
+node_modules/
+/vendor/
+
+# Environment / secrets — never commit real values
+.env
+.env.local
+.env.*.local
+
+# Build output
+frontend/build
+frontend/dist
+
+# K8s real secrets — never commit (use 10-secrets.example.yaml as template)
+kubernetes/10-secrets.yaml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.codex
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code local config
+.claude/

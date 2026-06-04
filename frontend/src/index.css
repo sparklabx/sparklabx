@@ -1,0 +1,507 @@
+/* Google Fonts disabled for K8s compatibility - using system fonts as fallback */
+/* @import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap'); */
+
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme {
+  /* Typography Scale */
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.25rem;
+  --text-sm--letter-spacing: 0.0rem;
+  --text-sm--font-weight: 400;
+
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1rem;
+  --text-xs--letter-spacing: 0.0rem;
+  --text-xs--font-weight: 400;
+
+  --text-base: 1rem;
+  --text-base--line-height: 1.5rem;
+  --text-base--letter-spacing: 0.025rem;
+  --text-base--font-weight: 400;
+
+  --text-lg: 1.125rem;
+  --text-lg--line-height: 1.75rem;
+  --text-lg--letter-spacing: 0.025rem;
+  --text-lg--font-weight: 400;
+
+  --text-xl: 1.25rem;
+  --text-xl--line-height: 2rem;
+  --text-xl--letter-spacing: 0.025rem;
+  --text-xl--font-weight: 400;
+
+  --text-2xl: 1.5rem;
+  --text-2xl--line-height: 2.25rem;
+  --text-2xl--letter-spacing: 0.025rem;
+  --text-2xl--font-weight: 400;
+
+  --text-3xl: 1.875rem;
+  --text-3xl--line-height: 2.75rem;
+  --text-3xl--letter-spacing: 0.025rem;
+  --text-3xl--font-weight: 400;
+
+  --text-4xl: 2.25rem;
+  --text-4xl--line-height: 3.25rem;
+  --text-4xl--letter-spacing: 0.025rem;
+  --text-4xl--font-weight: 400;
+
+  /* Body text variants */
+  --text-body: var(--text-sm);
+  --text-body--line-height: var(--text-sm--line-height);
+  --text-body--letter-spacing: var(--text-sm--letter-spacing);
+  --text-body--font-weight: 400;
+
+  --text-body-medium: var(--text-sm);
+  --text-body-medium--line-height: var(--text-sm--line-height);
+  --text-body-medium--letter-spacing: var(--text-sm--letter-spacing);
+  --text-body-medium--font-weight: 500;
+
+  --text-body-bold: var(--text-sm);
+  --text-body-bold--line-height: var(--text-sm--line-height);
+  --text-body-bold--letter-spacing: var(--text-sm--letter-spacing);
+  --text-body-bold--font-weight: 700;
+
+  /* Heading variants */
+  --text-heading-2xl: 2rem;
+  --text-heading-2xl--line-height: 2.25rem;
+  --text-heading-2xl--letter-spacing: 0.025rem;
+  --text-heading-2xl--font-weight: 700;
+
+  --text-heading-xl: 1.625rem;
+  --text-heading-xl--line-height: 2rem;
+  --text-heading-xl--letter-spacing: 0.025rem;
+  --text-heading-xl--font-weight: 700;
+
+  --text-heading-lg: var(--text-2xl);
+  --text-heading-lg--line-height: var(--text-2xl--line-height);
+  --text-heading-lg--letter-spacing: var(--text-2xl--letter-spacing);
+  --text-heading-lg--font-weight: 600;
+
+  --text-heading-md: var(--text-xl);
+  --text-heading-md--line-height: var(--text-xl--line-height);
+  --text-heading-md--letter-spacing: var(--text-xl--letter-spacing);
+  --text-heading-md--font-weight: 600;
+
+  --text-heading-sm: var(--text-base);
+  --text-heading-sm--line-height: var(--text-base--line-height);
+  --text-heading-sm--letter-spacing: var(--text-base--letter-spacing);
+  --text-heading-sm--font-weight: 600;
+}
+
+:root {
+  /* Light mode colors */
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.21 0.11 263.16);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.11 263.16);
+  --popover: oklch(0.98 0 264.7);
+  --popover-foreground: oklch(0.14 0 285.86);
+  --primary: oklch(0.59 0.15 185);
+  /* SparkLabX teal */
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.95 0.01 258.36);
+  --secondary-foreground: oklch(0.21 0.11 263.16);
+  --muted: oklch(0.22 0.11 263.03 / 3%);
+  --muted-foreground: oklch(0.49 0.07 270.49);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.21 0.01 285.93);
+  --destructive: oklch(0.58 0.24 28.48);
+  --border: oklch(0.92 0 286.61);
+  --input: oklch(0.92 0 286.61);
+  --ring: oklch(0.71 0.01 286.09);
+
+  /* Font families */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+
+  /* Border radius */
+  --radius: 0.625rem;
+
+  /* Shadows - Light mode */
+  --shadow-xs: 0 1px 3px 0px oklch(0.21 0.11 263.16 / 0.05);
+  --shadow-sm: 0 1px 3px 0px oklch(0.21 0.11 263.16 / 0.1), 0 1px 2px -1px oklch(0.21 0.11 263.16 / 0.1);
+  --shadow-md: 0 1px 3px 0px oklch(0.21 0.11 263.16 / 0.1), 0 2px 4px -1px oklch(0.21 0.11 263.16 / 0.1);
+  --shadow-lg: 0 1px 3px 0px oklch(0.21 0.11 263.16 / 0.1), 0 4px 6px -1px oklch(0.21 0.11 263.16 / 0.1);
+  --shadow-xl: 0 1px 3px 0px oklch(0.21 0.11 263.16 / 0.1), 0 8px 10px -1px oklch(0.21 0.11 263.16 / 0.1);
+
+  /* Letter spacing */
+  --tracking-normal: 0em;
+}
+
+.dark {
+  /* Dark mode colors */
+  --background: oklch(0.14 0 285.86);
+  --foreground: oklch(0.99 0 0);
+  --card: oklch(0.21 0.01 285.93);
+  --card-foreground: oklch(0.99 0 0);
+  --popover: oklch(0.21 0.01 285.93);
+  --popover-foreground: oklch(0.99 0 0);
+  --primary: oklch(0.66 0.13 185);
+  /* SparkLabX teal for dark mode */
+  --primary-foreground: oklch(0.1 0 0);
+  --secondary: oklch(0.27 0.01 286.1);
+  --secondary-foreground: oklch(0.99 0 0);
+  --muted: oklch(0.27 0.01 286.1);
+  --muted-foreground: oklch(0.71 0.01 286.09);
+  --accent: oklch(0.27 0.01 286.1);
+  --accent-foreground: oklch(0.99 0 0);
+  --destructive: oklch(0.7 0.19 22.23);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.55 0.02 285.93);
+
+  /* Shadows - Dark mode */
+  --shadow-xs: 0 1px 3px 0px oklch(0 0 0 / 0.05);
+  --shadow-sm: 0 1px 3px 0px oklch(0 0 0 / 0.1), 0 1px 2px -1px oklch(0 0 0 / 0.1);
+  --shadow-md: 0 1px 3px 0px oklch(0 0 0 / 0.1), 0 2px 4px -1px oklch(0 0 0 / 0.1);
+  --shadow-lg: 0 1px 3px 0px oklch(0 0 0 / 0.1), 0 4px 6px -1px oklch(0 0 0 / 0.1);
+  --shadow-xl: 0 1px 3px 0px oklch(0 0 0 / 0.1), 0 8px 10px -1px oklch(0 0 0 / 0.1);
+
+  /* Letter spacing */
+  --tracking-normal: 0.025em;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --shadow-xs: var(--shadow-xs);
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+  --shadow-xl: var(--shadow-xl);
+
+  --tracking-tighter: calc(var(--tracking-normal) - 0.05em);
+  --tracking-tight: calc(var(--tracking-normal) - 0.025em);
+  --tracking-normal: var(--tracking-normal);
+  --tracking-wide: calc(var(--tracking-normal) + 0.025em);
+  --tracking-wider: calc(var(--tracking-normal) + 0.05em);
+  --tracking-widest: calc(var(--tracking-normal) + 0.1em);
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  letter-spacing: var(--tracking-normal);
+}
+
+code {
+  font-family: var(--font-mono);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground text-body;
+  }
+}
+
+/* Font smoothing */
+* {
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Monaco Editor overrides - remove unwanted borders */
+.monaco-editor .view-lines,
+.monaco-editor .view-line,
+.monaco-editor .monaco-mouse-cursor-text {
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+.monaco-editor,
+.monaco-editor .overflow-guard,
+.monaco-editor .monaco-scrollable-element {
+  border: none !important;
+  outline: none !important;
+}
+
+/* Monaco Editor Dark Mode Syntax Highlighting Override */
+.dark .monaco-editor {
+  /* Ensure all text is visible */
+  color: #d4d4d8 !important;
+}
+
+.dark .monaco-editor .view-line span {
+  color: #d4d4d8;
+  /* Default: Zinc-300 */
+}
+
+/* Monaco token color overrides for dark mode */
+.dark .monaco-editor .mtk1 {
+  color: #d4d4d8 !important;
+}
+
+/* Default text - Zinc-300 */
+.dark .monaco-editor .mtk2 {
+  color: #d4d4d8 !important;
+}
+
+.dark .monaco-editor .mtk3 {
+  color: #d4d4d8 !important;
+}
+
+.dark .monaco-editor .mtk4 {
+  color: #60a5fa !important;
+}
+
+/* Keywords - Blue-400 */
+.dark .monaco-editor .mtk5 {
+  color: #60a5fa !important;
+}
+
+/* Keywords - Blue-400 */
+.dark .monaco-editor .mtk6 {
+  color: #facc15 !important;
+}
+
+/* Functions - Yellow-400 */
+.dark .monaco-editor .mtk7 {
+  color: #9ca3af !important;
+}
+
+/* Comments - Gray-400 */
+.dark .monaco-editor .mtk8 {
+  color: #4ade80 !important;
+}
+
+/* Numbers - Green-400 */
+.dark .monaco-editor .mtk9 {
+  color: #fbbf24 !important;
+}
+
+/* Strings - Amber-400 */
+.dark .monaco-editor .mtk10 {
+  color: #c084fc !important;
+}
+
+/* Special - Purple-400 */
+.dark .monaco-editor .mtk11 {
+  color: #2dd4bf !important;
+}
+
+/* Types - Teal-400 */
+.dark .monaco-editor .mtk12 {
+  color: #f472b6 !important;
+}
+
+/* Tags - Pink-400 */
+.dark .monaco-editor .mtk13 {
+  color: #d4d4d8 !important;
+}
+
+.dark .monaco-editor .mtk14 {
+  color: #d4d4d8 !important;
+}
+
+.dark .monaco-editor .mtk15 {
+  color: #d4d4d8 !important;
+}
+
+.dark .monaco-editor .mtk16 {
+  color: #d4d4d8 !important;
+}
+
+.dark .monaco-editor .mtk17 {
+  color: #60a5fa !important;
+}
+
+.dark .monaco-editor .mtk18 {
+  color: #facc15 !important;
+}
+
+.dark .monaco-editor .mtk19 {
+  color: #fbbf24 !important;
+}
+
+/* Strings - Amber-400 */
+.dark .monaco-editor .mtk20 {
+  color: #4ade80 !important;
+}
+
+.dark .monaco-editor .mtk21 {
+  color: #2dd4bf !important;
+}
+
+.dark .monaco-editor .mtk22 {
+  color: #f472b6 !important;
+}
+
+/* Variables - Pink-400 */
+.dark .monaco-editor .mtk23 {
+  color: #c084fc !important;
+}
+
+.dark .monaco-editor .mtk24 {
+  color: #d4d4d8 !important;
+}
+
+.dark .monaco-editor .mtk25 {
+  color: #d4d4d8 !important;
+}
+
+/* Bracket highlighting */
+.dark .monaco-editor .bracket-highlighting-0,
+.dark .monaco-editor .bracket-highlighting-1,
+.dark .monaco-editor .bracket-highlighting-2,
+.dark .monaco-editor .bracket-highlighting-3 {
+  color: #d4d4d8 !important;
+}
+
+/* ========================================
+   ReactFlow Controls - Light/Dark Mode
+   ======================================== */
+
+/* Controls wrapper */
+.react-flow__controls {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15) !important;
+  background: #ffffff !important;
+  border: 1px solid #e5e7eb !important;
+  border-radius: 8px !important;
+  overflow: hidden !important;
+}
+
+.dark .react-flow__controls {
+  background: #27272a !important;
+  border-color: #3f3f46 !important;
+}
+
+/* Control buttons */
+.react-flow__controls-button {
+  background: #ffffff !important;
+  border: none !important;
+  border-bottom: 1px solid #e5e7eb !important;
+  width: 30px !important;
+  height: 30px !important;
+}
+
+.dark .react-flow__controls-button {
+  background: #27272a !important;
+  border-bottom-color: #3f3f46 !important;
+}
+
+.react-flow__controls-button:last-child {
+  border-bottom: none !important;
+}
+
+.react-flow__controls-button:hover {
+  background: #f3f4f6 !important;
+}
+
+.dark .react-flow__controls-button:hover {
+  background: #3f3f46 !important;
+}
+
+/* Control button icons */
+.react-flow__controls-button svg {
+  fill: #374151 !important;
+  max-width: 14px !important;
+  max-height: 14px !important;
+}
+
+.dark .react-flow__controls-button svg {
+  fill: #e4e4e7 !important;
+}
+
+/* ReactFlow Attribution */
+.react-flow__attribution {
+  background: transparent !important;
+}
+
+.react-flow__attribution a {
+  color: #9ca3af !important;
+}
+
+.dark .react-flow__attribution a {
+  color: #71717a !important;
+}
+
+/* Lineage Graph Container - ensure minimum height */
+.lineage-graph-container {
+  min-height: 800px !important;
+}
+
+/* ========================================
+   Pandas DataFrame Styling (Notebook Output)
+   ======================================== */
+.dataframe {
+  border-collapse: collapse !important;
+  border: none !important;
+  margin: 1em 0 !important;
+  font-family: var(--font-mono) !important;
+  font-size: var(--text-sm) !important;
+  display: block;
+  overflow: auto;
+  max-height: 420px;     /* tall tables stay scrollable instead of pushing the page */
+}
+
+.dataframe th,
+.dataframe td {
+  padding: 0.5em 1em !important;
+  border: 1px solid var(--border) !important;
+  text-align: right !important;
+  white-space: nowrap !important;
+  min-width: 50px;
+}
+
+.dataframe th {
+  /* --secondary is opaque in both themes AND has a subtle contrast against
+     the card/row background. Avoid --muted (3% alpha in light mode). */
+  background-color: var(--secondary) !important;
+  color: var(--secondary-foreground) !important;
+  font-weight: 600 !important;
+  position: sticky;
+  /* top: -1px instead of 0 — border-collapse:collapse leaves a sub-pixel
+     gap at the boundary as rows scroll under; the offset hides it.
+     box-shadow paints the bottom border (collapsed borders don't draw
+     reliably on a sticky element). */
+  top: -1px;
+  z-index: 1;
+  box-shadow: inset 0 -1px 0 var(--border);
+}
+
+.dark .dataframe td {
+  color: var(--foreground) !important;
+}
+
+/* Hide auto-generated heading anchor links in markdown preview */
+.wmde-markdown .anchor {
+    display: none !important;
+}
+
+/* Fix Jupyter Output Area jitter */
+.jp-OutputArea-output {
+    padding: 0 !important;
+}

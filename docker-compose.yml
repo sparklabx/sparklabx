@@ -1,0 +1,112 @@
+services:
+  frontend:
+    image: ghcr.io/sparklabx/frontend:latest
+    container_name: sparklabx-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  backend:
+    image: ghcr.io/sparklabx/backend:latest
+    container_name: sparklabx-backend
+    ports:
+      - "10000:10000"
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgres://sparklabx:sparklabx@postgres:5432/sparklabx?sslmode=disable}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - JWT_EXPIRE_MINUTES=${JWT_EXPIRE_MINUTES:-480}
+      - SEED_ADMIN_USERNAME=${SEED_ADMIN_USERNAME}
+      - SEED_ADMIN_EMAIL=${SEED_ADMIN_EMAIL}
+      - SEED_ADMIN_PASSWORD=${SEED_ADMIN_PASSWORD}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - MICROSOFT_CLIENT_ID=${MICROSOFT_CLIENT_ID}
+      - MICROSOFT_CLIENT_SECRET=${MICROSOFT_CLIENT_SECRET}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_ACCESS_KEY=rustfs
+      - MINIO_SECRET_KEY=rustfs123
+      - JUPYTER_GATEWAY_URL=http://jupyter:8888
+      # Kernel mode: "shared" (default, no isolation) | "docker_per_user" (real
+      # IAM isolation locally) | "k8s_per_user" (production). The docker_per_user
+      # mode requires the docker.sock bind below.
+      - KERNEL_MODE=${KERNEL_MODE:-shared}
+      - KERNEL_POD_IMAGE=${KERNEL_POD_IMAGE:-ghcr.io/sparklabx/kernel:latest}
+      - KERNEL_DOCKER_NETWORK=${KERNEL_DOCKER_NETWORK:-sparklabx_default}
+      - SERVICE_PORT=10000
+      - ENVIRONMENT=production
+      - LOG_LEVEL=info
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
+    volumes:
+      # Required only when KERNEL_MODE=docker_per_user. Lets the backend spawn
+      # one kernel container per user via the host Docker daemon. SECURITY:
+      # any code running inside the backend can manipulate ALL host containers
+      # — do NOT enable this volume in untrusted multi-tenant deployments;
+      # use KERNEL_MODE=k8s_per_user for production.
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  # Shared Jupyter kernel — only used when KERNEL_MODE=shared. Skipped by
+  # default thanks to the "shared" profile; bring it up explicitly with:
+  #   docker compose --profile shared up jupyter
+  jupyter:
+    profiles: ["shared"]
+    image: ghcr.io/sparklabx/kernel:latest
+    container_name: sparklabx-jupyter
+    environment:
+      - AWS_ACCESS_KEY_ID=rustfs
+      - AWS_SECRET_ACCESS_KEY=rustfs123
+      - S3_ENDPOINT=http://minio:9000
+    volumes:
+      - ./kernel/entrypoint.sh:/home/exam/entrypoint.sh
+    depends_on:
+      - minio
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: sparklabx-minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: rustfs
+      MINIO_ROOT_PASSWORD: rustfs123
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: sparklabx-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sparklabx}
+      POSTGRES_USER: ${POSTGRES_USER:-sparklabx}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sparklabx}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # tunnel:
+  #   image: cloudflare/cloudflared:latest
+  #   container_name: sparklabx-tunnel
+  #   command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+  #   depends_on:
+  #     - frontend
+  #   restart: unless-stopped
+
+
+volumes:
+  postgres_data:
+  minio_data:
