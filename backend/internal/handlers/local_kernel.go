@@ -419,8 +419,23 @@ func (h *LocalKernelHandler) Connect(c *gin.Context) {
 	bodyBytes, _ := json.Marshal(map[string]string{"name": kernelName})
 	resp, err := http.Post(gatewayURL+"/api/kernels", "application/json", strings.NewReader(string(bodyBytes)))
 	if err != nil {
-		log.Error().Err(err).Msg("failed to create kernel on gateway")
-		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to connect to Jupyter Gateway"})
+		// Transport-level failure (EOF, connection reset, refused, timeout).
+		// The DB has a "ready" pod row pointing at a container that isn't
+		// actually serving — almost always because the container restarted
+		// and Jupyter is gone, or the container was rm'd out from under us.
+		// Destroy the stale row + container so the next /kernel/connect
+		// from the FE triggers a fresh spawn instead of looping forever.
+		log.Error().Err(err).Str("user_id", userID).Msg("kernel gateway unreachable; treating pod as stale, destroying for respawn")
+		if dErr := h.gateway.Destroy(userID); dErr != nil {
+			log.Warn().Err(dErr).Str("user_id", userID).Msg("destroy stale pod failed")
+		}
+		deleteKernelMap(notebookID, userID)
+		// 503 with phase=spawning tells FE "container is being rebuilt, poll".
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"status":  "spawning",
+			"phase":   services.PhaseSpawning,
+			"message": "kernel container was stale; respawning",
+		})
 		return
 	}
 	defer resp.Body.Close()

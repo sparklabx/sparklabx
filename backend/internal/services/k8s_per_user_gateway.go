@@ -180,8 +180,12 @@ func (g *K8sPerUserGateway) GetGatewayURL(ctx context.Context, userID string) (s
 			return dbURL, nil
 		}
 		if dbStatus == PhaseReady {
-			// Pod gone but row says ready — clean up and respawn
-			db.Exec(`DELETE FROM user_kernel_pods WHERE user_id = $1`, userID)
+			// DB says ready but the pod isn't healthy. Could be: pod gone,
+			// pod Failed/CrashLoop, or pod stuck in Pending. EnsureSpawning
+			// would otherwise try to create a pod with the same name and
+			// hit AlreadyExists, so tear down both pod + row first.
+			log.Info().Str("user_id", userID).Str("pod", podName).Msg("stale ready row with unhealthy pod; destroying for respawn")
+			_ = g.Destroy(userID)
 		}
 	}
 
@@ -566,13 +570,26 @@ func (g *K8sPerUserGateway) buildPodSpec(userID, podName string) *corev1.Pod {
 	}
 }
 
-// podHealthy returns true if the pod exists and is in Running state.
+// podHealthy returns true only when the pod is actually serving — not just
+// when Phase==Running. Phase flips to Running as soon as a container starts;
+// Jupyter inside needs another 5-15s to bind port 8888, during which the
+// caller would get EOF/reset if we trusted Phase alone. Reading the
+// PodReady condition uses k8s's own readinessProbe result (TCP probe on
+// 8888 defined in the pod spec) so we don't double-probe from here.
 func (g *K8sPerUserGateway) podHealthy(ctx context.Context, podName string) bool {
 	p, err := g.client.CoreV1().Pods(g.cfg.Namespace).Get(ctx, podName, metav1.GetOptions{})
 	if err != nil {
 		return false
 	}
-	return p.Status.Phase == corev1.PodRunning && p.DeletionTimestamp == nil
+	if p.DeletionTimestamp != nil {
+		return false
+	}
+	for _, cond := range p.Status.Conditions {
+		if cond.Type == corev1.PodReady {
+			return cond.Status == corev1.ConditionTrue
+		}
+	}
+	return false
 }
 
 func (g *K8sPerUserGateway) Touch(userID string) {
@@ -658,6 +675,8 @@ func (g *K8sPerUserGateway) flushTouchLoop() {
 //   - status=ready  + last_used_at < cutoff → kill (normal idle reap)
 //   - status=failed + older than 60s        → drop row so FE doesn't see stale error
 //   - status=spawning/pulling/starting + older than spawn timeout → assume crashed, drop
+//   - status=ready but pod is gone / Failed / CrashLoopBackOff (reapDeadPods)
+//   - any pod with managed-by=sparklabx label not tracked in DB (sweepOrphanPods)
 func (g *K8sPerUserGateway) reaperLoop() {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
@@ -667,6 +686,8 @@ func (g *K8sPerUserGateway) reaperLoop() {
 			return
 		case <-ticker.C:
 			g.reapOnce()
+			g.reapDeadPods()
+			g.sweepOrphanPods()
 		}
 	}
 }
@@ -719,6 +740,115 @@ func (g *K8sPerUserGateway) reapOnce() {
 		if n, _ := res.RowsAffected(); n > 0 {
 			log.Info().Int64("rows", n).Msg("reaper: cleaned up stale spawn rows")
 		}
+	}
+}
+
+// reapDeadPods cleans up DB rows whose pod is in a dead state. Without this,
+// status=ready rows can sit around pointing at a Failed / CrashLoopBackOff
+// pod, and users get errors until they manually reconnect (which triggers
+// the Layer C self-heal). The sweep covers users who quit and come back
+// later, plus admin pods that hit OOM overnight.
+func (g *K8sPerUserGateway) reapDeadPods() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	db := database.GetDB()
+	rows, err := db.Query(`SELECT user_id, pod_name FROM user_kernel_pods WHERE status = $1`, PhaseReady)
+	if err != nil {
+		return
+	}
+	type victim struct{ userID, podName string }
+	var victims []victim
+	for rows.Next() {
+		var v victim
+		if err := rows.Scan(&v.userID, &v.podName); err == nil {
+			victims = append(victims, v)
+		}
+	}
+	rows.Close()
+
+	for _, v := range victims {
+		p, err := g.client.CoreV1().Pods(g.cfg.Namespace).Get(ctx, v.podName, metav1.GetOptions{})
+		if err != nil {
+			if errors.IsNotFound(err) {
+				db.Exec(`DELETE FROM user_kernel_pods WHERE user_id = $1`, v.userID)
+				log.Info().Str("user_id", v.userID).Str("pod", v.podName).Msg("reapDead: pod gone, cleared row")
+			}
+			continue
+		}
+		dead, reason := podIsDead(p)
+		if !dead {
+			continue
+		}
+		log.Info().Str("user_id", v.userID).Str("pod", v.podName).Str("reason", reason).Msg("reapDead: destroying unhealthy pod")
+		_ = g.client.CoreV1().Pods(g.cfg.Namespace).Delete(ctx, v.podName, metav1.DeleteOptions{})
+		db.Exec(`DELETE FROM user_kernel_pods WHERE user_id = $1`, v.userID)
+	}
+}
+
+// podIsDead classifies a pod we consider unrecoverable for serving requests.
+// Phase=Failed/Succeeded are terminal. Phase=Running with any container in
+// CrashLoopBackOff or ImagePullBackOff isn't going to recover on its own.
+func podIsDead(p *corev1.Pod) (bool, string) {
+	switch p.Status.Phase {
+	case corev1.PodFailed:
+		return true, "phase=failed"
+	case corev1.PodSucceeded:
+		return true, "phase=succeeded"
+	}
+	for _, cs := range p.Status.ContainerStatuses {
+		if cs.State.Waiting == nil {
+			continue
+		}
+		switch cs.State.Waiting.Reason {
+		case "CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull", "CreateContainerConfigError":
+			return true, "waiting=" + cs.State.Waiting.Reason
+		}
+	}
+	return false, ""
+}
+
+// sweepOrphanPods deletes pods labeled managed-by=sparklabx that have no
+// DB row tracking them. These are leftovers from a backend crash mid-spawn
+// or mid-destroy. The 1-minute age filter avoids racing with a spawn
+// that just created the pod but hasn't inserted the DB row yet.
+func (g *K8sPerUserGateway) sweepOrphanPods() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pods, err := g.client.CoreV1().Pods(g.cfg.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "managed-by=sparklabx",
+	})
+	if err != nil {
+		return
+	}
+	if len(pods.Items) == 0 {
+		return
+	}
+
+	rows, err := database.GetDB().Query(`SELECT pod_name FROM user_kernel_pods`)
+	if err != nil {
+		return
+	}
+	tracked := map[string]bool{}
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err == nil {
+			tracked[n] = true
+		}
+	}
+	rows.Close()
+
+	ageCutoff := time.Now().Add(-1 * time.Minute)
+	for _, p := range pods.Items {
+		if tracked[p.Name] {
+			continue
+		}
+		if p.CreationTimestamp.Time.After(ageCutoff) {
+			continue
+		}
+		log.Info().Str("pod", p.Name).Msg("sweepOrphans: deleting untracked kernel pod")
+		_ = g.client.CoreV1().Pods(g.cfg.Namespace).Delete(ctx, p.Name, metav1.DeleteOptions{})
 	}
 }
 

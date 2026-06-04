@@ -127,6 +127,16 @@ func (g *DockerPerUserGateway) GetGatewayURL(ctx context.Context, userID string)
 		return dbURL, nil
 	}
 
+	// DB says ready but the container isn't actually serving (Jupyter dead,
+	// container exited, etc). EnsureSpawning would normally short-circuit on
+	// "container exists + status=ready" and never respawn, leaving the poll
+	// loop below to spin out the 60-second timeout. Tear down the stale
+	// pair first so EnsureSpawning sees a clean slate and rebuilds.
+	if dbStatus == PhaseReady {
+		log.Info().Str("user", userID).Str("container", name).Msg("stale ready row with unhealthy container; destroying for respawn")
+		_ = g.Destroy(userID)
+	}
+
 	// Spawn fresh
 	if err := g.EnsureSpawning(userID); err != nil {
 		return "", err
@@ -334,11 +344,12 @@ func (g *DockerPerUserGateway) containerExists(ctx context.Context, name string)
 	return resp.StatusCode == 200
 }
 
-// containerHealthy returns true if the container is Running per docker inspect.
-// We don't poke port 8888 directly — Docker DNS won't resolve the container
-// name from inside the backend until the network attach completes, and that's
-// a bit racy. State.Running == true is sufficient for "ready to receive
-// requests" because the kernel's image entrypoint starts Jupyter eagerly.
+// containerHealthy returns true only if Jupyter is actually answering on
+// port 8888 — not just that Docker reports the container as Running.
+// Docker flips Running=true when the entrypoint process starts; Jupyter
+// then needs 5-15s to import deps and bind the port. Treating Running
+// alone as healthy let backend hand out a URL that immediately failed
+// with EOF/reset on the first /api/kernels call.
 func (g *DockerPerUserGateway) containerHealthy(ctx context.Context, name string) bool {
 	resp, err := g.dockerReq(ctx, "GET", "/containers/"+name+"/json", nil)
 	if err != nil || resp.StatusCode != 200 {
@@ -347,17 +358,34 @@ func (g *DockerPerUserGateway) containerHealthy(ctx context.Context, name string
 		}
 		return false
 	}
-	defer resp.Body.Close()
 	var info struct {
 		State struct {
 			Running bool `json:"Running"`
-			Status  string `json:"Status"`
 		} `json:"State"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+	dec := json.NewDecoder(resp.Body).Decode(&info)
+	resp.Body.Close()
+	if dec != nil || !info.State.Running {
 		return false
 	}
-	return info.State.Running
+
+	// Probe Jupyter directly. Short timeout — this runs on the hot path
+	// (every connect-kernel call), and a hung Jupyter shouldn't stall the
+	// caller. 2s is enough on a healthy container; anything slower is
+	// "not ready" and the outer poll loop will try again.
+	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(probeCtx, "GET",
+		fmt.Sprintf("http://%s:8888/api", name), nil)
+	if err != nil {
+		return false
+	}
+	pr, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	pr.Body.Close()
+	return pr.StatusCode == 200
 }
 
 func (g *DockerPerUserGateway) containerCreate(ctx context.Context, name string, body map[string]any) error {
@@ -461,7 +489,13 @@ func (g *DockerPerUserGateway) setReadyURL(userID, url, name string) {
 // Background loops
 // ============================================================
 
-// reaperLoop deletes containers that have been idle past IdleTimeout.
+// reaperLoop does three things every 5 minutes:
+//   1. reapIdle      — Destroy containers that have been idle past IdleTimeout.
+//   2. reapDead      — Destroy DB rows whose container is in a dead state
+//                      (exited / dead / removing / vanished) so the next
+//                      connect-kernel call spawns fresh instead of looping.
+//   3. sweepOrphans  — Remove containers labeled sparklabx.kernel=1 that
+//                      have no DB row (left behind by crashes or manual rm).
 func (g *DockerPerUserGateway) reaperLoop() {
 	tick := time.NewTicker(5 * time.Minute)
 	defer tick.Stop()
@@ -471,6 +505,8 @@ func (g *DockerPerUserGateway) reaperLoop() {
 			return
 		case <-tick.C:
 			g.reapIdle()
+			g.reapDead()
+			g.sweepOrphans()
 		}
 	}
 }
@@ -495,6 +531,116 @@ func (g *DockerPerUserGateway) reapIdle() {
 	for _, u := range users {
 		log.Info().Str("user", u).Msg("reaping idle kernel container")
 		_ = g.Destroy(u)
+	}
+}
+
+// reapDead cleans up DB rows whose container has died but the row still
+// claims it's ready. Without this, the user is stuck behind a stale
+// "ready" record until they hit /kernel/connect (where Layer C cleans up
+// reactively) — fine for active users, broken for users who quit and come
+// back hours later.
+func (g *DockerPerUserGateway) reapDead() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	rows, err := database.GetDB().Query(`SELECT user_id, pod_name FROM user_kernel_pods`)
+	if err != nil {
+		return
+	}
+	type podRow struct{ userID, podName string }
+	var all []podRow
+	for rows.Next() {
+		var r podRow
+		if err := rows.Scan(&r.userID, &r.podName); err == nil {
+			all = append(all, r)
+		}
+	}
+	rows.Close()
+
+	for _, r := range all {
+		resp, err := g.dockerReq(ctx, "GET", "/containers/"+r.podName+"/json", nil)
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode == 404 {
+			resp.Body.Close()
+			// Container vanished — clear the row so a fresh spawn can happen.
+			_, _ = database.GetDB().Exec(`DELETE FROM user_kernel_pods WHERE user_id = $1`, r.userID)
+			log.Info().Str("user", r.userID).Str("pod", r.podName).Msg("reapDead: container gone, cleared row")
+			continue
+		}
+		var info struct {
+			State struct {
+				Status string `json:"Status"`
+			} `json:"State"`
+		}
+		dec := json.NewDecoder(resp.Body).Decode(&info)
+		resp.Body.Close()
+		if dec != nil {
+			continue
+		}
+		switch info.State.Status {
+		case "exited", "dead", "removing":
+			log.Info().Str("user", r.userID).Str("pod", r.podName).Str("state", info.State.Status).Msg("reapDead: destroying dead container")
+			_ = g.Destroy(r.userID)
+		}
+	}
+}
+
+// sweepOrphans removes kernel containers labeled sparklabx.kernel=1 that
+// have no matching DB row. These are leftovers from backend crashes that
+// happened mid-spawn or mid-destroy. The age filter (1 minute) avoids
+// racing with a spawn that just created the container but hasn't inserted
+// the DB row yet.
+func (g *DockerPerUserGateway) sweepOrphans() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := g.dockerReq(ctx, "GET",
+		`/containers/json?all=true&filters={"label":["sparklabx.kernel=1"]}`, nil)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return
+	}
+	var list []struct {
+		Names   []string `json:"Names"`
+		Created int64    `json:"Created"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return
+	}
+	if len(list) == 0 {
+		return
+	}
+
+	rows, err := database.GetDB().Query(`SELECT pod_name FROM user_kernel_pods`)
+	if err != nil {
+		return
+	}
+	tracked := map[string]bool{}
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err == nil {
+			tracked[n] = true
+		}
+	}
+	rows.Close()
+
+	ageCutoff := time.Now().Add(-1 * time.Minute).Unix()
+	for _, c := range list {
+		if len(c.Names) == 0 || c.Created > ageCutoff {
+			continue
+		}
+		name := strings.TrimPrefix(c.Names[0], "/")
+		if tracked[name] {
+			continue
+		}
+		log.Info().Str("container", name).Msg("sweepOrphans: removing untracked kernel container")
+		_ = g.containerStop(ctx, name)
+		_ = g.containerRemove(ctx, name)
 	}
 }
 
