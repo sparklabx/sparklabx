@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/sparklabx/sparklabx/backend/internal/database"
 )
@@ -42,6 +43,17 @@ type DockerPerUserConfig struct {
 	MaxContainers int               // hard cap; rejects spawn beyond
 	MinIOEndpoint string            // injected as S3_ENDPOINT env so kernel reaches MinIO
 	CredsResolver UserCredsResolver // nil → fall back to root creds via env passthrough
+
+	// Per-container limits in k8s quantity format ("500m", "1Gi"). Docker
+	// doesn't have a separate "request" concept, so only the limit values
+	// apply. Empty → no limit (container can use all host resources).
+	CPULimit    string
+	MemoryLimit string
+
+	// Resolved at construction: CPULimit converted to nano-CPUs, MemoryLimit
+	// to bytes. Kept here so Spawn doesn't reparse on every container create.
+	nanoCPUs    int64
+	memoryBytes int64
 }
 
 func NewDockerPerUserGateway(cfg DockerPerUserConfig) (*DockerPerUserGateway, error) {
@@ -60,6 +72,21 @@ func NewDockerPerUserGateway(cfg DockerPerUserConfig) (*DockerPerUserGateway, er
 	}
 	if cfg.IdleTimeout == 0 {
 		cfg.IdleTimeout = 30 * time.Minute
+	}
+	if cfg.CPULimit != "" {
+		q, err := resource.ParseQuantity(cfg.CPULimit)
+		if err != nil {
+			return nil, fmt.Errorf("DockerPerUserConfig.CPULimit %q: %w", cfg.CPULimit, err)
+		}
+		// k8s quantity "2000m" → 2000 milli → 2_000_000_000 nano-CPUs
+		cfg.nanoCPUs = q.MilliValue() * 1_000_000
+	}
+	if cfg.MemoryLimit != "" {
+		q, err := resource.ParseQuantity(cfg.MemoryLimit)
+		if err != nil {
+			return nil, fmt.Errorf("DockerPerUserConfig.MemoryLimit %q: %w", cfg.MemoryLimit, err)
+		}
+		cfg.memoryBytes = q.Value()
 	}
 
 	transport := &http.Transport{
@@ -89,6 +116,24 @@ func (g *DockerPerUserGateway) IdleTimeout() time.Duration    { return g.cfg.Idl
 func dockerContainerName(userID string) string {
 	h := sha1.Sum([]byte(userID))
 	return "sparklabx-kernel-" + hex.EncodeToString(h[:6])
+}
+
+// hostConfig builds the Docker HostConfig fragment. Resource limits are
+// only attached when the operator opted in via CPULimit/MemoryLimit — a
+// zero value means "no limit" so existing deployments keep working.
+func hostConfig(cfg DockerPerUserConfig) map[string]any {
+	hc := map[string]any{
+		"RestartPolicy": map[string]any{"Name": "no"},
+		"NetworkMode":   cfg.Network,
+		"AutoRemove":    false,
+	}
+	if cfg.nanoCPUs > 0 {
+		hc["NanoCpus"] = cfg.nanoCPUs
+	}
+	if cfg.memoryBytes > 0 {
+		hc["Memory"] = cfg.memoryBytes
+	}
+	return hc
 }
 
 // Status returns current spawn phase from the DB row.
@@ -228,11 +273,7 @@ func (g *DockerPerUserGateway) EnsureSpawning(userID string) error {
 			"sparklabx.user":   userID,
 		},
 		"ExposedPorts": map[string]any{"8888/tcp": map[string]any{}},
-		"HostConfig": map[string]any{
-			"RestartPolicy": map[string]any{"Name": "no"},
-			"NetworkMode":   g.cfg.Network,
-			"AutoRemove":    false,
-		},
+		"HostConfig": hostConfig(g.cfg),
 	}
 	if err := g.containerCreate(ctx, name, cfg); err != nil {
 		g.updatePhase(userID, PhaseFailed, err.Error())
