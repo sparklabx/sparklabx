@@ -74,11 +74,25 @@ spec:
               port: 9000
             initialDelaySeconds: 30
             periodSeconds: 30
-      # /shared is an NFS mount available on every node, so the pod can land
-      # on any node and still see the same data. hostPath is used because the
-      # mount happens at OS level (no in-cluster NFS provisioner needed).
-      volumes:
-        - name: data
-          hostPath:
-            path: /shared/kubernetes/sparklabx/minio
-            type: DirectoryOrCreate
+  # PVC provisioned via the cluster's default StorageClass — portable
+  # across EKS/GKE/AKS/k3s/bare-metal without baking a specific path or
+  # NFS mount into the manifest. Bump `storage:` if you expect to store
+  # large datasets in the workspace bucket.
+  #
+  # If your cluster doesn't have dynamic provisioning (e.g. bare-metal
+  # without a CSI driver), swap volumeClaimTemplates for an inline
+  # hostPath/NFS volume:
+  #   volumes:
+  #     - name: data
+  #       hostPath:
+  #         path: /shared/kubernetes/sparklabx/minio
+  #         type: DirectoryOrCreate
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # storageClassName: ""    # uncomment + set to pin a class
+        resources:
+          requests:
+            storage: 50Gi

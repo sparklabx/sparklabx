@@ -70,8 +70,24 @@ spec:
               command: ["pg_isready", "-U", "sparklabx"]
             initialDelaySeconds: 30
             periodSeconds: 30
-      volumes:
-        - name: data
-          hostPath:
-            path: /shared/kubernetes/sparklabx/postgres
-            type: DirectoryOrCreate
+  # PVC provisioned via the cluster's default StorageClass — works out
+  # of the box on EKS/GKE/AKS, k3s, and any cluster with a default
+  # provisioner. Set `storageClassName` explicitly if you have multiple
+  # storage classes and want to pin to a specific one (e.g. gp3-ssd).
+  #
+  # Cluster without dynamic provisioning? Replace the volumeClaimTemplates
+  # block with an inline `volumes:` entry pointing at hostPath / NFS:
+  #   volumes:
+  #     - name: data
+  #       hostPath:
+  #         path: /shared/kubernetes/sparklabx/postgres
+  #         type: DirectoryOrCreate
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # storageClassName: ""    # uncomment + set to pin a class
+        resources:
+          requests:
+            storage: 10Gi
