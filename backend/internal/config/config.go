@@ -56,6 +56,14 @@ type Config struct {
 	KernelDockerNetwork   string
 	KernelPullSecret      string // optional K8s imagePullSecret for private forks
 
+	// Per-user kernel pod resource requests/limits. Strings in k8s quantity
+	// format ("500m", "1Gi"). For docker_per_user mode only the *Limit values
+	// apply — Docker has no separate "request" concept.
+	KernelPodCPURequest    string
+	KernelPodMemoryRequest string
+	KernelPodCPULimit      string
+	KernelPodMemoryLimit   string
+
 	// CORS
 	CORSOrigins []string
 }
@@ -99,6 +107,11 @@ func Load() *Config {
 		KernelPodMaxTotal:    getEnvInt("KERNEL_POD_MAX_TOTAL", 50),
 		KernelDockerNetwork:  getEnv("KERNEL_DOCKER_NETWORK", "sparklabx_default"),
 		KernelPullSecret:     getEnv("KERNEL_PULL_SECRET", ""), // empty → no imagePullSecret
+
+		KernelPodCPURequest:    getEnv("KERNEL_POD_CPU_REQUEST", "500m"),
+		KernelPodMemoryRequest: getEnv("KERNEL_POD_MEMORY_REQUEST", "1Gi"),
+		KernelPodCPULimit:      getEnv("KERNEL_POD_CPU_LIMIT", "2000m"),
+		KernelPodMemoryLimit:   getEnv("KERNEL_POD_MEMORY_LIMIT", "4Gi"),
 
 		CORSOrigins: strings.Split(getEnv("CORS_ORIGINS", "http://localhost:3000"), ","),
 	}

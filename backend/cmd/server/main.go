@@ -88,6 +88,10 @@ func main() {
 		MaxKernels:        cfg.KernelPodMaxTotal,
 		PullSecret:        cfg.KernelPullSecret,
 		CredsResolver:     credsResolver,
+		PodCPURequest:     cfg.KernelPodCPURequest,
+		PodMemoryRequest:  cfg.KernelPodMemoryRequest,
+		PodCPULimit:       cfg.KernelPodCPULimit,
+		PodMemoryLimit:    cfg.KernelPodMemoryLimit,
 	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to initialize kernel gateway")
