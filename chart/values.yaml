@@ -32,6 +32,17 @@ kernel:
   idleMinutes: 30
   # Cluster-wide cap. Prevents one runaway notebook from exhausting nodes.
   maxTotal: 50
+  # Per-user kernel pod resources. Sets the ceiling each user can use;
+  # Spark driver/executor memory is configured by the user at session time
+  # (within these limits). For docker_per_user mode, only the limits apply
+  # (Docker has no separate "request" concept).
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
 
 # ─────────────────────────────────────────────────────────────
 # Secrets. Either let the chart create one (default), or point at

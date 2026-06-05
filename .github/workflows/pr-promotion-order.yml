@@ -1,0 +1,43 @@
+name: PR promotion order
+
+# Enforces the promotion path dev → test → main. Required status check on
+# the main and test rulesets blocks merges that skip the chain (e.g. a
+# feature branch trying to land directly in main).
+#
+# - PR into main  → source MUST be 'test'
+# - PR into test  → source MUST be 'dev'
+# - PR into dev   → any source allowed (feature/*, fix/*, etc.)
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+jobs:
+  validate-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce promotion order
+        env:
+          BASE: ${{ github.event.pull_request.base.ref }}
+          HEAD: ${{ github.event.pull_request.head.ref }}
+        run: |
+          echo "PR: $HEAD → $BASE"
+          case "$BASE" in
+            main)
+              if [ "$HEAD" != "test" ]; then
+                echo "::error::PR vào main chỉ được phép từ 'test'. Đang là '$HEAD'."
+                echo "Promote theo thứ tự: $HEAD → dev → test → main."
+                exit 1
+              fi
+              ;;
+            test)
+              if [ "$HEAD" != "dev" ]; then
+                echo "::error::PR vào test chỉ được phép từ 'dev'. Đang là '$HEAD'."
+                exit 1
+              fi
+              ;;
+            dev)
+              # feature/*, fix/*, etc. → dev: free for all
+              ;;
+          esac
+          echo "OK — source '$HEAD' is allowed to target '$BASE'"

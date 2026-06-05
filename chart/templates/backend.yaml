@@ -94,6 +94,15 @@ spec:
             # Tell the in-cluster client which namespace to spawn kernels in.
             - name: KERNEL_POD_NAMESPACE
               value: {{ .Release.Namespace | quote }}
+            # Per-user kernel pod resources. See values.yaml -> kernel.resources.
+            - name: KERNEL_POD_CPU_REQUEST
+              value: {{ .Values.kernel.resources.requests.cpu | quote }}
+            - name: KERNEL_POD_MEMORY_REQUEST
+              value: {{ .Values.kernel.resources.requests.memory | quote }}
+            - name: KERNEL_POD_CPU_LIMIT
+              value: {{ .Values.kernel.resources.limits.cpu | quote }}
+            - name: KERNEL_POD_MEMORY_LIMIT
+              value: {{ .Values.kernel.resources.limits.memory | quote }}
           resources:
             {{- toYaml .Values.backend.resources | nindent 12 }}
           readinessProbe:
