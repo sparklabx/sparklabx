@@ -61,6 +61,14 @@ type K8sPerUserConfig struct {
 	MaxPods       int               // hard cap on concurrent pods cluster-wide
 	PullSecret    string            // optional imagePullSecret name; empty → none
 	CredsResolver UserCredsResolver // nil → use root creds from sparklabx-secrets (legacy)
+
+	// Per-pod resource quantities ("500m", "1Gi"). Empty → fall back to
+	// defaults (500m/1Gi requests, 2000m/4Gi limits). MustParse'd at spawn,
+	// so invalid values panic loudly instead of silently spawning misconfigured pods.
+	CPURequest    string
+	MemoryRequest string
+	CPULimit      string
+	MemoryLimit   string
 }
 
 // PodStatus is the spawn progress snapshot returned to FE for live UI updates.
@@ -97,6 +105,30 @@ func NewK8sPerUserGateway(cfg K8sPerUserConfig) (*K8sPerUserGateway, error) {
 	}
 	if cfg.Namespace == "" {
 		return nil, fmt.Errorf("K8sPerUserConfig.Namespace is required (set KERNEL_POD_NAMESPACE)")
+	}
+	if cfg.CPURequest == "" {
+		cfg.CPURequest = "500m"
+	}
+	if cfg.MemoryRequest == "" {
+		cfg.MemoryRequest = "1Gi"
+	}
+	if cfg.CPULimit == "" {
+		cfg.CPULimit = "2000m"
+	}
+	if cfg.MemoryLimit == "" {
+		cfg.MemoryLimit = "4Gi"
+	}
+	// Validate each quantity at construction time — better to fail at boot
+	// than have every Spawn panic with a less-readable trace.
+	for name, q := range map[string]string{
+		"CPURequest":    cfg.CPURequest,
+		"MemoryRequest": cfg.MemoryRequest,
+		"CPULimit":      cfg.CPULimit,
+		"MemoryLimit":   cfg.MemoryLimit,
+	} {
+		if _, err := resource.ParseQuantity(q); err != nil {
+			return nil, fmt.Errorf("K8sPerUserConfig.%s = %q: %w", name, q, err)
+		}
 	}
 	restCfg, err := rest.InClusterConfig()
 	if err != nil {
@@ -536,12 +568,12 @@ func (g *K8sPerUserGateway) buildPodSpec(userID, podName string) *corev1.Pod {
 					},
 					Resources: corev1.ResourceRequirements{
 						Requests: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse("500m"),
-							corev1.ResourceMemory: resource.MustParse("1Gi"),
+							corev1.ResourceCPU:    resource.MustParse(g.cfg.CPURequest),
+							corev1.ResourceMemory: resource.MustParse(g.cfg.MemoryRequest),
 						},
 						Limits: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse("2000m"),
-							corev1.ResourceMemory: resource.MustParse("4Gi"),
+							corev1.ResourceCPU:    resource.MustParse(g.cfg.CPULimit),
+							corev1.ResourceMemory: resource.MustParse(g.cfg.MemoryLimit),
 						},
 					},
 					// Spark s3a reads these from env to build core-site.xml / spark-defaults

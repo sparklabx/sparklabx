@@ -96,6 +96,14 @@ type KernelGatewaySettings struct {
 	MaxKernels        int           // hard cap on concurrent kernels
 	PullSecret        string        // optional K8s imagePullSecret name (empty → none)
 	CredsResolver     UserCredsResolver
+
+	// Resource requests/limits in k8s quantity format ("500m", "1Gi"). For
+	// docker_per_user mode only the *Limit values apply (Docker has no
+	// "request" concept). Empty → falls back to gateway-internal defaults.
+	PodCPURequest    string
+	PodMemoryRequest string
+	PodCPULimit      string
+	PodMemoryLimit   string
 }
 
 // NewKernelGateway picks an implementation based on settings.Mode.
@@ -123,6 +131,8 @@ func NewKernelGateway(s KernelGatewaySettings) (KernelGateway, error) {
 			MaxContainers: s.MaxKernels,
 			MinIOEndpoint: s.MinIOEndpoint,
 			CredsResolver: s.CredsResolver,
+			CPULimit:      s.PodCPULimit,
+			MemoryLimit:   s.PodMemoryLimit,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("init DockerPerUserGateway: %w", err)
@@ -136,6 +146,10 @@ func NewKernelGateway(s KernelGatewaySettings) (KernelGateway, error) {
 			MaxPods:       s.MaxKernels,
 			PullSecret:    s.PullSecret,
 			CredsResolver: s.CredsResolver,
+			CPURequest:    s.PodCPURequest,
+			MemoryRequest: s.PodMemoryRequest,
+			CPULimit:      s.PodCPULimit,
+			MemoryLimit:   s.PodMemoryLimit,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("init K8sPerUserGateway: %w", err)
