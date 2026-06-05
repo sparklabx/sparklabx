@@ -3,6 +3,7 @@
 [![Build](https://github.com/sparklabx/sparklabx/actions/workflows/release.yml/badge.svg)](https://github.com/sparklabx/sparklabx/actions/workflows/release.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 [![Backend image](https://img.shields.io/badge/ghcr.io-backend-blue?logo=github)](https://github.com/sparklabx/sparklabx/pkgs/container/backend)
+[![Frontend image](https://img.shields.io/badge/ghcr.io-frontend-blue?logo=github)](https://github.com/sparklabx/sparklabx/pkgs/container/frontend)
 [![Kernel image](https://img.shields.io/badge/ghcr.io-kernel-blue?logo=github)](https://github.com/sparklabx/sparklabx/pkgs/container/kernel)
 
 A self-hosted Jupyter-style notebook for **Apache Spark** with built-in S3 storage,
@@ -12,6 +13,8 @@ production-grade enough to drop into a small team or classroom.
 Each authenticated user gets their own private Spark kernel (Python / PySpark /
 Scala) and their own S3 storage prefix, enforced by real MinIO IAM (not just
 app-layer checks).
+
+![SparkLabX notebook with PySpark/Scala kernel and DataFrame output](docs/screenshots/notebook.png)
 
 ---
 
@@ -36,8 +39,11 @@ to login via username/password only.
 ## Highlights
 
 - **Spark notebooks in the browser** — PySpark, Scala (Almond), with Monaco
-  editor, Markdown cells, kernel restart, package management via
-  `spark.jars.packages` / `import $ivy`.
+  editor, Markdown cells, kernel restart, and a Libraries dialog that wraps
+  `spark.jars.packages` / `import $ivy` so users add Maven coordinates without
+  editing code.
+
+  ![Libraries dialog — add Maven coordinates, kernel restarts to apply](docs/screenshots/libraries.png)
 - **Per-user isolation, end-to-end**
   - Single MinIO bucket; each user owns a private prefix `users/<username>/`.
   - On first login, the backend provisions a dedicated MinIO IAM account
@@ -73,27 +79,7 @@ can manage the email allowlist via **Settings → Allowed Domains**.
 
 ## Architecture
 
-```
-┌──────────┐      ┌──────────────┐      ┌──────────────────┐
-│ Frontend │─────►│   Backend    │─────►│ Per-user kernel  │
-│  (React) │ REST │     (Go)     │ HTTP │  container/pod   │
-│          │  WS  │              │ proxy│  (Jupyter+Spark) │
-└──────────┘      └──────┬───────┘      └────────┬─────────┘
-                         │                       │
-                         │ admin API             │ S3A
-                         │   IAM provisioning    │ per-user creds
-                         ▼                       ▼
-                  ┌────────────────────────────────┐
-                  │             MinIO              │
-                  │  workspace/users/<user>/...    │
-                  │  workspace/public/...          │
-                  └────────────────────────────────┘
-                         │
-                         ▼
-                  ┌──────────────┐
-                  │   Postgres   │
-                  └──────────────┘
-```
+![SparkLabX architecture diagram](docs/screenshots/architecture.png)
 
 Backend (Go + Gin) responsibilities:
 
@@ -187,6 +173,11 @@ S3 protocol layer.
 
 The username slug is derived from the email's local-part (`alice@x.com →
 alice`), with a 4-char random suffix on collision.
+
+The Storage tab exposes each user's own prefix as a bucket, with the
+shared `public/` alongside:
+
+![Storage tab — per-user "my" bucket and shared "public" bucket](docs/screenshots/storage.png)
 
 ---
 
@@ -343,6 +334,8 @@ The backend rejects OAuth logins from addresses outside the allowlist
 (`email_not_allowed`). After your first admin login (username/password),
 go to **Settings → Allowed Domains** and add either a domain
 (`example.com` — whole org allowed) or an individual email.
+
+![Settings → Allowed Email Domains](docs/screenshots/settings.png)
 
 ---
 
