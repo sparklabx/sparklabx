@@ -1,0 +1,93 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  labels:
+    {{- include "sparklabx.labels" . | nindent 4 }}
+    component: minio
+spec:
+  clusterIP: None
+  ports:
+    - name: api
+      port: 9000
+      targetPort: 9000
+    - name: console
+      port: 9001
+      targetPort: 9001
+  selector:
+    {{- include "sparklabx.selectorLabels" . | nindent 4 }}
+    component: minio
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+  labels:
+    {{- include "sparklabx.labels" . | nindent 4 }}
+    component: minio
+spec:
+  serviceName: minio
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "sparklabx.selectorLabels" . | nindent 6 }}
+      component: minio
+  template:
+    metadata:
+      labels:
+        {{- include "sparklabx.selectorLabels" . | nindent 8 }}
+        component: minio
+    spec:
+      initContainers:
+        - name: fix-perms
+          image: busybox:1.36
+          command: ["sh", "-c", "mkdir -p /data && chmod -R 777 /data"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      containers:
+        - name: minio
+          image: "{{ .Values.minio.image.repository }}:{{ .Values.minio.image.tag }}"
+          args: ["server", "/data", "--console-address", ":9001"]
+          ports:
+            - containerPort: 9000
+            - containerPort: 9001
+          env:
+            - name: RUSTFS_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sparklabx.secretName" . }}
+                  key: MINIO_ROOT_USER
+            - name: RUSTFS_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "sparklabx.secretName" . }}
+                  key: MINIO_ROOT_PASSWORD
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            {{- toYaml .Values.minio.resources | nindent 12 }}
+          # RustFS doesn't expose /minio/health/* — those paths fall through
+          # to the S3 API and return 403. TCP probe is the only safe option.
+          readinessProbe:
+            tcpSocket:
+              port: 9000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 9000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.minio.persistence.storageClassName }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.minio.persistence.size | quote }}

@@ -1,0 +1,22 @@
+apiVersion: v2
+name: sparklabx
+description: Self-hosted Apache Spark notebooks with per-user isolation.
+type: application
+# Chart version (bump on chart changes). App version tracks the backend
+# image tag — keep in sync with the GitHub release.
+version: 0.1.0
+appVersion: "main"
+home: https://github.com/sparklabx/sparklabx
+sources:
+  - https://github.com/sparklabx/sparklabx
+icon: https://raw.githubusercontent.com/sparklabx/sparklabx/main/frontend/public/logo-icon.png
+keywords:
+  - spark
+  - notebook
+  - jupyter
+  - pyspark
+  - scala
+  - self-hosted
+maintainers:
+  - name: SparkLabX
+    url: https://github.com/sparklabx

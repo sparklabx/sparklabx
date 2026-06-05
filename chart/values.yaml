@@ -1,0 +1,141 @@
+# Default values for sparklabx Helm chart.
+# Override with `--values my-values.yaml` or `--set key=value` on install/upgrade.
+
+# ─────────────────────────────────────────────────────────────
+# Image references — versioned at the release level. Pin to a SHA or
+# semver tag (e.g. v0.3.0) in production; "latest" is fine for dev.
+# ─────────────────────────────────────────────────────────────
+image:
+  backend:
+    repository: ghcr.io/sparklabx/backend
+    tag: latest
+    pullPolicy: IfNotPresent
+  frontend:
+    repository: ghcr.io/sparklabx/frontend
+    tag: latest
+    pullPolicy: IfNotPresent
+  kernel:
+    # Image spawned per user when kernelMode=docker_per_user/k8s_per_user.
+    repository: ghcr.io/sparklabx/kernel
+    tag: latest
+
+# ─────────────────────────────────────────────────────────────
+# Kernel isolation mode. See README's KERNEL_MODE section.
+#   - shared          : one Jupyter container for everyone (demo only)
+#   - docker_per_user : one container per user via host Docker (single-host)
+#   - k8s_per_user    : one pod per user (production)
+# ─────────────────────────────────────────────────────────────
+kernelMode: k8s_per_user
+
+kernel:
+  # How long an idle kernel survives before the reaper deletes it.
+  idleMinutes: 30
+  # Cluster-wide cap. Prevents one runaway notebook from exhausting nodes.
+  maxTotal: 50
+
+# ─────────────────────────────────────────────────────────────
+# Secrets. Either let the chart create one (default), or point at
+# a pre-existing Secret you manage out-of-band (e.g. via sealed-secrets,
+# external-secrets-operator, or sops).
+#
+# When create=true, values below are written into a Secret. JWT_SECRET_KEY
+# is REQUIRED — generate a strong one with `openssl rand -base64 48`.
+# ─────────────────────────────────────────────────────────────
+secrets:
+  create: true
+  # If create=false, the chart references this Secret by name and skips
+  # creating one. Useful when you store production secrets elsewhere.
+  existingSecret: ""
+
+  jwtSecretKey: ""        # REQUIRED — `openssl rand -base64 48`
+  seedAdmin:
+    username: admin
+    email: admin@example.com
+    password: ""          # REQUIRED — change immediately after first login
+
+  minio:
+    rootUser: minioadmin
+    rootPassword: ""      # REQUIRED — `openssl rand -base64 24`
+
+  # OAuth is optional; leave blank to disable a provider.
+  google:
+    clientId: ""
+    clientSecret: ""
+  microsoft:
+    clientId: ""
+    clientSecret: ""
+    tenantId: ""
+
+# ─────────────────────────────────────────────────────────────
+# Postgres
+# ─────────────────────────────────────────────────────────────
+postgres:
+  image:
+    repository: postgres
+    tag: "16-alpine"
+  database:
+    name: sparklabx
+    user: sparklabx
+    password: sparklabx   # internal Postgres user; not the admin login
+  persistence:
+    size: 10Gi
+    # If empty, the cluster's default StorageClass is used.
+    storageClassName: ""
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: 2000m, memory: 2Gi }
+
+# ─────────────────────────────────────────────────────────────
+# MinIO (S3-compatible storage for notebooks + datasets)
+# ─────────────────────────────────────────────────────────────
+minio:
+  image:
+    repository: rustfs/rustfs
+    tag: latest
+  bucket: workspace
+  persistence:
+    size: 50Gi
+    storageClassName: ""
+  resources:
+    requests: { cpu: 500m, memory: 1Gi }
+    limits:   { cpu: 2000m, memory: 4Gi }
+
+# ─────────────────────────────────────────────────────────────
+# Backend
+# ─────────────────────────────────────────────────────────────
+backend:
+  replicas: 1
+  resources:
+    requests: { cpu: 200m, memory: 256Mi }
+    limits:   { cpu: 2000m, memory: 1Gi }
+  cors:
+    origins: "*"          # tighten in production to your real domain
+  logLevel: info
+
+# ─────────────────────────────────────────────────────────────
+# Frontend
+# ─────────────────────────────────────────────────────────────
+frontend:
+  replicas: 2
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits:   { cpu: 500m, memory: 256Mi }
+
+# ─────────────────────────────────────────────────────────────
+# Ingress — set host + ingressClassName for your cluster
+# ─────────────────────────────────────────────────────────────
+ingress:
+  enabled: true
+  className: nginx        # match your ingress controller (nginx, traefik, ...)
+  host: sparklabx.example.com
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "2048m"
+    nginx.ingress.kubernetes.io/client-body-buffer-size: "10m"
+  tls:
+    enabled: true
+    secretName: sparklabx-tls
+    # If using cert-manager, set the ClusterIssuer here. Leave empty
+    # if you provision the TLS Secret manually.
+    certManagerClusterIssuer: letsencrypt-prod

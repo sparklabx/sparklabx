@@ -35,8 +35,8 @@ services:
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       - MINIO_ENDPOINT=http://minio:9000
-      - MINIO_ACCESS_KEY=rustfs
-      - MINIO_SECRET_KEY=rustfs123
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
       - JUPYTER_GATEWAY_URL=http://jupyter:8888
       - KERNEL_MODE=${KERNEL_MODE:-shared}
       - KERNEL_POD_IMAGE=${KERNEL_POD_IMAGE:-ghcr.io/sparklabx/kernel:latest}
@@ -60,8 +60,8 @@ services:
     image: ghcr.io/sparklabx/kernel:latest
     container_name: sparklabx-jupyter
     environment:
-      - AWS_ACCESS_KEY_ID=rustfs
-      - AWS_SECRET_ACCESS_KEY=rustfs123
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
       - S3_ENDPOINT=http://minio:9000
     volumes:
       - ./kernel/entrypoint.sh:/home/exam/entrypoint.sh
@@ -77,8 +77,8 @@ services:
       - "9000:9000"
       - "9001:9001"
     environment:
-      MINIO_ROOT_USER: rustfs       # kept env value for backward compat with backend creds
-      MINIO_ROOT_PASSWORD: rustfs123
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
     volumes:
       - minio_data:/data
     healthcheck:

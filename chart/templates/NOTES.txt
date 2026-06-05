@@ -1,0 +1,45 @@
+SparkLabX is installed.
+
+URL:
+{{- if .Values.ingress.enabled }}
+  {{- if .Values.ingress.tls.enabled }}
+  https://{{ .Values.ingress.host }}
+  {{- else }}
+  http://{{ .Values.ingress.host }}
+  {{- end }}
+
+Make sure DNS for {{ .Values.ingress.host }} resolves to the IP of your
+ingress controller. Until then, you can port-forward to the frontend:
+{{- else }}
+  Ingress is disabled. Port-forward to access the UI:
+{{- end }}
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/frontend 3000:80
+  # then open http://localhost:3000
+
+Admin login:
+  username: {{ .Values.secrets.seedAdmin.username }}
+  password: (the value you set in secrets.seedAdmin.password)
+
+Pod status:
+  kubectl -n {{ .Release.Namespace }} get pods
+
+Tail backend logs:
+  kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/instance={{ include "sparklabx.fullname" . }},component=backend -f
+
+{{- if eq .Values.kernelMode "k8s_per_user" }}
+
+Per-user kernel mode is ON. The backend will spawn a fresh kernel pod
+the first time each user opens a notebook. Watch them appear:
+
+  kubectl -n {{ .Release.Namespace }} get pods -l managed-by=sparklabx -w
+
+Idle kernels are reaped after {{ .Values.kernel.idleMinutes }} minutes.
+{{- end }}
+
+To upgrade:
+  helm upgrade {{ include "sparklabx.fullname" . }} ./chart -f your-values.yaml
+
+To uninstall (PVCs are NOT deleted — wipe them manually if you really
+want to start fresh):
+  helm uninstall {{ include "sparklabx.fullname" . }}

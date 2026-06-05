@@ -156,10 +156,9 @@ host Docker socket. `docker-compose.yml` already wires this with
 > root-equivalent access to the host. Use `docker_per_user` only on hosts
 > you trust. For production, use `k8s_per_user` instead.
 
-For `k8s_per_user`, see [`kubernetes/`](./kubernetes/) for the namespace + RBAC + Secret
-manifests. The backend pod's ServiceAccount needs `pods`, `pods/log`, and
-`pods/exec` in its own namespace — already defined in
-`kubernetes/29-backend-rbac.yaml`.
+For `k8s_per_user`, see the [Helm chart](./chart/) — it provisions the
+ServiceAccount and a Role granting `pods`, `pods/log`, and `pods/exec`
+in the release namespace automatically when `kernelMode: k8s_per_user`.
 
 ---
 
@@ -214,22 +213,31 @@ and `VITE_MICROSOFT_CLIENT_ID/TENANT_ID`.
 
 ## Deploying to Kubernetes
 
-Manifests in [`kubernetes/`](./kubernetes/):
+Helm chart in [`chart/`](./chart/) — single source of truth.
 
 ```bash
-# Copy + fill in the secret values.
-cp kubernetes/10-secrets.example.yaml kubernetes/10-secrets.yaml
-# Edit kubernetes/10-secrets.yaml — JWT key, MinIO root creds, OAuth, etc.
+helm install sparklabx ./chart \
+  --namespace sparklabx --create-namespace \
+  --set secrets.jwtSecretKey="$(openssl rand -base64 48)" \
+  --set secrets.seedAdmin.password="$(openssl rand -base64 16)" \
+  --set secrets.minio.rootPassword="$(openssl rand -base64 24)" \
+  --set ingress.host=notebook.example.com
+```
 
-kubectl apply -f kubernetes/00-namespace.yaml
-kubectl apply -f kubernetes/10-secrets.yaml
-kubectl apply -f kubernetes/11-configmap.yaml
-kubectl apply -f kubernetes/20-postgres.yaml
-kubectl apply -f kubernetes/21-minio.yaml
-kubectl apply -f kubernetes/29-backend-rbac.yaml
-kubectl apply -f kubernetes/30-backend.yaml
-kubectl apply -f kubernetes/31-frontend.yaml
-kubectl apply -f kubernetes/40-ingress.yaml
+For more than two overrides, use a values file. See
+[`chart/README.md`](./chart/README.md) for the full reference and
+[`chart/values.yaml`](./chart/values.yaml) for all available knobs.
+
+Cluster requirements:
+- Default StorageClass with dynamic provisioning (EKS/GKE/AKS/k3s/Longhorn — most clusters have one).
+- An ingress controller (nginx-ingress, traefik) if `ingress.enabled=true`.
+- cert-manager + a ClusterIssuer for automatic TLS — optional; can be disabled.
+
+Don't use Helm? Render the chart to raw YAML and `kubectl apply`:
+
+```bash
+helm template sparklabx ./chart -f my-values.yaml > rendered.yaml
+kubectl apply -f rendered.yaml
 ```
 
 Then set `KERNEL_MODE=k8s_per_user` in the backend ConfigMap and roll the
@@ -276,7 +284,7 @@ frontend/
     hooks/               # useJupyterKernel, useNotebook, …
     services/            # Backend API clients
 
-kubernetes/                     # Production manifests
+chart/                   # Helm chart for production Kubernetes deploys
 kernel/                  # Notebook kernel image (Dockerfile, entrypoint, Spark config)
                          # Used by all three KERNEL_MODE options
 docker-compose.yml       # Reference deployment (uses prebuilt images)

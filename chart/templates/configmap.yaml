@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sparklabx.fullname" . }}-config
+  labels:
+    {{- include "sparklabx.labels" . | nindent 4 }}
+data:
+  DATABASE_URL: "postgres://{{ .Values.postgres.database.user }}:{{ .Values.postgres.database.password }}@postgres:5432/{{ .Values.postgres.database.name }}?sslmode=disable"
+  POSTGRES_DB: {{ .Values.postgres.database.name | quote }}
+  POSTGRES_USER: {{ .Values.postgres.database.user | quote }}
+  MINIO_ENDPOINT: "http://minio:9000"
+  MINIO_WORKSPACE_BUCKET: {{ .Values.minio.bucket | quote }}
+  KERNEL_MODE: {{ .Values.kernelMode | quote }}
+  KERNEL_POD_IMAGE: "{{ .Values.image.kernel.repository }}:{{ .Values.image.kernel.tag }}"
+  KERNEL_POD_IDLE_MINUTES: {{ .Values.kernel.idleMinutes | quote }}
+  KERNEL_POD_MAX_TOTAL: {{ .Values.kernel.maxTotal | quote }}
+  CORS_ORIGINS: {{ .Values.backend.cors.origins | quote }}
+  LOG_LEVEL: {{ .Values.backend.logLevel | quote }}
+  ENVIRONMENT: "production"
+  SERVICE_PORT: "10000"

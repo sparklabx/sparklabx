@@ -1,0 +1,23 @@
+# Patterns to exclude from `helm package`. Same idea as .gitignore.
+.DS_Store
+.git/
+.gitignore
+.bzr/
+.bzrignore
+.hg/
+.hgignore
+.svn/
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+# IDE
+.idea/
+.vscode/
+.project
+# OS
+Thumbs.db
+# Test renders / local helm artifacts
+*.tgz
+charts/
