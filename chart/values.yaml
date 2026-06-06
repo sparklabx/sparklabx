@@ -157,10 +157,22 @@ backend:
 # Frontend
 # ─────────────────────────────────────────────────────────────
 frontend:
-  replicas: 2
+  replicas: 1
   resources:
     requests: { cpu: 50m, memory: 64Mi }
     limits:   { cpu: 500m, memory: 256Mi }
+  service:
+    # ClusterIP   → internal only, access via Ingress or port-forward (default)
+    # NodePort    → expose on every node's IP at a static port (30000-32767)
+    # LoadBalancer → cloud provider provisions an external LB with public IP
+    type: ClusterIP
+    port: 80
+    # When type=NodePort, leave empty to let K8s assign a port, or pin one
+    # in the 30000-32767 range (e.g., 30080).
+    nodePort: ""
+    # When type=LoadBalancer, pin a specific public IP (cloud-specific support).
+    loadBalancerIP: ""
+    annotations: {}
 
 # ─────────────────────────────────────────────────────────────
 # Ingress — set host + ingressClassName for your cluster

@@ -5,10 +5,23 @@ metadata:
   labels:
     {{- include "sparklabx.labels" . | nindent 4 }}
     component: frontend
+  {{- with .Values.frontend.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
+  type: {{ .Values.frontend.service.type }}
+  {{- if and (eq .Values.frontend.service.type "LoadBalancer") .Values.frontend.service.loadBalancerIP }}
+  loadBalancerIP: {{ .Values.frontend.service.loadBalancerIP | quote }}
+  {{- end }}
   ports:
-    - port: 80
+    - port: {{ .Values.frontend.service.port }}
       targetPort: 80
+      protocol: TCP
+      name: http
+      {{- if and (eq .Values.frontend.service.type "NodePort") .Values.frontend.service.nodePort }}
+      nodePort: {{ .Values.frontend.service.nodePort }}
+      {{- end }}
   selector:
     {{- include "sparklabx.selectorLabels" . | nindent 4 }}
     component: frontend
