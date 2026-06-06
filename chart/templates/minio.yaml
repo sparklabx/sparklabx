@@ -49,7 +49,11 @@ spec:
       containers:
         - name: minio
           image: "{{ .Values.minio.image.repository }}:{{ .Values.minio.image.tag }}"
-          args: ["server", "/data", "--console-address", ":9001"]
+          # MinIO official image ENTRYPOINT is docker-entrypoint.sh which
+          # execs $@ — so the first arg must be the 'minio' binary, then
+          # its sub-command. (RustFS used a different entrypoint and only
+          # needed the sub-command; this trips you up on the swap.)
+          args: ["minio", "server", "/data", "--console-address", ":9001"]
           ports:
             - containerPort: 9000
             - containerPort: 9001
