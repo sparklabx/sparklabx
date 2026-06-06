@@ -69,6 +69,9 @@ helm install sparklabx ./chart -n sparklabx --create-namespace -f my-values.yaml
 | `minio.persistence.enabled` | `true` | Same semantics as `postgres.persistence.enabled`. |
 | `minio.persistence.size` | `50Gi` | Bump for big datasets. |
 | `ingress.host` | `sparklabx.example.com` | Required if `ingress.enabled=true`. |
+| `frontend.service.type` | `ClusterIP` | `ClusterIP` / `NodePort` / `LoadBalancer`. Use `NodePort` when there's no ingress controller; `LoadBalancer` on cloud providers. |
+| `frontend.service.nodePort` | `""` | Static port (30000-32767) when `type=NodePort`. Empty → K8s picks a random port. |
+| `frontend.service.loadBalancerIP` | `""` | Pin a specific public IP when `type=LoadBalancer`. |
 
 ### Using an external Postgres or S3
 
