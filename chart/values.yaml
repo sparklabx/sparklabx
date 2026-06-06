@@ -45,6 +45,12 @@ kernel:
       memory: 4Gi
 
 # ─────────────────────────────────────────────────────────────
+# Pre-pulling image configurations
+# ─────────────────────────────────────────────────────────────
+prepuller:
+  enabled: true
+
+# ─────────────────────────────────────────────────────────────
 # Secrets. Either let the chart create one (default), or point at
 # a pre-existing Secret you manage out-of-band (e.g. via sealed-secrets,
 # external-secrets-operator, or sops).

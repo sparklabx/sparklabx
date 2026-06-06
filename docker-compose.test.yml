@@ -52,6 +52,11 @@ services:
       - postgres
     restart: unless-stopped
 
+  kernel-cache:
+    image: ghcr.io/sparklabx/kernel:latest
+    container_name: sparklabx-kernel-cache
+    entrypoint: ["echo", "Kernel image cached"]
+
   # Shared Jupyter kernel — only used when KERNEL_MODE=shared. Skipped by
   # default thanks to the "shared" profile; bring it up explicitly with:
   #   docker compose -f docker-compose.test.yml --profile shared up
