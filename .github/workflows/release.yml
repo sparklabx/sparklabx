@@ -1,16 +1,13 @@
 name: Build & publish images
 
 # Build all three images (backend, frontend, kernel) and push to ghcr.io.
-# Triggers on:
-#   - push to main      → :main and :sha-<short> tags
-#   - push of vX.Y.Z    → :vX.Y.Z and :latest tags
-#   - manual dispatch   → :manual-<run-id>
+# Triggers only on push to main → :main, :latest, :sha-<short> tags.
+# Tag pushes do NOT trigger a build — keeps releases simple and version-pinned
+# images come from manually tagging an existing image post-build if needed.
 
 on:
   push:
     branches: [main]
-    tags: ['v*.*.*']
-  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
