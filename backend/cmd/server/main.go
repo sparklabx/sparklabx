@@ -111,14 +111,32 @@ func main() {
 
 	router.Use(gin.Recovery())
 	router.Use(requestLogger())
-	router.Use(cors.New(cors.Config{
-		AllowOrigins:     cfg.CORSOrigins,
+	corsConfig := cors.Config{
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
 		ExposeHeaders:    []string{"Content-Length"},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
-	}))
+	}
+
+	allowAll := false
+	for _, o := range cfg.CORSOrigins {
+		if o == "*" {
+			allowAll = true
+			break
+		}
+	}
+
+	if allowAll {
+		if cfg.Environment == "production" {
+			log.Warn().Msg("SECURITY WARNING: CORS_ORIGINS is set to '*' in production environment. This makes the application vulnerable to CSRF and CSWSH attacks. Please configure a specific domain name.")
+		}
+		corsConfig.AllowAllOrigins = true
+	} else {
+		corsConfig.AllowOrigins = cfg.CORSOrigins
+	}
+
+	router.Use(cors.New(corsConfig))
 
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok", "service": cfg.ServiceName, "time": time.Now().UTC()})

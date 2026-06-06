@@ -1,0 +1,33 @@
+{{- if .Values.prepuller.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "sparklabx.fullname" . }}-kernel-prepuller
+  labels:
+    {{- include "sparklabx.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ include "sparklabx.fullname" . }}-kernel-prepuller
+  template:
+    metadata:
+      labels:
+        app: {{ include "sparklabx.fullname" . }}-kernel-prepuller
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: prepuller
+        image: "{{ .Values.image.kernel.repository }}:{{ .Values.image.kernel.tag }}"
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-c", "while true; do sleep 3600; done"]
+        resources:
+          limits:
+            cpu: 10m
+            memory: 10Mi
+          requests:
+            cpu: 10m
+            memory: 10Mi
+{{- end }}

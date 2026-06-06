@@ -52,11 +52,24 @@ services:
       - postgres
     restart: unless-stopped
 
+  kernel-cache:
+    image: ghcr.io/sparklabx/kernel:latest
+    container_name: sparklabx-kernel-cache
+    entrypoint: ["echo", "Kernel image cached"]
+
   # Shared Jupyter kernel — only used when KERNEL_MODE=shared. Skipped by
   # default thanks to the "shared" profile; bring it up explicitly with:
   #   docker compose -f docker-compose.test.yml --profile shared up
   jupyter:
     profiles: ["shared"]
+    # Build kernel image from local source instead of pulling — picks up edits
+    # to kernel/Dockerfile + kernel/entrypoint.sh on every `docker compose up
+    # --build`. Tag it the same as the published image so KERNEL_POD_IMAGE
+    # references work in docker_per_user mode too (per-user gateway spawns
+    # containers using that tag, falling back to local image when no remote).
+    build:
+      context: ./kernel
+      dockerfile: Dockerfile
     image: ghcr.io/sparklabx/kernel:latest
     container_name: sparklabx-jupyter
     environment:
