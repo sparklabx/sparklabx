@@ -1,3 +1,4 @@
+{{- if .Values.postgres.enabled -}}
 apiVersion: v1
 kind: Service
 metadata:
@@ -74,14 +75,29 @@ spec:
               command: ["pg_isready", "-U", "{{ .Values.postgres.database.user }}"]
             initialDelaySeconds: 30
             periodSeconds: 30
+      {{- if not .Values.postgres.persistence.enabled }}
+      # persistence.enabled=false → emptyDir. Data is lost on pod restart;
+      # use only for evaluation / CI. Production must keep persistence on.
+      volumes:
+        - name: data
+          emptyDir: {}
+      {{- end }}
+  {{- if .Values.postgres.persistence.enabled }}
   volumeClaimTemplates:
     - metadata:
         name: data
+        {{- with .Values.postgres.persistence.annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
       spec:
-        accessModes: ["ReadWriteOnce"]
-        {{- with .Values.postgres.persistence.storageClassName }}
+        accessModes:
+          {{- toYaml .Values.postgres.persistence.accessModes | nindent 10 }}
+        {{- with .Values.postgres.persistence.storageClass }}
         storageClassName: {{ . | quote }}
         {{- end }}
         resources:
           requests:
             storage: {{ .Values.postgres.persistence.size | quote }}
+  {{- end }}
+{{- end }}
