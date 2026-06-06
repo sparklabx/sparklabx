@@ -3,10 +3,10 @@
 # k8s_per_user). The image installs hadoop-aws + AWS SDK so s3a:// reads from
 # MinIO or any S3-compatible store work out of the box.
 #
-# Base image is anonymous-pullable from Docker Hub. We plan to mirror it to
-# ghcr.io/sparklabx/kernel-base:1 in a future release; for now the public
-# Docker Hub copy is the source of truth.
-FROM hungdo26/sparklabx-notebook:kernel
+# Base image is built from github.com/sparklabx/notebook-kernel (Almond fork
+# bundled with Jupyter Kernel Gateway + PySpark Connect). Multi-arch
+# (linux/amd64 + linux/arm64) — runs natively on M-series Macs and Graviton.
+FROM ghcr.io/sparklabx/kernel-base:latest
 
 WORKDIR /home/exam
 
