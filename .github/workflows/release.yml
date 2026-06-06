@@ -26,8 +26,8 @@ jobs:
     outputs:
       matrix: ${{ steps.compute.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v4
         id: changes
         with:
           filters: |
@@ -72,7 +72,7 @@ jobs:
         include: ${{ fromJSON(needs.detect.outputs.matrix) }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
