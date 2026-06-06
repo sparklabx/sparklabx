@@ -85,15 +85,29 @@ spec:
               port: 9000
             initialDelaySeconds: 30
             periodSeconds: 30
+      {{- if not .Values.minio.persistence.enabled }}
+      # persistence.enabled=false → emptyDir. Notebooks + datasets are lost
+      # on pod restart; use only for evaluation / CI.
+      volumes:
+        - name: data
+          emptyDir: {}
+      {{- end }}
+  {{- if .Values.minio.persistence.enabled }}
   volumeClaimTemplates:
     - metadata:
         name: data
+        {{- with .Values.minio.persistence.annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
       spec:
-        accessModes: ["ReadWriteOnce"]
-        {{- with .Values.minio.persistence.storageClassName }}
+        accessModes:
+          {{- toYaml .Values.minio.persistence.accessModes | nindent 10 }}
+        {{- with .Values.minio.persistence.storageClass }}
         storageClassName: {{ . | quote }}
         {{- end }}
         resources:
           requests:
             storage: {{ .Values.minio.persistence.size | quote }}
+  {{- end }}
 {{- end }}

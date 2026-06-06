@@ -60,8 +60,13 @@ helm install sparklabx ./chart -n sparklabx --create-namespace -f my-values.yaml
 | `secrets.create` | `true` | Set to `false` and point `secrets.existingSecret` at a Secret you manage out-of-band. |
 | `image.backend.tag` | `latest` | Pin to a semver tag in production. |
 | `postgres.enabled` | `true` | `false` → use managed Postgres; fill `postgres.external.host`. |
+| `postgres.persistence.enabled` | `true` | `false` → emptyDir (data lost on pod restart). For evaluation / CI only. |
+| `postgres.persistence.storageClass` | `""` | `""` = cluster default. Pick a class (e.g., `gp3-iops`) for performance tiers. |
 | `postgres.persistence.size` | `10Gi` | Grow before you fill it; PVC resize requires CSI support. |
+| `postgres.persistence.accessModes` | `[ReadWriteOnce]` | Override for shared-storage clusters (`ReadWriteMany`). |
+| `postgres.persistence.annotations` | `{}` | Tag the PVC — e.g., `{velero.io/backup-volumes: data}` for backup tooling. |
 | `minio.enabled` | `true` | `false` → use existing S3-compatible endpoint; fill `minio.external.endpoint`. |
+| `minio.persistence.enabled` | `true` | Same semantics as `postgres.persistence.enabled`. |
 | `minio.persistence.size` | `50Gi` | Bump for big datasets. |
 | `ingress.host` | `sparklabx.example.com` | Required if `ingress.enabled=true`. |
 
