@@ -56,11 +56,54 @@ helm install sparklabx ./chart -n sparklabx --create-namespace -f my-values.yaml
 |---|---|---|
 | `kernelMode` | `k8s_per_user` | One of `shared`, `docker_per_user`, `k8s_per_user`. RBAC for the backend is only created when `k8s_per_user`. |
 | `kernel.idleMinutes` | `30` | Idle reaper cuts kernels after N minutes. |
+| `kernel.resources.*` | `500m/1Gi req · 2000m/4Gi limit` | Per-user kernel pod CPU/memory ceiling. |
 | `secrets.create` | `true` | Set to `false` and point `secrets.existingSecret` at a Secret you manage out-of-band. |
 | `image.backend.tag` | `latest` | Pin to a semver tag in production. |
+| `postgres.enabled` | `true` | `false` → use managed Postgres; fill `postgres.external.host`. |
 | `postgres.persistence.size` | `10Gi` | Grow before you fill it; PVC resize requires CSI support. |
+| `minio.enabled` | `true` | `false` → use existing S3-compatible endpoint; fill `minio.external.endpoint`. |
 | `minio.persistence.size` | `50Gi` | Bump for big datasets. |
 | `ingress.host` | `sparklabx.example.com` | Required if `ingress.enabled=true`. |
+
+### Using an external Postgres or S3
+
+Production deployments often already have managed Postgres (RDS, Cloud SQL,
+Aurora) or S3 storage. Skip the in-cluster StatefulSet and point the backend
+at your existing services:
+
+```yaml
+postgres:
+  enabled: false
+  external:
+    host: my-database.us-east-1.rds.amazonaws.com
+    port: 5432
+  database:
+    name: sparklabx
+    user: sparklabx
+    password: "<from secrets manager>"
+  sslMode: require  # auto-defaults to "require" when enabled=false
+
+minio:
+  enabled: false
+  external:
+    endpoint: https://minio.internal.corp:9000
+  bucket: workspace
+
+secrets:
+  minio:
+    rootUser: "<S3 access key>"
+    rootPassword: "<S3 secret key>"
+```
+
+**Caveats for external S3:**
+
+- The bucket (`minio.bucket`) must exist before installing — the chart only
+  references it, doesn't create it.
+- Per-user IAM provisioning uses MinIO's admin API (`madmin-go`). Fully
+  supported against MinIO. Against AWS S3 / GCS / R2 the backend falls
+  back to root credentials shared across all kernels (no IAM isolation).
+- For real per-user isolation on AWS, use IAM Roles for Service Accounts
+  (IRSA) and policy-scoped roles — outside the chart's scope today.
 
 Full list: see [`values.yaml`](./values.yaml).
 

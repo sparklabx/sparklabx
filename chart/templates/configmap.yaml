@@ -1,3 +1,4 @@
+{{- $minioEndpoint := ternary "http://minio:9000" .Values.minio.external.endpoint .Values.minio.enabled -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -5,10 +6,12 @@ metadata:
   labels:
     {{- include "sparklabx.labels" . | nindent 4 }}
 data:
-  DATABASE_URL: "postgres://{{ .Values.postgres.database.user }}:{{ .Values.postgres.database.password }}@postgres:5432/{{ .Values.postgres.database.name }}?sslmode=disable"
+  # DATABASE_URL contains the Postgres password and lives in the Secret
+  # (see secret.yaml). Non-sensitive Postgres fields stay here so the
+  # bootstrap initContainer can read them when enabled=true.
   POSTGRES_DB: {{ .Values.postgres.database.name | quote }}
   POSTGRES_USER: {{ .Values.postgres.database.user | quote }}
-  MINIO_ENDPOINT: "http://minio:9000"
+  MINIO_ENDPOINT: {{ $minioEndpoint | quote }}
   MINIO_WORKSPACE_BUCKET: {{ .Values.minio.bucket | quote }}
   KERNEL_MODE: {{ .Values.kernelMode | quote }}
   KERNEL_POD_IMAGE: "{{ .Values.image.kernel.repository }}:{{ .Values.image.kernel.tag }}"

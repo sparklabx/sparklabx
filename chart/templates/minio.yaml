@@ -1,3 +1,4 @@
+{{- if .Values.minio.enabled -}}
 apiVersion: v1
 kind: Service
 metadata:
@@ -53,12 +54,12 @@ spec:
             - containerPort: 9000
             - containerPort: 9001
           env:
-            - name: RUSTFS_ROOT_USER
+            - name: MINIO_ROOT_USER
               valueFrom:
                 secretKeyRef:
                   name: {{ include "sparklabx.secretName" . }}
                   key: MINIO_ROOT_USER
-            - name: RUSTFS_ROOT_PASSWORD
+            - name: MINIO_ROOT_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "sparklabx.secretName" . }}
@@ -68,15 +69,15 @@ spec:
               mountPath: /data
           resources:
             {{- toYaml .Values.minio.resources | nindent 12 }}
-          # RustFS doesn't expose /minio/health/* — those paths fall through
-          # to the S3 API and return 403. TCP probe is the only safe option.
           readinessProbe:
-            tcpSocket:
+            httpGet:
+              path: /minio/health/live
               port: 9000
             initialDelaySeconds: 5
             periodSeconds: 5
           livenessProbe:
-            tcpSocket:
+            httpGet:
+              path: /minio/health/live
               port: 9000
             initialDelaySeconds: 30
             periodSeconds: 30
@@ -91,3 +92,4 @@ spec:
         resources:
           requests:
             storage: {{ .Values.minio.persistence.size | quote }}
+{{- end }}
