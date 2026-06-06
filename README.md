@@ -195,7 +195,7 @@ The essentials:
 | `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` | Root creds the backend uses to provision per-user IAM accounts. |
 | `MINIO_WORKSPACE_BUCKET` | Single shared bucket; default `workspace`. |
 | `KERNEL_MODE` | See above. |
-| `CORS_ORIGINS` | Comma-separated list of allowed frontend origins. |
+| `CORS_ORIGINS` | Comma-separated list of allowed frontend origins. Set to `*` to allow all origins during development (automatically reflects the request origin to support credentials and WebSockets). Note: using `*` in production triggers a security warning. |
 
 Frontend OAuth client IDs are baked at build time via `VITE_GOOGLE_CLIENT_ID`
 and `VITE_MICROSOFT_CLIENT_ID/TENANT_ID`.
