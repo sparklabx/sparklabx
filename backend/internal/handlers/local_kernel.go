@@ -41,6 +41,9 @@ func NewLocalKernelHandler(cfg *config.Config, gateway services.KernelGateway) *
 				if origin == "" {
 					return true
 				}
+				if allowedOrigins["*"] {
+					return true
+				}
 				return allowedOrigins[origin]
 			},
 			ReadBufferSize:  4096,
