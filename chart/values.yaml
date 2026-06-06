@@ -157,7 +157,7 @@ backend:
 # Frontend
 # ─────────────────────────────────────────────────────────────
 frontend:
-  replicas: 2
+  replicas: 1
   resources:
     requests: { cpu: 50m, memory: 64Mi }
     limits:   { cpu: 500m, memory: 256Mi }
