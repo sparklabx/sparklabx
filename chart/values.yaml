@@ -79,34 +79,64 @@ secrets:
 
 # ─────────────────────────────────────────────────────────────
 # Postgres
+#
+# Set `enabled: false` to skip provisioning the in-cluster StatefulSet
+# and point the backend at a managed Postgres (RDS / Cloud SQL / etc.).
+# The `external` block is read only when enabled=false.
 # ─────────────────────────────────────────────────────────────
 postgres:
-  image:
-    repository: postgres
-    tag: "16-alpine"
+  enabled: true
+  external:
+    host: ""          # REQUIRED when enabled=false — e.g., db.internal.corp
+    port: 5432
+  # Connection details — used for BOTH internal and external mode.
   database:
     name: sparklabx
     user: sparklabx
-    password: sparklabx   # internal Postgres user; not the admin login
+    password: sparklabx   # change for external; internal default OK for in-cluster
+  # SSL mode for the connection. Default: "disable" for internal (trusted
+  # in-cluster network), "require" for external. Override here if needed.
+  sslMode: ""
+  # Fields below are only used when enabled=true:
+  image:
+    repository: postgres
+    tag: "16-alpine"
   persistence:
+    enabled: true             # false → emptyDir (data lost on pod restart)
+    storageClass: ""          # "" = cluster default
+    accessModes:
+      - ReadWriteOnce
     size: 10Gi
-    # If empty, the cluster's default StorageClass is used.
-    storageClassName: ""
+    annotations: {}           # e.g., {velero.io/backup-volumes: data}
   resources:
     requests: { cpu: 100m, memory: 256Mi }
     limits:   { cpu: 2000m, memory: 2Gi }
 
 # ─────────────────────────────────────────────────────────────
 # MinIO (S3-compatible storage for notebooks + datasets)
+#
+# Set `enabled: false` to point the backend at an existing S3-compatible
+# endpoint (an external MinIO instance, AWS S3, R2, etc.). Note: per-user
+# IAM provisioning uses MinIO's admin API (madmin-go) — fully functional
+# only when the external endpoint is MinIO. AWS S3 / GCS / R2 work for
+# basic read/write but per-user isolation falls back to root credentials.
 # ─────────────────────────────────────────────────────────────
 minio:
-  image:
-    repository: rustfs/rustfs
-    tag: latest
+  enabled: true
+  external:
+    endpoint: ""      # REQUIRED when enabled=false — e.g., https://minio.corp:9000
   bucket: workspace
+  # Fields below are only used when enabled=true:
+  image:
+    repository: minio/minio
+    tag: latest
   persistence:
+    enabled: true             # false → emptyDir (data lost on pod restart)
+    storageClass: ""          # "" = cluster default
+    accessModes:
+      - ReadWriteOnce
     size: 50Gi
-    storageClassName: ""
+    annotations: {}
   resources:
     requests: { cpu: 500m, memory: 1Gi }
     limits:   { cpu: 2000m, memory: 4Gi }
