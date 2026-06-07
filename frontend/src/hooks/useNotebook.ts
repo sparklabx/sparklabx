@@ -8,7 +8,6 @@ import { devLog } from '@/lib/debug';
 import {
     NotebookDTO,
     NotebookDetailDTO,
-    NotebookCellDTO,
     ClusterConfig,
     NotebookLanguage,
     CellType,

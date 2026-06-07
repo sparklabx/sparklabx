@@ -293,7 +293,6 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
 
         switch (msgType) {
             case 'stream': {
-                const isStderr = msg.content?.name === 'stderr';
                 const streamText = msg.content?.text || '';
                 // Ignore Scala tooling crashes (hover/inspect) so they don't pollute cell output.
                 if (isScalaToolingCrash(streamText)) break;

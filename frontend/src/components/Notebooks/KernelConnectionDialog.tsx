@@ -157,7 +157,7 @@ export function KernelConnectionDialog({
         try {
             const response = await fetchKernelSpecs();
             // Response has nested kernelspecs: { kernelspecs: { kernelspecs: {...} } }
-            const specs = (response.kernelspecs as any)?.kernelspecs || response.kernelspecs || {};
+            const specs = (response.kernelspecs as { kernelspecs?: unknown })?.kernelspecs || response.kernelspecs || {};
             console.log('[KernelDialog] Fetched kernel specs:', specs);
             setKernelSpecs(specs as Record<string, KernelSpec>);
         } catch (error) {
@@ -225,8 +225,9 @@ export function KernelConnectionDialog({
                 icebergWarehousePath: icebergWarehousePath.trim() || undefined,
             });
             onClose();
-        } catch (error: any) {
-            const errorMessage = error.response?.data?.error || error.message || 'Connection failed';
+        } catch (error) {
+            const e = error as { response?: { data?: { error?: string } }; message?: string };
+            const errorMessage = e.response?.data?.error || e.message || 'Connection failed';
             toast.error(errorMessage);
         } finally {
             setIsSubmitting(false);
@@ -274,7 +275,7 @@ export function KernelConnectionDialog({
                                 <SelectContent>
                                     {(() => {
                                         const filtered = Object.entries(kernelSpecs)
-                                            .filter(([name, spec]) => {
+                                            .filter(([, spec]) => {
                                                 // Function to match language loosely
                                                 const specLang = spec.language.toLowerCase();
                                                 const targetLang = language.toLowerCase();

@@ -6,10 +6,8 @@ import { Card, CardContent } from '../ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from '../ui/dialog';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { Trash2, Plus, Key, Search, Eye, EyeOff, Users, ShieldCheck, ShieldOff } from 'lucide-react';
 import { toast } from 'sonner';
-import authService from '../../services/authService';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '../ui/alert-dialog';
 
