@@ -1,7 +1,7 @@
 import React from 'react';
 import DOMPurify from 'dompurify';
 import { Sparkles } from 'lucide-react';
-import { useAIContext } from '@/App';
+import { useAIContext } from '@/contexts/AIContext';
 import { Button } from '@/components/ui/button';
 import { CellOutput } from '@/hooks/useJupyterKernel';
 import { ansiToHtml, stripAnsi } from '../ansiToHtml';
@@ -20,7 +20,6 @@ class CellOutputErrorBoundary extends React.Component<
     }
 
     componentDidCatch(error: Error, info: React.ErrorInfo) {
-        // eslint-disable-next-line no-console
         console.error('CellOutputRenderer crashed:', error, info.componentStack);
     }
 

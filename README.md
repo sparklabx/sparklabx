@@ -34,6 +34,8 @@ Open <http://localhost:3000>, log in as `admin` with the printed password,
 and you're in. OAuth is optional — leave the client IDs blank in `.env`
 to login via username/password only.
 
+![SparkLabX login screen — admin sign-in with optional Google OAuth](docs/screenshots/login.png)
+
 ---
 
 ## Highlights

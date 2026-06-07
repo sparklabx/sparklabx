@@ -292,8 +292,7 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
         }
 
         switch (msgType) {
-            case 'stream':
-                const isStderr = msg.content?.name === 'stderr';
+            case 'stream': {
                 const streamText = msg.content?.text || '';
                 // Ignore Scala tooling crashes (hover/inspect) so they don't pollute cell output.
                 if (isScalaToolingCrash(streamText)) break;
@@ -312,8 +311,9 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
                     sessionManager.updateSession(notebookId, { outputs: newOutputs });
                 }
                 break;
+            }
 
-            case 'execute_result':
+            case 'execute_result': {
                 // Show execute_result for Python
                 // For Scala, show if it's a meaningful result (not variable assignment)
                 const resultText = msg.content?.data?.['text/plain'];
@@ -333,6 +333,7 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
                     }
                 }
                 break;
+            }
 
             case 'display_data':
                 // Skip display_data for Scala (usually variable assignments)
@@ -373,7 +374,7 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
                 }
                 break;
 
-            case 'execute_reply':
+            case 'execute_reply': {
                 // Execution complete
                 const currentSession = sessionManager.getSession(notebookId);
                 const newRunningCells = new Set(currentSession.runningCells);
@@ -422,6 +423,7 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
                     session.pendingExecutions.delete(parentMsgId);
                 }, 5000); // 5 seconds buffer for late messages
                 break;
+            }
         }
     }, [notebookId]);
 
@@ -1200,8 +1202,6 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
         }
 
         return new Promise((resolve) => {
-            let timeoutId: NodeJS.Timeout;
-
             // Check function
             const check = () => {
                 const currentSession = sessionManager.getSession(notebookId);
@@ -1214,14 +1214,15 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
                 }
             };
 
-            // Cleanup function
+            // Cleanup function — references `timeoutId` via closure. Only invoked
+            // from async callbacks (timer callback below or subscribe callback),
+            // by which point `timeoutId` is already assigned.
             const cleanup = () => {
                 clearTimeout(timeoutId);
                 sessionManager.unsubscribe(notebookId, check);
             };
 
-            // Set timeout
-            timeoutId = setTimeout(() => {
+            const timeoutId: NodeJS.Timeout = setTimeout(() => {
                 cleanup();
                 console.warn(`[JupyterKernel][${notebookId}] waitForReady timed out after ${timeoutMs}ms`);
                 resolve(false);

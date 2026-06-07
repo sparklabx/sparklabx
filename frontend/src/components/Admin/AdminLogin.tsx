@@ -90,16 +90,15 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
-  const isEmail = identifier.includes('@');
-
   const handleGoogleLogin = async (accessToken: string) => {
     setError('');
     setLoading(true);
     try {
       await authService.loginWithGoogle(accessToken);
       onSuccess();
-    } catch (err: any) {
-      setError(err.response?.data?.error || 'Google login failed');
+    } catch (err) {
+      const e = err as { response?: { data?: { error?: string } } };
+      setError(e.response?.data?.error || 'Google login failed');
     } finally {
       setLoading(false);
     }
@@ -112,8 +111,9 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
     try {
       await authService.login(identifier, password);
       onSuccess();
-    } catch (err: any) {
-      setError(err.response?.data?.error || 'Login failed');
+    } catch (err) {
+      const e = err as { response?: { data?: { error?: string } } };
+      setError(e.response?.data?.error || 'Login failed');
     } finally {
       setLoading(false);
     }
@@ -133,9 +133,10 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
         await authService.loginWithMicrosoft(result.accessToken);
         onSuccess();
       }
-    } catch (err: any) {
-      if (err.errorCode !== 'user_cancelled') {
-        setError(err.message || 'Microsoft login failed');
+    } catch (err) {
+      const e = err as { errorCode?: string; message?: string };
+      if (e.errorCode !== 'user_cancelled') {
+        setError(e.message || 'Microsoft login failed');
       }
     } finally {
       setLoading(false);
@@ -199,7 +200,7 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
                 <Label htmlFor="identifier" className="text-xs">Username or Email</Label>
                 <Input
                   id="identifier"
-                  placeholder="admin or sv001@university.edu"
+                  placeholder="admin or admin@sparklabx.com"
                   value={identifier}
                   onChange={(e) => setIdentifier(e.target.value)}
                   className="h-9"
@@ -217,7 +218,7 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
                 />
               </div>
               <Button type="submit" className="w-full h-9" disabled={loading}>
-                {loading ? 'Logging in...' : isEmail ? 'Login as Student' : 'Login as Admin'}
+                {loading ? 'Logging in...' : 'Sign in'}
               </Button>
             </form>
           )}
