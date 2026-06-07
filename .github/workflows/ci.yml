@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [dev, test, main]
+  push:
+    branches: [dev, test]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      backend:  ${{ steps.f.outputs.backend }}
+      frontend: ${{ steps.f.outputs.frontend }}
+      chart:    ${{ steps.f.outputs.chart }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v4
+        id: f
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+            frontend:
+              - 'frontend/**'
+            chart:
+              - 'chart/**'
+
+  backend:
+    name: Backend (Go)
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - run: go mod download
+      - name: go vet
+        run: go vet ./...
+      - name: go build
+        run: go build ./...
+      - name: go test
+        run: go test ./...
+      - name: govulncheck (CVE scan)
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+        continue-on-error: true
+
+  frontend:
+    name: Frontend (Vite + TS)
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --legacy-peer-deps
+      - name: ESLint
+        run: npx eslint src/
+        continue-on-error: true
+      - name: Build (tsc + vite)
+        env:
+          VITE_GOOGLE_CLIENT_ID: dummy
+          VITE_MICROSOFT_CLIENT_ID: dummy
+          VITE_MICROSOFT_TENANT_ID: dummy
+        run: npm run build
+
+  helm:
+    name: Helm chart
+    needs: changes
+    if: needs.changes.outputs.chart == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+      - name: helm lint
+        run: helm lint chart/
+      - name: helm template (render check)
+        run: |
+          helm template sparklabx chart/ \
+            --set secrets.jwtSecretKey=dummy \
+            --set secrets.seedAdmin.password=dummy \
+            --set secrets.minio.rootPassword=dummy \
+            > /tmp/rendered.yaml
+
+  ci-success:
+    name: CI success
+    needs: [backend, frontend, helm]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify no required job failed
+        run: |
+          fail=0
+          for r in '${{ needs.backend.result }}' '${{ needs.frontend.result }}' '${{ needs.helm.result }}'; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error::job result: $r"; fail=1 ;;
+            esac
+          done
+          exit $fail

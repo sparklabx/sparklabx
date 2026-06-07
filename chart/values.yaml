@@ -9,16 +9,16 @@ image:
   backend:
     repository: ghcr.io/sparklabx/backend
     tag: latest
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   frontend:
     repository: ghcr.io/sparklabx/frontend
     tag: latest
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   kernel:
     # Image spawned per user when kernelMode=docker_per_user/k8s_per_user.
     repository: ghcr.io/sparklabx/kernel
     tag: latest
-
+    # pullPolicy default is IfNotPresent for kernel image, to speed up startup when already pulled.
 # ─────────────────────────────────────────────────────────────
 # Kernel isolation mode. See README's KERNEL_MODE section.
 #   - shared          : one Jupyter container for everyone (demo only)

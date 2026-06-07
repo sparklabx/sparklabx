@@ -40,7 +40,7 @@ const UserManagement: React.FC = () => {
   const { user: currentUser, isSuperAdmin } = useCurrentUser();
   // notebook-lite: no students — only admin accounts. Tab state kept for
   // backward-compat with existing JSX guards (always 'admins').
-  const activeTab: 'admins' = 'admins';
+  const activeTab = 'admins' as const;
   const [searchQuery, setSearchQuery] = useState('');
   // Promote/demote dialog state — replaces native window.confirm for consistent UI.
   const [roleTarget, setRoleTarget] = useState<{ id: string; username: string; newRole: 'admin' | 'superadmin' } | null>(null);
@@ -261,7 +261,7 @@ const UserManagement: React.FC = () => {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => { setResetOpen(false); setNewPassword(''); setConfirmNewPassword(''); }}>Cancel</Button>
-            <Button onClick={() => { resetTarget && resetMutation.mutate({ id: resetTarget.id, password: newPassword }); setConfirmNewPassword(''); }}
+            <Button onClick={() => { if (resetTarget) resetMutation.mutate({ id: resetTarget.id, password: newPassword }); setConfirmNewPassword(''); }}
               disabled={resetMutation.isPending || !newPassword || newPassword !== confirmNewPassword}>
               Reset
             </Button>
@@ -291,7 +291,7 @@ const UserManagement: React.FC = () => {
                   await axios.put(`/api/v1/admin/users/${roleTarget.id}/role`, { role: roleTarget.newRole });
                   queryClient.invalidateQueries({ queryKey: ['admins'] });
                   toast.success(`${roleTarget.username} → ${roleTarget.newRole}`);
-                } catch {}
+                } catch { /* ignore — toast handled in axios interceptor */ }
                 setRoleTarget(null);
               }}
             >
