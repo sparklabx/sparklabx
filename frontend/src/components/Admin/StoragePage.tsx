@@ -11,7 +11,7 @@ import {
 import { toast } from 'sonner';
 import axios from 'axios';
 import * as minioService from '../../services/minioStorageService';
-import { parseCsv, parseJsonTable, formatSize } from '../../lib/dataUtils';
+import { parseCsv, parseJsonTable } from '../../lib/dataUtils';
 
 const StoragePage: React.FC = () => {
   const [createBucketOpen, setCreateBucketOpen] = useState(false);
@@ -405,7 +405,7 @@ const StoragePage: React.FC = () => {
   );
 };
 
-const StorageFilePreview: React.FC<{ bucket: string; file: minioService.MinioFile; onClose: () => void }> = ({ bucket, file, onClose }) => {
+const StorageFilePreview: React.FC<{ bucket: string; file: minioService.MinioFile; onClose: () => void }> = ({ bucket, file }) => {
   const [previewData, setPreviewData] = useState<{ headers: string[]; rows: string[][] } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -424,14 +424,14 @@ const StorageFilePreview: React.FC<{ bucket: string; file: minioService.MinioFil
           const { parquetMetadata, parquetRead } = await import('hyparquet');
           const arrayBuffer = resp.data as ArrayBuffer;
           const metadata = parquetMetadata(arrayBuffer);
-          const headers = metadata.schema.slice(1).map((s: any) => s.name || `col_${s}`);
+          const headers = metadata.schema.slice(1).map((s: { name?: string }) => s.name || 'col');
           await parquetRead({
             file: arrayBuffer,
-            onComplete: (rows: any[]) => {
-              const parsed = rows.map((r: any) =>
+            onComplete: (rows: unknown[]) => {
+              const parsed = rows.map((r) =>
                 Array.isArray(r)
                   ? r.map(v => String(v ?? ''))
-                  : headers.map((h: string) => String(r[h] ?? ''))
+                  : headers.map((h: string) => String((r as Record<string, unknown>)[h] ?? ''))
               );
               setPreviewData({ headers, rows: parsed });
             },
@@ -459,8 +459,9 @@ const StorageFilePreview: React.FC<{ bucket: string; file: minioService.MinioFil
             setError(`Preview not supported for .${ext} files`);
           }
         }
-      } catch (err: any) {
-        setError(err.response?.data?.error || 'Failed to load file');
+      } catch (err) {
+        const e = err as { response?: { data?: { error?: string } } };
+        setError(e.response?.data?.error || 'Failed to load file');
       } finally {
         setLoading(false);
       }
