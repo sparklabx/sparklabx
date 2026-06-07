@@ -6,7 +6,7 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
-import { useAIContext } from '@/App';
+import { useAIContext } from '@/contexts/AIContext';
 import { devLog } from '@/lib/debug';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
