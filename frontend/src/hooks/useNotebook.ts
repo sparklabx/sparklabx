@@ -126,7 +126,7 @@ export function useNotebook(notebookId?: string) {
                 cacheSet(id, data);
                 setNotebook(data);
             }
-        } catch (e) {
+        } catch {
             setError('Failed to load notebook');
         } finally {
             setLoading(false);

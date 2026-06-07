@@ -10,7 +10,7 @@ import * as monaco from 'monaco-editor';
 
 // Configure Monaco environment for workers
 (self as any).MonacoEnvironment = {
-  getWorker(_: string, label: string) {
+  getWorker(_workerId: string, _label: string) {
     // Return inline worker for all types
     const workerUrl = URL.createObjectURL(
       new Blob(['self.MonacoEnvironment = { baseUrl: "' + window.location.origin + '" };'], {

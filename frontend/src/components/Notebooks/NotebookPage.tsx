@@ -54,11 +54,9 @@ import {
     useNotebookList,
     NotebookCell,
     notebookCache,
-    localDirty,
 } from '@/hooks/useNotebook';
 import {
     useJupyterKernel,
-    ConnectionStatus,
     CellOutput,
 } from '@/hooks/useJupyterKernel';
 import { useKernelCompletionProvider } from '@/hooks/useKernelCompletionProvider';
@@ -75,7 +73,7 @@ import { KernelConnectionDialog } from './KernelConnectionDialog';
 import { SidebarFiles } from './SidebarFiles';
 import { ConnectionStatusBadge } from './parts/ConnectionStatusBadge';
 import { LanguageIcon } from './parts/LanguageIcon';
-import { CellEditor, cellModelMap } from './parts/CellEditor';
+import { CellEditor } from './parts/CellEditor';
 import { registerAllStaticProviders } from './monaco/registerStatic';
 import { SidebarIconRail, SidebarTab } from './parts/SidebarIconRail';
 
@@ -163,9 +161,7 @@ export default function NotebookPage() {
         executeAllCells,
         pendingCells,
         executionCounts,
-        clearPendingCells,
         restoreOutputs,
-        getCellOutputs,
         clearCellOutput,
         waitForReady,
         requestCompletion,
@@ -182,7 +178,6 @@ export default function NotebookPage() {
     }, [cellOutputs]);
 
     // Local state
-    const [isSaving, setIsSaving] = useState(false);
     const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'unsaved'>('saved');
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
     const [notebookToDelete, setNotebookToDelete] = useState<{ id: string; name: string } | null>(null);
@@ -938,7 +933,6 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
             const expectedKernelName = lang === 'scala' ? 'scala212' : 'pyspark';
             checkConnection(expectedKernelName);
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [notebook?.id]);
 
 
