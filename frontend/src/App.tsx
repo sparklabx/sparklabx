@@ -17,9 +17,9 @@ interface AIContextType {
   pendingPrompt: string | null;
   sendPrompt: (prompt: string) => void;
   clearPendingPrompt: () => void;
-  registerPageContext: (getter: () => any) => void;
+  registerPageContext: (getter: () => unknown) => void;
   unregisterPageContext: () => void;
-  getPageContext: () => any;
+  getPageContext: () => unknown;
 }
 
 const AIContext = createContext<AIContextType>({

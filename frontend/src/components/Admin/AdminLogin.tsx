@@ -96,8 +96,9 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
     try {
       await authService.loginWithGoogle(accessToken);
       onSuccess();
-    } catch (err: any) {
-      setError(err.response?.data?.error || 'Google login failed');
+    } catch (err) {
+      const e = err as { response?: { data?: { error?: string } } };
+      setError(e.response?.data?.error || 'Google login failed');
     } finally {
       setLoading(false);
     }
@@ -110,8 +111,9 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
     try {
       await authService.login(identifier, password);
       onSuccess();
-    } catch (err: any) {
-      setError(err.response?.data?.error || 'Login failed');
+    } catch (err) {
+      const e = err as { response?: { data?: { error?: string } } };
+      setError(e.response?.data?.error || 'Login failed');
     } finally {
       setLoading(false);
     }
@@ -131,9 +133,10 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
         await authService.loginWithMicrosoft(result.accessToken);
         onSuccess();
       }
-    } catch (err: any) {
-      if (err.errorCode !== 'user_cancelled') {
-        setError(err.message || 'Microsoft login failed');
+    } catch (err) {
+      const e = err as { errorCode?: string; message?: string };
+      if (e.errorCode !== 'user_cancelled') {
+        setError(e.message || 'Microsoft login failed');
       }
     } finally {
       setLoading(false);
