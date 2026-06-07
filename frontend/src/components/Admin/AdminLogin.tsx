@@ -90,8 +90,6 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
-  const isEmail = identifier.includes('@');
-
   const handleGoogleLogin = async (accessToken: string) => {
     setError('');
     setLoading(true);
@@ -199,7 +197,7 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
                 <Label htmlFor="identifier" className="text-xs">Username or Email</Label>
                 <Input
                   id="identifier"
-                  placeholder="admin or sv001@university.edu"
+                  placeholder="admin or admin@sparklabx.com"
                   value={identifier}
                   onChange={(e) => setIdentifier(e.target.value)}
                   className="h-9"
@@ -217,7 +215,7 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
                 />
               </div>
               <Button type="submit" className="w-full h-9" disabled={loading}>
-                {loading ? 'Logging in...' : isEmail ? 'Login as Student' : 'Login as Admin'}
+                {loading ? 'Logging in...' : 'Sign in'}
               </Button>
             </form>
           )}
