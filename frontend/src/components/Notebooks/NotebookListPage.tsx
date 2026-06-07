@@ -89,7 +89,7 @@ export default function NotebookListPage() {
         try {
             await import('@/services/notebookService').then(m => m.notebookService.updateNotebook(renameTarget.id, { name: renameValue.trim() }));
             loadNotebooks();
-        } catch {}
+        } catch { /* ignore — toast handled in axios interceptor */ }
         setRenameTarget(null);
     };
 

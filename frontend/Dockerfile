@@ -16,17 +16,8 @@ RUN npm run build
 # ---- Stage 2: Serve with Nginx (root, port 80) ----
 FROM mirror.gcr.io/library/nginx:alpine
 
-# Copy nginx config (UPDATED: use kubernetes config for secure proxy)
-# OLD: nginx-simple.conf (insecure - direct browser calls to services)
-# NEW: nginx-kubernetes.conf (secure - proxy through API Gateway)
 COPY nginx-prod.conf /etc/nginx/conf.d/default.conf
-
-# Copy built files
 COPY --from=builder /app/build /usr/share/nginx/html
-
-# Copy entrypoint (env vars substitution)
-COPY docker-entrypoint.sh /docker-entrypoint.sh
-RUN chmod +x /docker-entrypoint.sh
 
 EXPOSE 80
 # Use 127.0.0.1 instead of `localhost` — Alpine's wget tries IPv6 first
@@ -35,5 +26,4 @@ EXPOSE 80
 # container unhealthy even though it serves traffic fine on IPv4.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD wget -qO- http://127.0.0.1/ || exit 1
 
-ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["nginx", "-g", "daemon off;"]
