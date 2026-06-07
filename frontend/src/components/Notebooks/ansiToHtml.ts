@@ -42,7 +42,7 @@ export function ansiToHtml(text: string): string {
     if (!text) return '';
 
     // Escape HTML entities first
-    let html = text
+    const html = text
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
@@ -52,6 +52,7 @@ export function ansiToHtml(text: string): string {
     // - \x1b[ (actual escape char)
     // - [ followed by codes and 'm' (literal brackets from some terminals)
     // Also handle 256-color format: 38;5;X or 48;5;X
+    // eslint-disable-next-line no-control-regex -- ANSI escape sequences require \x1b
     const ansiRegex = /(?:\x1b\[|\[)([0-9;]*)m/g;
 
     let result = '';
@@ -167,5 +168,6 @@ function get256Color(code: number): string {
  */
 export function stripAnsi(text: string): string {
     if (!text) return '';
+    // eslint-disable-next-line no-control-regex -- ANSI escape sequences require \x1b
     return text.replace(/\x1b\[[0-9;]*m/g, '');
 }

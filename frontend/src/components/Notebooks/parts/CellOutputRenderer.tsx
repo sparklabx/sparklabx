@@ -40,7 +40,7 @@ class CellOutputErrorBoundary extends React.Component<
 const SPARK_LOG_RE = /^\d{2}\/\d{2}\/\d{2}\s\d{2}:\d{2}:\d{2}\s(INFO|WARN|DEBUG|ERROR|TRACE)\s/;
 const SPARK_INIT_RE = /^(Initializing Spark Session|Using Spark's default log4j|✅ Spark Session created!|✅ S3A Hadoop conf applied:|Lazy 'spark' variable defined|💡 To customize|👉 Then access)/;
 const DELTA_S3A_NOISE_RE = /^(Id=null,?\s*S3AFileStatus\{|S3AFileStatus\{|.*isEmptyDirectory=.*|.*eTag=.*versionId=.*|java\.io\.FileNotFoundException: No such file or directory: s3a:\/\/)/;
-const DELTA_INTERNALS_NOISE_RE = /(AddFile\(|StructField\(|StructType\(|MapType\(|ArrayType\(|Protocol\(|Metadata\(|nullCount\":|minValues\":|maxValues\":|readerFeatures|writerFeatures|deletionVector|defaultRowCommitVersion|clusteringProvider)/;
+const DELTA_INTERNALS_NOISE_RE = /(AddFile\(|StructField\(|StructType\(|MapType\(|ArrayType\(|Protocol\(|Metadata\(|nullCount":|minValues":|maxValues":|readerFeatures|writerFeatures|deletionVector|defaultRowCommitVersion|clusteringProvider)/;
 const SCALA_DETAIL_LINE_RE = /^(import\s+[\w.{}*,\s]+|(?:val|var|lazy val)\s+\w+\s*[:=]|(?:res\d+|\w+)\s*:\s*[\w.[\](),{}<> ]+\s*=)/;
 
 // Spark's df.show() prints ASCII tables ("+----+----+" separators and
@@ -89,7 +89,7 @@ function isScalaDetailText(text: string): boolean {
         line === ')' ||
         line === '}' ||
         line === ']' ||
-        /^[\[\](){}]/.test(line)
+        /^[[\](){}]/.test(line)
     );
 
     return matchedLines.length > 0 && matchedLines.length >= Math.max(1, Math.ceil(lines.length * 0.6));

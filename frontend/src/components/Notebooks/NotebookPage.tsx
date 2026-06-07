@@ -570,7 +570,7 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
     val tbody = rows.map(r => "<tr>" + cols.indices.map(i =>
         s"<td>\${if (r.isNullAt(i)) "null" else esc(r.get(i))}</td>"
     ).mkString + "</tr>").mkString
-    val html = s"""<table class="dataframe">\$thead\$tbody</table><div style="color:#888;font-size:11px;margin-top:4px">showing first \${rows.length} rows</div>"""
+    val html = s"""<table class="dataframe">$thead$tbody</table><div style="color:#888;font-size:11px;margin-top:4px">showing first \${rows.length} rows</div>"""
     try { almond.display.Html(html).display() }
     catch { case _: Throwable => println(html) } // fallback if Almond API differs
 }
