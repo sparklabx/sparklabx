@@ -7,14 +7,12 @@ const isDev = import.meta.env.DEV;
 
 export function devLog(...args: unknown[]): void {
     if (isDev) {
-        // eslint-disable-next-line no-console
         console.log(...args);
     }
 }
 
 export function devInfo(...args: unknown[]): void {
     if (isDev) {
-        // eslint-disable-next-line no-console
         console.info(...args);
     }
 }

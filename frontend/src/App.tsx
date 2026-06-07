@@ -1,4 +1,4 @@
-import React, { useState, useEffect, createContext, useContext } from 'react';
+import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from './components/theme-provider';
@@ -9,28 +9,6 @@ import { Header } from './components/layout/Header';
 import AdminLogin from './components/Admin/AdminLogin';
 import authService from './services/authService';
 import './App.css';
-
-// AI Context (no-op, kept for notebook component compatibility)
-interface AIContextType {
-  aiPanelOpen: boolean;
-  setAiPanelOpen: (open: boolean) => void;
-  pendingPrompt: string | null;
-  sendPrompt: (prompt: string) => void;
-  clearPendingPrompt: () => void;
-  registerPageContext: (getter: () => any) => void;
-  unregisterPageContext: () => void;
-  getPageContext: () => any;
-}
-
-const AIContext = createContext<AIContextType>({
-  aiPanelOpen: false, setAiPanelOpen: () => { },
-  pendingPrompt: null, sendPrompt: () => { },
-  clearPendingPrompt: () => { },
-  registerPageContext: () => { }, unregisterPageContext: () => { },
-  getPageContext: () => null,
-});
-
-export const useAIContext = () => useContext(AIContext);
 
 // Lazy-loaded pages (notebook-lite scope: just notebooks + storage + admin)
 const SettingsLayout = React.lazy(() => import('./components/Admin/Settings/SettingsLayout'));
