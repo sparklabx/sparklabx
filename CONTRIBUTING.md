@@ -41,8 +41,13 @@ cd frontend && npm install && npm run dev
 
 ## Branching & commits
 
-- Branch off `main`. Name branches `<type>/<short-slug>`, e.g.
-  `fix/kernel-reaper-race` or `feat/scala-syntax-highlight`.
+We use a three-branch promotion chain: **`dev` → `test` → `main`**.
+External contributors only ever target `dev`; maintainers handle the
+`dev → test` and `test → main` promotions on a release cadence.
+
+- Branch off **`dev`** (not `main`). Name branches
+  `<type>/<short-slug>`, e.g. `fix/kernel-reaper-race` or
+  `feat/scala-syntax-highlight`.
 - Keep commits focused. One logical change per commit; squash fixup
   commits before opening the PR.
 - Write commit messages in the imperative mood
@@ -52,11 +57,27 @@ cd frontend && npm install && npm run dev
 
 ## Pull requests
 
-1. Fork or branch, push, open a PR against `main`.
+1. Fork or branch off `dev`, push, open a PR **against `dev`**.
+   (The `pr-promotion-order` workflow rejects PRs that try to skip the
+   chain — e.g. a feature branch opened directly against `test` or
+   `main` will fail CI.)
 2. Fill out the PR template — what changed, why, how it was tested.
 3. CI must pass (build + tests + image builds).
 4. At least one maintainer review is required before merge.
 5. We use **squash merge** for most PRs to keep history linear.
+
+### Release flow (maintainers)
+
+Once changes land on `dev`, maintainers promote in two steps:
+
+- PR `dev → test` (squash merge). CI re-runs; the staging environment
+  picks up the squashed commit.
+- PR `test → main` (squash merge). The `release.yml` workflow then
+  builds and publishes multi-arch images to GHCR.
+- Tag `vX.Y.Z` on `main` and draft a GitHub Release.
+
+Contributors don't need to do any of this — opening a PR against `dev`
+is enough.
 
 PRs that touch the security boundary (auth, IAM provisioning, kernel
 isolation, storage path handling) get extra scrutiny — please flag those

@@ -555,23 +555,37 @@ func (g *DockerPerUserGateway) reaperLoop() {
 func (g *DockerPerUserGateway) reapIdle() {
 	cutoff := time.Now().Add(-g.cfg.IdleTimeout)
 	rows, err := database.GetDB().Query(
-		`SELECT user_id FROM user_kernel_pods WHERE last_used_at < $1 AND status = $2`,
+		`SELECT user_id, pod_url FROM user_kernel_pods WHERE last_used_at < $1 AND status = $2`,
 		cutoff, PhaseReady,
 	)
 	if err != nil {
 		return
 	}
 	defer rows.Close()
-	var users []string
+	type victim struct{ userID, podURL string }
+	var victims []victim
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err == nil {
-			users = append(users, id)
+		var v victim
+		if err := rows.Scan(&v.userID, &v.podURL); err == nil {
+			victims = append(victims, v)
 		}
 	}
-	for _, u := range users {
-		log.Info().Str("user", u).Msg("reaping idle kernel container")
-		_ = g.Destroy(u)
+	rows.Close()
+
+	db := database.GetDB()
+	for _, v := range victims {
+		// Same protection as the k8s reaper (issue #44): a closed browser
+		// tab freezes last_used_at, but the kernel may still be running a
+		// long Spark job. Skip reap if any kernel reports execution_state
+		// == "busy" and bump last_used_at so we recheck at half-interval.
+		if kernelBusy(v.podURL) {
+			log.Info().Str("user", v.userID).Msg("reapIdle: skipping, kernel is busy")
+			db.Exec(`UPDATE user_kernel_pods SET last_used_at = $1 WHERE user_id = $2`,
+				time.Now().Add(-g.cfg.IdleTimeout/2), v.userID)
+			continue
+		}
+		log.Info().Str("user", v.userID).Msg("reaping idle kernel container")
+		_ = g.Destroy(v.userID)
 	}
 }
 
