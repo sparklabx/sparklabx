@@ -3,6 +3,7 @@ import Editor from '@monaco-editor/react';
 import MarkdownPreview from '@uiw/react-markdown-preview';
 import {
     Play,
+    Square,
     Loader2,
     Clock,
     ChevronUp,
@@ -36,6 +37,7 @@ interface CellEditorProps {
     readOnly?: boolean;
     onUpdate: (source: string) => void;
     onRun: (sourceOverride?: string) => void;
+    onInterrupt?: () => void;  // Stop the currently-executing cell (kernel SIGINT)
     onClearOutput: () => void;
     onDelete: () => void;
     onMoveUp: () => void;
@@ -54,6 +56,7 @@ export const CellEditor: React.FC<CellEditorProps> = React.memo(({
     language,
     onUpdate,
     onRun,
+    onInterrupt,
     onClearOutput,
     onDelete,
     onMoveUp,
@@ -152,11 +155,17 @@ export const CellEditor: React.FC<CellEditorProps> = React.memo(({
                             <Button
                                 variant="ghost"
                                 size="icon"
-                                className="h-6 w-6"
-                                onClick={() => onRun()}
-                                disabled={isRunning || isPending || readOnly || kernelBusy}
+                                className={`h-6 w-6 ${isRunning && onInterrupt ? 'text-red-600 hover:text-red-700 hover:bg-red-50' : ''}`}
+                                onClick={() => {
+                                    if (isRunning && onInterrupt) onInterrupt();
+                                    else onRun();
+                                }}
+                                disabled={isPending || readOnly || (isRunning && !onInterrupt) || (!isRunning && kernelBusy)}
+                                title={isRunning ? 'Interrupt cell' : isPending ? 'Queued' : 'Run cell'}
                             >
-                                {isRunning ? (
+                                {isRunning && onInterrupt ? (
+                                    <Square className="h-3 w-3" strokeWidth={2.5} />
+                                ) : isRunning ? (
                                     <Loader2 className="h-4 w-4 animate-spin" />
                                 ) : isPending ? (
                                     <Clock className="h-4 w-4 text-amber-500" />
@@ -164,18 +173,18 @@ export const CellEditor: React.FC<CellEditorProps> = React.memo(({
                                     <Play className="h-4 w-4" />
                                 )}
                             </Button>
-                            {(output && output.length > 0) && (
-                                <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-6 w-6 text-muted-foreground hover:text-foreground"
-                                    onClick={onClearOutput}
-                                    disabled={readOnly}
-                                    title="Clear output"
-                                >
-                                    <Eraser className="h-4 w-4" />
-                                </Button>
-                            )}
+                            {/* Clear always rendered (disabled when no output) so other action
+                                icons don't shift left/right when output appears mid-run. */}
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6 text-muted-foreground hover:text-foreground"
+                                onClick={onClearOutput}
+                                disabled={readOnly || !output || output.length === 0}
+                                title="Clear output"
+                            >
+                                <Eraser className="h-4 w-4" />
+                            </Button>
                         </>
                     )}
                     <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onMoveUp} disabled={readOnly}>

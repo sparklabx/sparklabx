@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -724,12 +726,49 @@ func (g *K8sPerUserGateway) reaperLoop() {
 	}
 }
 
+// kernelBusy queries the Jupyter Kernel Gateway on the pod and reports
+// whether any kernel is currently executing a cell. Returns false on any
+// error (unreachable pod, HTTP timeout, malformed response) so the reaper
+// can still kill genuinely dead pods.
+//
+// This is the fix for the long-running-cell-killed-by-reaper bug
+// (issue #44): a user starts a 45-min Spark job, closes the tab,
+// `last_used_at` freezes, and 30 min later the reaper used to delete
+// the pod mid-execution. With this check, the reaper only kills pods
+// whose kernel reports `execution_state == "idle"`.
+func kernelBusy(podURL string) bool {
+	if podURL == "" {
+		return false
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(podURL + "/api/kernels")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return false
+	}
+	defer resp.Body.Close()
+	var kernels []struct {
+		ExecutionState string `json:"execution_state"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&kernels); err != nil {
+		return false
+	}
+	for _, k := range kernels {
+		if k.ExecutionState == "busy" {
+			return true
+		}
+	}
+	return false
+}
+
 func (g *K8sPerUserGateway) reapOnce() {
 	db := database.GetDB()
 	cutoff := time.Now().Add(-g.cfg.IdleTimeout)
 
 	rows, err := db.Query(
-		`SELECT user_id, pod_name FROM user_kernel_pods
+		`SELECT user_id, pod_name, pod_url FROM user_kernel_pods
 		 WHERE status = $1 AND last_used_at < $2`,
 		PhaseReady, cutoff,
 	)
@@ -739,17 +778,28 @@ func (g *K8sPerUserGateway) reapOnce() {
 	}
 	defer rows.Close()
 
-	type victim struct{ userID, podName string }
+	type victim struct{ userID, podName, podURL string }
 	var victims []victim
 	for rows.Next() {
 		var v victim
-		if err := rows.Scan(&v.userID, &v.podName); err == nil {
+		if err := rows.Scan(&v.userID, &v.podName, &v.podURL); err == nil {
 			victims = append(victims, v)
 		}
 	}
 	rows.Close()
 
 	for _, v := range victims {
+		// Don't kill a pod whose kernel is mid-execution — the user is
+		// probably running a long Spark job with the tab closed.
+		if kernelBusy(v.podURL) {
+			log.Info().Str("user_id", v.userID).Str("pod", v.podName).
+				Msg("reaper: skipping idle reap, kernel is busy")
+			// Bump last_used_at so we don't re-check every minute while the
+			// job runs — recheck in IdleTimeout/2 instead.
+			db.Exec(`UPDATE user_kernel_pods SET last_used_at = $1 WHERE user_id = $2`,
+				time.Now().Add(-g.cfg.IdleTimeout/2), v.userID)
+			continue
+		}
 		err := g.client.CoreV1().Pods(g.cfg.Namespace).Delete(context.Background(), v.podName, metav1.DeleteOptions{})
 		if err != nil && !errors.IsNotFound(err) {
 			log.Warn().Err(err).Str("pod", v.podName).Msg("reaper: failed to delete pod")
