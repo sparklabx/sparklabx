@@ -3,6 +3,7 @@ import Editor from '@monaco-editor/react';
 import MarkdownPreview from '@uiw/react-markdown-preview';
 import {
     Play,
+    Square,
     Loader2,
     Clock,
     ChevronUp,
@@ -36,6 +37,7 @@ interface CellEditorProps {
     readOnly?: boolean;
     onUpdate: (source: string) => void;
     onRun: (sourceOverride?: string) => void;
+    onInterrupt?: () => void;  // Stop the currently-executing cell (kernel SIGINT)
     onClearOutput: () => void;
     onDelete: () => void;
     onMoveUp: () => void;
@@ -54,6 +56,7 @@ export const CellEditor: React.FC<CellEditorProps> = React.memo(({
     language,
     onUpdate,
     onRun,
+    onInterrupt,
     onClearOutput,
     onDelete,
     onMoveUp,
@@ -152,11 +155,17 @@ export const CellEditor: React.FC<CellEditorProps> = React.memo(({
                             <Button
                                 variant="ghost"
                                 size="icon"
-                                className="h-6 w-6"
-                                onClick={() => onRun()}
-                                disabled={isRunning || isPending || readOnly || kernelBusy}
+                                className={`h-6 w-6 ${isRunning && onInterrupt ? 'text-red-600 hover:text-red-700 hover:bg-red-50' : ''}`}
+                                onClick={() => {
+                                    if (isRunning && onInterrupt) onInterrupt();
+                                    else onRun();
+                                }}
+                                disabled={isPending || readOnly || (isRunning && !onInterrupt) || (!isRunning && kernelBusy)}
+                                title={isRunning ? 'Interrupt cell' : isPending ? 'Queued' : 'Run cell'}
                             >
-                                {isRunning ? (
+                                {isRunning && onInterrupt ? (
+                                    <Square className="h-3.5 w-3.5 fill-current" />
+                                ) : isRunning ? (
                                     <Loader2 className="h-4 w-4 animate-spin" />
                                 ) : isPending ? (
                                     <Clock className="h-4 w-4 text-amber-500" />

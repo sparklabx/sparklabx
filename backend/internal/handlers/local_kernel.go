@@ -521,6 +521,56 @@ func (h *LocalKernelHandler) Status(c *gin.Context) {
 	})
 }
 
+// Interrupt cancels whatever the kernel is currently executing without
+// restarting it (SIGINT → KeyboardInterrupt in Python / cancel in Almond).
+// Spark catches the interrupt and cancels the active job, but the
+// SparkSession + variables + cached DataFrames survive — exactly the
+// "stop this query, keep my state" UX users reach for after a misclick.
+//
+// POST /api/v1/notebooks/:id/kernel/interrupt
+func (h *LocalKernelHandler) Interrupt(c *gin.Context) {
+	notebookID := c.Param("id")
+	if !checkNotebookWriteAccess(c, notebookID) {
+		return
+	}
+	userID := userIDString(c)
+	kernelKey := kernelKeyForNotebook(notebookID, userID)
+
+	kernelMapMu.Lock()
+	kernelID := kernelMap[kernelKey]
+	kernelMapMu.Unlock()
+	if kernelID == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no active kernel"})
+		return
+	}
+
+	h.gateway.Touch(userID)
+
+	gatewayURL, ok := h.gatewayURLFor(c, userID)
+	if !ok {
+		return
+	}
+
+	url := gatewayURL + "/api/kernels/" + kernelID + "/interrupt"
+	resp, err := http.Post(url, "application/json", nil)
+	if err != nil {
+		log.Error().Err(err).Str("kernel_id", kernelID).Msg("interrupt: failed to reach gateway")
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to reach kernel gateway"})
+		return
+	}
+	defer resp.Body.Close()
+
+	// Jupyter returns 204 on success. Anything else is a gateway issue.
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		log.Warn().Int("status", resp.StatusCode).Str("kernel_id", kernelID).Msg("interrupt: unexpected gateway response")
+		c.JSON(http.StatusBadGateway, gin.H{"error": "gateway rejected interrupt"})
+		return
+	}
+
+	log.Info().Str("kernel_id", kernelID).Str("user_id", userID).Msg("kernel interrupted")
+	c.JSON(http.StatusOK, gin.H{"status": "interrupted", "kernel_id": kernelID})
+}
+
 // Disconnect closes the WebSocket but keeps the kernel alive.
 // DELETE /api/v1/notebooks/:id/kernel/disconnect
 func (h *LocalKernelHandler) Disconnect(c *gin.Context) {

@@ -14,6 +14,7 @@ import { Input } from '@/components/ui/input';
 import {
     Plus,
     Play,
+    Square,
     Trash2,
     Loader2,
     MoreVertical,
@@ -1181,6 +1182,22 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
         return '';
     }).filter(Boolean).join('\n');
 
+    // Interrupt whatever the kernel is currently executing. SIGINT travels to
+    // Python (KeyboardInterrupt) / Almond (cancel cell) and Spark catches it to
+    // cancel the active job. Kernel session + variables + cached DataFrames
+    // survive — exactly the "stop this query, keep my state" gesture users
+    // reach for after misclicking Run on the wrong cell.
+    const handleInterrupt = async () => {
+        if (!notebookId) return;
+        try {
+            await axios.post(`/api/v1/notebooks/${notebookId}/kernel/interrupt`);
+            toast.success('Kernel interrupted');
+        } catch (err) {
+            const e = err as { response?: { data?: { error?: string } } };
+            toast.error(e.response?.data?.error || 'Failed to interrupt kernel');
+        }
+    };
+
     const handleClearOutput = async (cellId: string) => {
         // Clear memory state immediately for UX
         clearCellOutput(cellId);
@@ -1581,21 +1598,38 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                             )}
                         </button>
 
-                        <Button
-                            size="sm"
-                            className={`${toolbarBtnBase} ${toolbarBtnCompact} bg-green-600 hover:bg-green-700 text-white border-0`}
-                            onClick={() => {
-                                const sortedCells = [...cells]
-                                    .sort((a, b) => a.order - b.order)
-                                    .map(c => ({ id: c.id, code: c.source, type: c.type }));
-                                executeAllCells(sortedCells);
-                            }}
-                            disabled={connectionStatus !== 'connected' || runningCells.size > 0 || pendingCells.size > 0}
-                            title="Run All Cells"
-                        >
-                            <Play className="size-3 fill-current" />
-                            {!compactToolbar && <span>Run All</span>}
-                        </Button>
+                        {(() => {
+                            const isExecuting = runningCells.size > 0 || pendingCells.size > 0;
+                            return (
+                                <Button
+                                    size="sm"
+                                    className={`${toolbarBtnBase} ${toolbarBtnCompact} ${
+                                        isExecuting
+                                            ? 'bg-red-600 hover:bg-red-700 text-white border-0'
+                                            : 'bg-green-600 hover:bg-green-700 text-white border-0'
+                                    }`}
+                                    onClick={() => {
+                                        if (isExecuting) {
+                                            handleInterrupt();
+                                        } else {
+                                            const sortedCells = [...cells]
+                                                .sort((a, b) => a.order - b.order)
+                                                .map(c => ({ id: c.id, code: c.source, type: c.type }));
+                                            executeAllCells(sortedCells);
+                                        }
+                                    }}
+                                    disabled={connectionStatus !== 'connected'}
+                                    title={isExecuting ? 'Stop execution' : 'Run All Cells'}
+                                >
+                                    {isExecuting ? (
+                                        <Square className="size-3 fill-current" />
+                                    ) : (
+                                        <Play className="size-3 fill-current" />
+                                    )}
+                                    {!compactToolbar && <span>{isExecuting ? 'Stop' : 'Run All'}</span>}
+                                </Button>
+                            );
+                        })()}
 
                         {/* Clear All Outputs button */}
                         <Button
@@ -1741,6 +1775,7 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                                                 language={notebook.language.toLowerCase()}
                                                 onUpdate={(source) => handleUpdateCell(cell.id, source)}
                                                 onRun={(sourceOverride?: string) => handleRunCell(cell.id, sourceOverride ?? cell.source)}
+                                                onInterrupt={handleInterrupt}
                                                 onClearOutput={() => handleClearOutput(cell.id)}
                                                 onDelete={() => handleDeleteCell(cell.id)}
                                                 onMoveUp={() => handleMoveCell(cell.id, 'up')}
