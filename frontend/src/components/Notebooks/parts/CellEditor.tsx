@@ -164,7 +164,7 @@ export const CellEditor: React.FC<CellEditorProps> = React.memo(({
                                 title={isRunning ? 'Interrupt cell' : isPending ? 'Queued' : 'Run cell'}
                             >
                                 {isRunning && onInterrupt ? (
-                                    <Square className="h-3.5 w-3.5 fill-current" />
+                                    <Square className="h-3 w-3" strokeWidth={2.5} />
                                 ) : isRunning ? (
                                     <Loader2 className="h-4 w-4 animate-spin" />
                                 ) : isPending ? (
@@ -173,18 +173,18 @@ export const CellEditor: React.FC<CellEditorProps> = React.memo(({
                                     <Play className="h-4 w-4" />
                                 )}
                             </Button>
-                            {(output && output.length > 0) && (
-                                <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-6 w-6 text-muted-foreground hover:text-foreground"
-                                    onClick={onClearOutput}
-                                    disabled={readOnly}
-                                    title="Clear output"
-                                >
-                                    <Eraser className="h-4 w-4" />
-                                </Button>
-                            )}
+                            {/* Clear always rendered (disabled when no output) so other action
+                                icons don't shift left/right when output appears mid-run. */}
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6 text-muted-foreground hover:text-foreground"
+                                onClick={onClearOutput}
+                                disabled={readOnly || !output || output.length === 0}
+                                title="Clear output"
+                            >
+                                <Eraser className="h-4 w-4" />
+                            </Button>
                         </>
                     )}
                     <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onMoveUp} disabled={readOnly}>

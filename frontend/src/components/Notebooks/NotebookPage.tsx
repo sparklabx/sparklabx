@@ -1603,6 +1603,11 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                             return (
                                 <Button
                                     size="sm"
+                                    // "Run All" and "Stop All" are both 7-char, so the
+                                    // natural width is already nearly identical — a small
+                                    // min-width prevents the 2-3px jitter without padding
+                                    // the button out.
+                                    style={{ minWidth: compactToolbar ? undefined : 82 }}
                                     className={`${toolbarBtnBase} ${toolbarBtnCompact} ${
                                         isExecuting
                                             ? 'bg-red-600 hover:bg-red-700 text-white border-0'
@@ -1626,7 +1631,7 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                                     ) : (
                                         <Play className="size-3 fill-current" />
                                     )}
-                                    {!compactToolbar && <span>{isExecuting ? 'Stop' : 'Run All'}</span>}
+                                    {!compactToolbar && <span>{isExecuting ? 'Stop All' : 'Run All'}</span>}
                                 </Button>
                             );
                         })()}
