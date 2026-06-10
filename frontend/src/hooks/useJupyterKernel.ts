@@ -226,6 +226,36 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
                 // show "Connected" cleanly.
                 sessionManager.updateSession(notebookId, { status: 'connected', podPhase: '', podMessage: '' });
             }
+
+            // status:idle on iopub is the broadcast completion signal for
+            // an execute_request. We get this even after a tab reload
+            // (unlike execute_reply which is shell-channel point-to-point
+            // and only goes to the originating session). If we still have
+            // a pendingExecutions entry for the parent msg_id — i.e. the
+            // shell-channel cleanup hasn't already fired — clean up the
+            // cell's running state here.
+            if (executionState === 'idle' && parentMsgId) {
+                const pending = session.pendingExecutions.get(parentMsgId);
+                if (pending?.cellId) {
+                    const cur = sessionManager.getSession(notebookId);
+                    if (cur.runningCells.has(pending.cellId)) {
+                        const next = new Set(cur.runningCells);
+                        next.delete(pending.cellId);
+                        const execTimes = { ...cur.executionTimes };
+                        if (pending.startedAt) {
+                            execTimes[pending.cellId] = Date.now() - pending.startedAt;
+                        }
+                        const executed = new Set(cur.executedCells);
+                        executed.add(pending.cellId);
+                        sessionManager.updateSession(notebookId, {
+                            runningCells: next,
+                            executionTimes: execTimes,
+                            executedCells: executed,
+                        });
+                    }
+                    setTimeout(() => session.pendingExecutions.delete(parentMsgId), 5000);
+                }
+            }
             return;
         }
 
@@ -464,7 +494,40 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
     }, [notebookId]);
 
     // Setup WebSocket connection
-    const setupWebSocket = useCallback((kernelId: string) => {
+    const setupWebSocket = useCallback(async (kernelId: string) => {
+        // Restore any in-flight executions from the backend recorder
+        // BEFORE the WS opens. This populates pendingExecutions +
+        // runningCells so the FIRST iopub message that lands has a
+        // parent_msg_id we can look up, and so the badge shows
+        // "running" with the correct startedAt for cells the kernel
+        // is still executing across a tab reload.
+        try {
+            const resp = await axios.get(`/api/v1/notebooks/${notebookId}/kernel/active-executions`);
+            const execs: Array<{ msg_id: string; cell_id: string; started_at: string; execution_count: number; has_error: boolean }>
+                = resp.data?.executions || [];
+            if (execs.length > 0) {
+                const session = sessionManager.getSession(notebookId);
+                const newRunning = new Set(session.runningCells);
+                for (const e of execs) {
+                    if (!e.msg_id || !e.cell_id) continue;
+                    if (session.pendingExecutions.has(e.msg_id)) continue;
+                    const startedAt = e.started_at ? new Date(e.started_at).getTime() : Date.now();
+                    session.pendingExecutions.set(e.msg_id, {
+                        cellId: e.cell_id,
+                        hadError: !!e.has_error,
+                        startedAt,
+                        resolve: () => { /* restored entry has no caller waiting */ },
+                    });
+                    newRunning.add(e.cell_id);
+                }
+                sessionManager.updateSession(notebookId, { runningCells: newRunning });
+                devLog(`[JupyterKernel][${notebookId}] Restored ${execs.length} active execution(s) from backend recorder`);
+            }
+        } catch (e) {
+            // Endpoint may not exist on older backends — non-fatal.
+            devLog(`[JupyterKernel][${notebookId}] active-executions fetch failed:`, e);
+        }
+
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsHost = import.meta.env.VITE_BACKEND_WS_URL || `${wsProtocol}//${window.location.host}`;
 
@@ -1080,7 +1143,12 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
                 version: '5.3'
             },
             parent_header: {},
-            metadata: {},
+            // sparklabx_cell_id lets the backend KernelRecorder tag
+            // iopub messages from this execution with the originating
+            // cell so output can be persisted to cells.last_output
+            // even after the browser tab closes. Jupyter ignores
+            // unknown metadata fields.
+            metadata: { sparklabx_cell_id: cellId },
             content: {
                 code,
                 silent: options?.silent ?? false,
@@ -1390,6 +1458,17 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
         });
     }, [notebookId]);
 
+    // cellId → original execute_request startedAt (epoch ms). Lets
+    // the live timer in CellEditor keep ticking from the real start
+    // even after a tab reload (state restored from the backend
+    // recorder includes the original startedAt).
+    const runningCellStarts: Record<string, number> = {};
+    session.pendingExecutions.forEach(p => {
+        if (p.cellId && session.runningCells.has(p.cellId)) {
+            runningCellStarts[p.cellId] = p.startedAt;
+        }
+    });
+
     return {
         connectionStatus: session.status,
         deadReason: session.deadReason,  // Reason for kernel death (when status is 'dead')
@@ -1397,6 +1476,7 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
         podMessage: session.podMessage,  // human-readable phase message
         cellOutputs: session.outputs,
         runningCells: session.runningCells,
+        runningCellStarts,
         pendingCells: session.pendingCells,
         executionCounts: session.executionCounts,
         executionTimes: session.executionTimes,

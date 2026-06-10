@@ -29,6 +29,12 @@ interface CellEditorProps {
     cell: NotebookCell;
     isRunning: boolean;
     isPending?: boolean;  // Cell is queued for execution (Run All)
+    // Original execute_request startedAt (epoch ms). Set when the
+    // running state was restored from the backend recorder so the
+    // timer continues from the real start instead of resetting to 0
+    // on every page reload. Undefined for cells started in this tab
+    // (timer falls back to Date.now()).
+    executionStartedAtMs?: number;
     kernelBusy?: boolean;  // Kernel unavailable (e.g. Spark booting) — disable Play silently
     executionCount?: number;  // In [N]:
     hasExecuted: boolean;
@@ -49,6 +55,7 @@ export const CellEditor: React.FC<CellEditorProps> = React.memo(({
     isRunning,
     readOnly,
     isPending,
+    executionStartedAtMs,
     kernelBusy,
     executionCount,
     hasExecuted,
@@ -91,13 +98,13 @@ export const CellEditor: React.FC<CellEditorProps> = React.memo(({
             setElapsedSeconds(0);
             return;
         }
-        const startedAt = Date.now();
-        setElapsedSeconds(0);
+        const startedAt = executionStartedAtMs ?? Date.now();
+        setElapsedSeconds((Date.now() - startedAt) / 1000);
         const id = setInterval(() => {
             setElapsedSeconds((Date.now() - startedAt) / 1000);
         }, 100);
         return () => clearInterval(id);
-    }, [isRunning]);
+    }, [isRunning, executionStartedAtMs]);
 
     // Local source state to prevent cursor jumping on parent re-render
     const [localSource, setLocalSource] = useState(cell.source || '');
@@ -368,6 +375,7 @@ export const CellEditor: React.FC<CellEditorProps> = React.memo(({
         prevProps.cell.source === nextProps.cell.source &&
         prevProps.cell.type === nextProps.cell.type &&
         prevProps.isRunning === nextProps.isRunning &&
+        prevProps.executionStartedAtMs === nextProps.executionStartedAtMs &&
         prevProps.isPending === nextProps.isPending &&
         prevProps.kernelBusy === nextProps.kernelBusy &&
         prevProps.hasExecuted === nextProps.hasExecuted &&

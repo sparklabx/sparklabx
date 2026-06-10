@@ -153,6 +153,7 @@ export default function NotebookPage() {
         podMessage,
         cellOutputs,
         runningCells,
+        runningCellStarts,
         executedCells,
         connect,
         checkConnection,
@@ -186,7 +187,6 @@ export default function NotebookPage() {
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
     const [notebookToDelete, setNotebookToDelete] = useState<{ id: string; name: string } | null>(null);
     const [disconnectConfirmOpen, setDisconnectConfirmOpen] = useState(false);
-    const [pendingNavUrl, setPendingNavUrl] = useState<string | null>(null);
     const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null);
     const [renameValue, setRenameValue] = useState('');
     const [libraryDialogOpen, setLibraryDialogOpen] = useState(false);
@@ -1139,40 +1139,11 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
 
         const intervalId = setInterval(saveDirtyCells, AUTOSAVE_INTERVAL);
 
-        // Captured in beforeunload (when runningCells is still
-        // populated) and consumed in pagehide. ws.onclose races
-        // with pagehide and resets runningCells to empty, so a
-        // direct read inside pagehide would no-op.
-        let unloadCellsSnapshot: string[] = [];
-
-        const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-            if (runningCellsRef.current.size > 0) {
-                unloadCellsSnapshot = Array.from(runningCellsRef.current);
-                e.preventDefault();
-                e.returnValue = '';
-                return;
-            }
-            unloadCellsSnapshot = [];
-        };
-
+        // Flush pending source debounce timers on unload via sync XHR.
+        // No interrupt-on-leave: the backend KernelRecorder keeps writing
+        // cell.last_output as the kernel emits messages, so closing the
+        // tab no longer drops in-flight output.
         const handlePageHide = () => {
-            if (unloadCellsSnapshot.length > 0 && notebookRef.current) {
-                const token = localStorage.getItem('sparklabx_token');
-                const clearable = unloadCellsSnapshot.filter(
-                    (id) => id !== 'init-spark-context' && !id.startsWith('spark-connect-')
-                );
-                fetch(`/api/v1/notebooks/${notebookRef.current.id}/kernel/interrupt`, {
-                    method: 'POST',
-                    keepalive: true,
-                    headers: {
-                        'Content-Type': 'application/json',
-                        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-                    },
-                    body: JSON.stringify({ clear_cells: clearable }),
-                }).catch(() => { /* best effort */ });
-            }
-
-            // Flush pending source debounce timers via synchronous XHR (sendBeacon only supports POST)
             if (notebookRef.current) {
                 Object.entries(updateCellTimerRef.current).forEach(([cellId, timer]) => {
                     clearTimeout(timer);
@@ -1188,15 +1159,12 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                 });
                 updateCellTimerRef.current = {};
             }
-            // Also flush dirty output saves
             saveDirtyCells();
         };
-        window.addEventListener('beforeunload', handleBeforeUnload);
         window.addEventListener('pagehide', handlePageHide);
 
         return () => {
             clearInterval(intervalId);
-            window.removeEventListener('beforeunload', handleBeforeUnload);
             window.removeEventListener('pagehide', handlePageHide);
             saveDirtyCells();
         };
@@ -1255,14 +1223,6 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
         if (o?.type === 'result' && o?.data) return JSON.stringify(o.data, null, 2);
         return '';
     }).filter(Boolean).join('\n');
-
-    const guardedNavigate = useCallback((url: string) => {
-        if (runningCellsRef.current.size > 0) {
-            setPendingNavUrl(url);
-            return;
-        }
-        navigate(url);
-    }, [navigate]);
 
     // Interrupt whatever the kernel is currently executing. SIGINT travels to
     // Python (KeyboardInterrupt) / Almond (cancel cell) and Spark catches it to
@@ -1362,7 +1322,7 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                                         >
                                             <span
                                                 className="truncate cursor-pointer flex-1"
-                                                onClick={() => guardedNavigate(`/notebooks/${nb.id}`)}
+                                                onClick={() => navigate(`/notebooks/${nb.id}`)}
                                             >
                                                 {nb.name}
                                             </span>
@@ -1565,7 +1525,7 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
         return (
             <div className="flex flex-col items-center justify-center h-screen gap-4">
                 <p className="text-red-500">{error || 'Notebook not found'}</p>
-                <Button onClick={() => guardedNavigate('/notebooks')}>Back to Notebooks</Button>
+                <Button onClick={() => navigate('/notebooks')}>Back to Notebooks</Button>
             </div>
         );
     }
@@ -1614,21 +1574,30 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                 <div className="flex items-center justify-between px-2 py-2 border-b border-border bg-background shrink-0 h-12 gap-2 overflow-hidden">
                     <div className="flex items-center gap-2 min-w-0 flex-shrink">
 
-                        {/* Notebook name (read-only) */}
+                        {/* Notebook name (read-only) — fixed size so toolbar
+                            layout doesn't reflow when switching between
+                            notebooks with different name lengths. */}
                         <Input
                             value={notebook.name}
                             readOnly
-                            className={`font-medium text-sm cursor-default ${compactToolbar ? 'w-32 min-w-[100px]' : 'w-56 min-w-[150px]'}`}
+                            title={notebook.name}
+                            className={`font-medium text-sm cursor-default shrink-0 ${compactToolbar ? 'w-32' : 'w-56'}`}
                         />
 
-                        {/* Language display (read-only) */}
+                        {/* Language display (read-only). Fixed text width so
+                            switching between Python/Scala notebooks doesn't
+                            shift the toolbar items to the right of this badge. */}
                         <Badge variant="outline" className="px-2 py-1 text-sm font-medium flex items-center gap-1.5" title={notebook.language}>
                             <img
                                 src={notebook.language.toUpperCase() === 'PYTHON' ? '/icons/languages/python.png' : '/icons/languages/scala.png'}
                                 alt={notebook.language}
                                 className="w-4 h-4"
                             />
-                            {!compactToolbar && <span>{notebook.language.toUpperCase() === 'PYTHON' ? 'Python' : 'Scala'}</span>}
+                            {!compactToolbar && (
+                                <span className="inline-block w-12 text-center">
+                                    {notebook.language.toUpperCase() === 'PYTHON' ? 'Python' : 'Scala'}
+                                </span>
+                            )}
                         </Badge>
 
                         {/* Connection status */}
@@ -1739,12 +1708,15 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                             {!compactToolbar && <span>Clear Output</span>}
                         </Button>
 
-                        {/* Connect/Disconnect button */}
+                        {/* Connect/Disconnect button — fixed minWidth so all
+                            four states (Connect / Disconnect / Connecting… /
+                            Shutting down…) take the same horizontal space. */}
                         {connectionStatus === 'connected' ? (
                             <Button
                                 variant="outline"
                                 size="sm"
                                 onClick={handleDisconnect}
+                                style={{ minWidth: compactToolbar ? undefined : 105 }}
                                 className={`${toolbarBtnBase} ${toolbarBtnCompact} border-red-500 text-red-600 hover:bg-red-50 hover:text-red-700`}
                                 title="Disconnect from kernel"
                             >
@@ -1757,6 +1729,7 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                                 size="sm"
                                 disabled
                                 title="Connecting..."
+                                style={{ minWidth: compactToolbar ? undefined : 105 }}
                                 className={`${toolbarBtnBase} ${toolbarBtnCompact}`}
                             >
                                 <Loader2 className="size-3 animate-spin" />
@@ -1767,6 +1740,7 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                                 variant="outline"
                                 size="sm"
                                 disabled
+                                style={{ minWidth: compactToolbar ? undefined : 105 }}
                                 className={`${toolbarBtnBase} ${toolbarBtnCompact} border-amber-500 text-amber-600`}
                                 title={podMessage || 'Waiting for previous pod to shut down…'}
                             >
@@ -1778,6 +1752,7 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                                 variant="outline"
                                 size="sm"
                                 onClick={handleConnect}
+                                style={{ minWidth: compactToolbar ? undefined : 105 }}
                                 className={`${toolbarBtnBase} ${toolbarBtnCompact} border-blue-500 text-blue-600 hover:bg-blue-50 hover:text-blue-700`}
                                 title="Connect to kernel"
                             >
@@ -1854,6 +1829,7 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                                             <CellEditor
                                                 cell={cell}
                                                 isRunning={runningCells.has(cell.id)}
+                                                executionStartedAtMs={runningCellStarts[cell.id]}
                                                 isPending={pendingCells.has(cell.id)}
                                                 kernelBusy={sparkInitPending || runningCells.has('init-spark-context')}
                                                 // Raw kernel exec_count — same as standard Jupyter. May start at
@@ -2133,38 +2109,6 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                         </AlertDialogAction>
                         <AlertDialogAction className="bg-amber-500 text-white hover:bg-amber-600" onClick={confirmDisconnect}>
                             Disconnect
-                        </AlertDialogAction>
-                    </AlertDialogFooter>
-                </AlertDialogContent>
-            </AlertDialog>
-
-            <AlertDialog open={pendingNavUrl !== null} onOpenChange={(open) => { if (!open) setPendingNavUrl(null); }}>
-                <AlertDialogContent>
-                    <AlertDialogHeader>
-                        <AlertDialogTitle>Cell is still running</AlertDialogTitle>
-                        <AlertDialogDescription>
-                            Leaving this notebook will interrupt the running cell on the kernel.
-                            <br /><br />
-                            <strong>Continue</strong> — interrupt the cell and switch.
-                            <br />
-                            <strong>Cancel</strong> — stay here.
-                        </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                        <AlertDialogCancel>Cancel</AlertDialogCancel>
-                        <AlertDialogAction
-                            className="bg-amber-500 text-white hover:bg-amber-600"
-                            onClick={async () => {
-                                const target = pendingNavUrl;
-                                setPendingNavUrl(null);
-                                if (!target) return;
-                                try {
-                                    await axios.post(`/api/v1/notebooks/${notebookId}/kernel/interrupt`);
-                                } catch { /* best effort; navigate anyway */ }
-                                navigate(target);
-                            }}
-                        >
-                            Continue
                         </AlertDialogAction>
                     </AlertDialogFooter>
                 </AlertDialogContent>
