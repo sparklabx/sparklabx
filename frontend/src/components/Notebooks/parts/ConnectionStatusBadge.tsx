@@ -13,6 +13,7 @@ export const ConnectionStatusBadge: React.FC<{
         connecting: { color: 'text-blue-500 animate-pulse', label: 'Connecting...' },
         starting: { color: 'text-amber-500 animate-pulse', label: 'Starting...' },
         connected: { color: 'text-emerald-500', label: 'Connected' },
+        disconnecting: { color: 'text-amber-500 animate-pulse', label: 'Disconnecting...' },
         error: { color: 'text-rose-500', label: 'Error' },
         dead: { color: 'text-rose-600', label: 'Kernel Dead', icon: 'skull' },
     };

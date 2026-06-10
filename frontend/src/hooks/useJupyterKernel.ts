@@ -11,7 +11,7 @@ import { devLog } from '@/lib/debug';
 // Ensure axios interceptors are registered (authService constructor sets up Bearer token)
 import '@/services/authService';
 
-export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'starting' | 'error' | 'dead';
+export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'starting' | 'disconnecting' | 'error' | 'dead';
 export type NotebookLanguage = 'python' | 'scala' | 'sql';
 
 function isScalaToolingCrash(text: string): boolean {
@@ -917,6 +917,11 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
     const disconnect = useCallback(async () => {
         try {
             const session = sessionManager.getSession(notebookId);
+
+            // Flip the badge to "Disconnecting…" before the DELETE
+            // round-trip so the user gets feedback (k8s_per_user
+            // mode can take a few seconds to ack).
+            sessionManager.updateSession(notebookId, { status: 'disconnecting' });
 
             // Close WebSocket
             if (session.ws) {
