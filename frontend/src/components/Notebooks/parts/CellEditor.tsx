@@ -81,6 +81,24 @@ export const CellEditor: React.FC<CellEditorProps> = React.memo(({
     const monacoLanguage = language === 'scala' ? 'scala' : language === 'sql' ? 'sql' : 'python';
     const isMarkdown = cell.type === 'markdown';
 
+    // Live execution timer — ticks every 100ms while isRunning so users
+    // running long Spark jobs (often minutes) can see elapsed time without
+    // waiting for the final 'executionTime' badge that appears only on
+    // completion. Format matches the final badge (`N.NNs`, 2 decimals).
+    const [elapsedSeconds, setElapsedSeconds] = useState(0);
+    useEffect(() => {
+        if (!isRunning) {
+            setElapsedSeconds(0);
+            return;
+        }
+        const startedAt = Date.now();
+        setElapsedSeconds(0);
+        const id = setInterval(() => {
+            setElapsedSeconds((Date.now() - startedAt) / 1000);
+        }, 100);
+        return () => clearInterval(id);
+    }, [isRunning]);
+
     // Local source state to prevent cursor jumping on parent re-render
     const [localSource, setLocalSource] = useState(cell.source || '');
     const prevCellIdRef = useRef(cell.id);
@@ -131,7 +149,9 @@ export const CellEditor: React.FC<CellEditorProps> = React.memo(({
                     {isRunning && cell.type === 'code' && (
                         <div className="flex items-center gap-1 text-blue-500 shrink-0">
                             <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            <span className="text-xs">Running</span>
+                            <span className="text-xs font-mono tabular-nums">
+                                {elapsedSeconds.toFixed(2)}s
+                            </span>
                         </div>
                     )}
                     {hasExecuted && cell.type === 'code' && !isRunning && !isPending && (
