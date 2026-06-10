@@ -11,7 +11,7 @@ import { devLog } from '@/lib/debug';
 // Ensure axios interceptors are registered (authService constructor sets up Bearer token)
 import '@/services/authService';
 
-export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'starting' | 'error' | 'dead';
+export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'starting' | 'disconnecting' | 'error' | 'dead';
 export type NotebookLanguage = 'python' | 'scala' | 'sql';
 
 function isScalaToolingCrash(text: string): boolean {
@@ -632,8 +632,12 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
             currentSession.pendingInspections.forEach(c => c.resolve({ found: false, data: {}, metadata: {}, status: 'error' }));
             currentSession.pendingInspections.clear();
 
-            // Don't overwrite 'dead' status with 'disconnected' (keep the detailed reason)
-            if (!wasAlreadyDead) {
+            // Don't overwrite 'dead' status with 'disconnected' (keep the detailed reason).
+            // Also don't overwrite 'disconnecting' — that's a user-initiated tear-down in
+            // progress and disconnect() will land the final 'disconnected' itself after
+            // its min-visible delay (otherwise the badge skips the intermediate state).
+            const userTearingDown = currentSession.status === 'disconnecting';
+            if (!wasAlreadyDead && !userTearingDown) {
                 sessionManager.updateSession(notebookId, {
                     ws: null,
                     status: retryInProgress ? 'connecting' : 'disconnected',
@@ -914,20 +918,43 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
     }, [notebookId, kernelProxyUrl, setupWebSocket]);
 
     // Disconnect from kernel
+    // Flip session.status to 'disconnecting' without running the
+    // disconnect side effects. Useful for Shutdown: we want the
+    // badge to show "Disconnecting..." while the backend kills the
+    // kernel, and we need it set BEFORE ws.onclose fires (the
+    // close handler checks this status to know it should leave
+    // status alone instead of overwriting with 'disconnected').
+    const markDisconnecting = useCallback(() => {
+        sessionManager.updateSession(notebookId, { status: 'disconnecting' });
+    }, [notebookId]);
+
     const disconnect = useCallback(async () => {
         try {
             const session = sessionManager.getSession(notebookId);
+
+            // Flip the badge to "Disconnecting…" before the DELETE
+            // round-trip so the user gets feedback (k8s_per_user
+            // mode can take a few seconds to ack).
+            sessionManager.updateSession(notebookId, { status: 'disconnecting' });
 
             // Close WebSocket
             if (session.ws) {
                 session.ws.close();
             }
 
-            // Tell backend to disconnect
+            // Tell backend to disconnect. Pair with a min-duration
+            // delay so the intermediate state stays visible long
+            // enough to register on fast (docker-compose) backends
+            // where DELETE often returns in <50ms.
+            const minVisible = new Promise(r => setTimeout(r, 800));
             try {
-                await axios.delete(`/api/v1/notebooks/${notebookId}/kernel/disconnect`);
+                await Promise.all([
+                    axios.delete(`/api/v1/notebooks/${notebookId}/kernel/disconnect`),
+                    minVisible,
+                ]);
             } catch (e) {
                 console.warn(`[JupyterKernel][${notebookId}] Failed to notify backend of disconnect:`, e);
+                await minVisible;
             }
 
             sessionManager.updateSession(notebookId, {
@@ -1378,6 +1405,7 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
         checkConnection,
         waitForReady,
         disconnect,
+        markDisconnecting,
         restart,
         trackPodStatus,
         executeCell,

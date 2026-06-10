@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { flushSync } from 'react-dom';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { useAIContext } from '@/contexts/AIContext';
@@ -156,6 +157,7 @@ export default function NotebookPage() {
         connect,
         checkConnection,
         disconnect,
+        markDisconnecting,
         restart,
         trackPodStatus,
         executeCell,
@@ -879,7 +881,15 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
     };
 
     const confirmDisconnect = async () => {
-        setDisconnectConfirmOpen(false);
+        // Force the dialog close to commit in its own React batch
+        // BEFORE the disconnect() status updates. Without flushSync
+        // React 18 automatic batching merges the dialog close and
+        // the 'disconnecting' status into one commit, and the
+        // intermediate state never paints — the badge appears to
+        // stay on "Connected" through the dialog fade-out.
+        flushSync(() => {
+            setDisconnectConfirmOpen(false);
+        });
         await disconnect(); // disconnect returns void, handles errors internally
 
         // Clear from DB/Cache if needed
@@ -2095,7 +2105,10 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                     <AlertDialogFooter>
                         <AlertDialogCancel>Cancel</AlertDialogCancel>
                         <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={async () => {
-                            setDisconnectConfirmOpen(false);
+                            flushSync(() => {
+                                setDisconnectConfirmOpen(false);
+                                markDisconnecting();
+                            });
                             try {
                                 await axios.delete(`/api/v1/notebooks/${notebookId}/kernel/shutdown`);
                                 // Track pod terminate in BG so sidebar shows "Shutting down..." until pod is gone.
