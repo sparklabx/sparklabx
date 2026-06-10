@@ -184,6 +184,7 @@ export default function NotebookPage() {
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
     const [notebookToDelete, setNotebookToDelete] = useState<{ id: string; name: string } | null>(null);
     const [disconnectConfirmOpen, setDisconnectConfirmOpen] = useState(false);
+    const [pendingNavUrl, setPendingNavUrl] = useState<string | null>(null);
     const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null);
     const [renameValue, setRenameValue] = useState('');
     const [libraryDialogOpen, setLibraryDialogOpen] = useState(false);
@@ -240,6 +241,23 @@ export default function NotebookPage() {
     useEffect(() => {
         if (connectionStatus !== 'connected' || !notebookId) return;
         let cancelled = false;
+
+        // Skip re-init when the kernel pod is the SAME one we already
+        // initialized in a previous tab/session. Spark context lives
+        // inside the pod, so a tab reload (or laptop sleep/wake) that
+        // reconnects to the same kernel_id needs no re-init — running
+        // it again clobbers user state and shows a spurious "Booting
+        // Spark…" badge. The localStorage flag is keyed per-notebook
+        // and stores the kernel_id whose init we observed complete;
+        // if the kernel restarts (manual restart or pod respawn), the
+        // new kernel_id won't match and init runs again as normal.
+        const currentKernelId = localStorage.getItem(`sparklabx_kernel_${notebookId}`);
+        const initedKernelId = localStorage.getItem(`sparklabx_spark_inited_${notebookId}`);
+        if (currentKernelId && currentKernelId === initedKernelId) {
+            devLog(`[NotebookPage] Skipping Spark init — kernel ${currentKernelId} already initialized`);
+            setSparkInitPending(false);
+            return;
+        }
 
         void (async () => {
             // Block user execution immediately on connect; init may take a while (first run downloads jars).
@@ -590,7 +608,14 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                     // If still running, keep the initializing indicator on.
                     setSparkInitPending(!ok && stillRunning);
                     if (!ok && !stillRunning) toast.error('Spark initialization timed out');
-                    if (ok) setSparkInitPending(false);
+                    if (ok) {
+                        setSparkInitPending(false);
+                        // Remember which kernel pod we successfully
+                        // initialized so a tab reload (same pod)
+                        // skips re-init.
+                        const k = localStorage.getItem(`sparklabx_kernel_${notebookId}`);
+                        if (k) localStorage.setItem(`sparklabx_spark_inited_${notebookId}`, k);
+                    }
                 }
             }
         })();
@@ -1104,8 +1129,39 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
 
         const intervalId = setInterval(saveDirtyCells, AUTOSAVE_INTERVAL);
 
-        // Flush all pending saves on browser close/reload
-        const handleBeforeUnload = () => {
+        // Captured in beforeunload (when runningCells is still
+        // populated) and consumed in pagehide. ws.onclose races
+        // with pagehide and resets runningCells to empty, so a
+        // direct read inside pagehide would no-op.
+        let unloadCellsSnapshot: string[] = [];
+
+        const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+            if (runningCellsRef.current.size > 0) {
+                unloadCellsSnapshot = Array.from(runningCellsRef.current);
+                e.preventDefault();
+                e.returnValue = '';
+                return;
+            }
+            unloadCellsSnapshot = [];
+        };
+
+        const handlePageHide = () => {
+            if (unloadCellsSnapshot.length > 0 && notebookRef.current) {
+                const token = localStorage.getItem('sparklabx_token');
+                const clearable = unloadCellsSnapshot.filter(
+                    (id) => id !== 'init-spark-context' && !id.startsWith('spark-connect-')
+                );
+                fetch(`/api/v1/notebooks/${notebookRef.current.id}/kernel/interrupt`, {
+                    method: 'POST',
+                    keepalive: true,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                    },
+                    body: JSON.stringify({ clear_cells: clearable }),
+                }).catch(() => { /* best effort */ });
+            }
+
             // Flush pending source debounce timers via synchronous XHR (sendBeacon only supports POST)
             if (notebookRef.current) {
                 Object.entries(updateCellTimerRef.current).forEach(([cellId, timer]) => {
@@ -1126,10 +1182,12 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
             saveDirtyCells();
         };
         window.addEventListener('beforeunload', handleBeforeUnload);
+        window.addEventListener('pagehide', handlePageHide);
 
         return () => {
             clearInterval(intervalId);
             window.removeEventListener('beforeunload', handleBeforeUnload);
+            window.removeEventListener('pagehide', handlePageHide);
             saveDirtyCells();
         };
     }, [cellOutputs, executedCells, queuedUpdateCell]);
@@ -1187,6 +1245,14 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
         if (o?.type === 'result' && o?.data) return JSON.stringify(o.data, null, 2);
         return '';
     }).filter(Boolean).join('\n');
+
+    const guardedNavigate = useCallback((url: string) => {
+        if (runningCellsRef.current.size > 0) {
+            setPendingNavUrl(url);
+            return;
+        }
+        navigate(url);
+    }, [navigate]);
 
     // Interrupt whatever the kernel is currently executing. SIGINT travels to
     // Python (KeyboardInterrupt) / Almond (cancel cell) and Spark catches it to
@@ -1286,7 +1352,7 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                                         >
                                             <span
                                                 className="truncate cursor-pointer flex-1"
-                                                onClick={() => navigate(`/notebooks/${nb.id}`)}
+                                                onClick={() => guardedNavigate(`/notebooks/${nb.id}`)}
                                             >
                                                 {nb.name}
                                             </span>
@@ -1489,7 +1555,7 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
         return (
             <div className="flex flex-col items-center justify-center h-screen gap-4">
                 <p className="text-red-500">{error || 'Notebook not found'}</p>
-                <Button onClick={() => navigate('/notebooks')}>Back to Notebooks</Button>
+                <Button onClick={() => guardedNavigate('/notebooks')}>Back to Notebooks</Button>
             </div>
         );
     }
@@ -2054,6 +2120,38 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                         </AlertDialogAction>
                         <AlertDialogAction className="bg-amber-500 text-white hover:bg-amber-600" onClick={confirmDisconnect}>
                             Disconnect
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+
+            <AlertDialog open={pendingNavUrl !== null} onOpenChange={(open) => { if (!open) setPendingNavUrl(null); }}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Cell is still running</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            Leaving this notebook will interrupt the running cell on the kernel.
+                            <br /><br />
+                            <strong>Continue</strong> — interrupt the cell and switch.
+                            <br />
+                            <strong>Cancel</strong> — stay here.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                            className="bg-amber-500 text-white hover:bg-amber-600"
+                            onClick={async () => {
+                                const target = pendingNavUrl;
+                                setPendingNavUrl(null);
+                                if (!target) return;
+                                try {
+                                    await axios.post(`/api/v1/notebooks/${notebookId}/kernel/interrupt`);
+                                } catch { /* best effort; navigate anyway */ }
+                                navigate(target);
+                            }}
+                        >
+                            Continue
                         </AlertDialogAction>
                     </AlertDialogFooter>
                 </AlertDialogContent>
