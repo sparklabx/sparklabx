@@ -163,7 +163,7 @@ export const CellEditor: React.FC<CellEditorProps> = React.memo(({
                             )}
                         </div>
                     )}
-                    {cell.executionTime && (
+                    {cell.executionTime && !isRunning && !isPending && (
                         <span className="text-xs text-muted-foreground">
                             {(cell.executionTime / 1000).toFixed(2)}s
                         </span>
