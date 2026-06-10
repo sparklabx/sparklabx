@@ -222,19 +222,31 @@ export const SidebarFiles: React.FC = () => {
             {/* Breadcrumb — fixed row height so the panel doesn't grow
                 when navigating into a folder (the back arrow only renders
                 in subfolders; without a reserved slot the row would
-                stretch when it appears). */}
-            <div className="px-2 py-1.5 bg-muted/30 border-b border-border">
-                <div className="flex items-center gap-1 text-xs overflow-hidden text-nowrap h-5">
-                    {currentPath ? (
-                        <Button variant="ghost" size="icon" className="h-5 w-5 shrink-0 -ml-1" onClick={navigateUp} title="Go Up">
-                            <ChevronLeft className="size-3.5" />
-                        </Button>
-                    ) : (
-                        <span className="w-5 shrink-0 -ml-1" aria-hidden />
-                    )}
-                    <span className="truncate font-mono text-[10px] flex-1" title={'/' + currentPath}>
-                        /{currentPath}
-                    </span>
+                stretch when it appears). Scope prefix is stripped from
+                the displayed path since the scope is already indicated
+                by the tabs above. */}
+            <div className="px-2 py-1 bg-muted/30 border-b border-border">
+                <div className="flex items-center text-xs overflow-hidden text-nowrap h-5">
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-5 w-5 shrink-0 -ml-1 disabled:opacity-40"
+                        onClick={navigateUp}
+                        disabled={!currentPath}
+                        title="Go Up"
+                    >
+                        <ChevronLeft className="size-3.5" />
+                    </Button>
+                    {(() => {
+                        const stripped = currentPath.startsWith(activeScope + '/')
+                            ? currentPath.slice(activeScope.length + 1)
+                            : currentPath;
+                        return (
+                            <span className="truncate font-mono text-[10px] flex-1" title={'/' + stripped}>
+                                /{stripped}
+                            </span>
+                        );
+                    })()}
                     <button
                         onClick={() => copyPath(buildFullPath(currentPath))}
                         className="p-0.5 hover:bg-muted rounded text-muted-foreground hover:text-foreground shrink-0"
