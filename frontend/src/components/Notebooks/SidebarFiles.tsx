@@ -219,14 +219,19 @@ export const SidebarFiles: React.FC = () => {
                 </Button>
             </div>
 
-            {/* Breadcrumb */}
+            {/* Breadcrumb — fixed row height so the panel doesn't grow
+                when navigating into a folder (the back arrow only renders
+                in subfolders; without a reserved slot the row would
+                stretch when it appears). */}
             <div className="px-2 py-1.5 bg-muted/30 border-b border-border">
-                <div className="flex items-center gap-1 text-xs overflow-hidden text-nowrap">
+                <div className="flex items-center gap-1 text-xs overflow-hidden text-nowrap h-5">
                     {currentPath ? (
                         <Button variant="ghost" size="icon" className="h-5 w-5 shrink-0 -ml-1" onClick={navigateUp} title="Go Up">
                             <ChevronLeft className="size-3.5" />
                         </Button>
-                    ) : null}
+                    ) : (
+                        <span className="w-5 shrink-0 -ml-1" aria-hidden />
+                    )}
                     <span className="truncate font-mono text-[10px] flex-1" title={'/' + currentPath}>
                         /{currentPath}
                     </span>
@@ -261,22 +266,26 @@ export const SidebarFiles: React.FC = () => {
                         </div>
                     )}
                     {files.map((file) => (
-                        <div key={file.key} className="group flex items-center gap-2 p-1.5 rounded hover:bg-muted/50 transition-colors">
+                        <div key={file.key} className="group flex items-center gap-2 p-1.5 rounded hover:bg-muted/50 transition-colors h-7">
                             {file.is_folder ? (
                                 <FolderOpen className="size-3.5 text-yellow-500 shrink-0" />
                             ) : (
                                 <FileText className="size-3.5 text-blue-500 shrink-0" />
                             )}
-                            <div className="flex-1 min-w-0 overflow-hidden">
+                            {/* Single-line row so swapping a folder ↔ file at
+                                the same position doesn't change the row
+                                height. File size moves inline to the right
+                                instead of stacking under the name. */}
+                            <div className="flex-1 min-w-0 overflow-hidden flex items-baseline gap-2">
                                 {file.is_folder ? (
-                                    <div onClick={() => navigateToFolder(file)} className="font-medium cursor-pointer truncate hover:text-primary transition-colors text-[11px]">
+                                    <span onClick={() => navigateToFolder(file)} className="font-medium cursor-pointer truncate hover:text-primary transition-colors text-[11px] flex-1">
                                         {file.name}
-                                    </div>
+                                    </span>
                                 ) : (
-                                    <div className="truncate text-[11px]" title={file.name}>{file.name}</div>
+                                    <span className="truncate text-[11px] flex-1" title={file.name}>{file.name}</span>
                                 )}
                                 {!file.is_folder && (
-                                    <div className="text-[9px] text-muted-foreground">{formatFileSize(file.size)}</div>
+                                    <span className="text-[9px] text-muted-foreground shrink-0">{formatFileSize(file.size)}</span>
                                 )}
                             </div>
                             <div className="flex opacity-0 group-hover:opacity-100 transition-opacity gap-0.5">
