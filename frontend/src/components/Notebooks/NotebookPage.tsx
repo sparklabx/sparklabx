@@ -162,6 +162,7 @@ export default function NotebookPage() {
         executeAllCells,
         pendingCells,
         executionCounts,
+        executionTimes,
         restoreOutputs,
         clearCellOutput,
         waitForReady,
@@ -1495,7 +1496,10 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
         source: c.source,
         order: c.order,
         output: c.last_output?.output as CellOutput[] | undefined,
-        executionTime: c.last_execution_time_ms,
+        // Prefer the live in-session duration (captured by useJupyterKernel on
+        // execute_reply) over the persisted last_execution_time_ms, so the
+        // badge updates immediately when the cell finishes — no DB round-trip.
+        executionTime: executionTimes[c.id] ?? c.last_execution_time_ms,
         last_output: c.last_output as { outputs?: CellOutput[]; executed?: boolean } | undefined,
         _frontendId: (c as any)._frontendId, // Pass through stable ID
     }));
