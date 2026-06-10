@@ -57,8 +57,9 @@ interface KernelSession {
     runningCells: Set<string>;
     pendingCells: Set<string>;  // Track cells queued for execution (Run All)
     executionCounts: Record<string, number>;  // Cell ID → execution count (In [N]:)
+    executionTimes: Record<string, number>;   // Cell ID → last execution duration (ms) for this session
     executedCells: Set<string>;  // Track cells that have completed execution
-    pendingExecutions: Map<string, { cellId: string; resolve: () => void; hadError?: boolean }>;
+    pendingExecutions: Map<string, { cellId: string; resolve: () => void; hadError?: boolean; startedAt: number }>;
     pendingCompletions: Map<string, { resolve: (result: CompletionResult) => void }>;
     pendingInspections: Map<string, { resolve: (result: InspectionResult) => void }>;
 }
@@ -96,6 +97,7 @@ class KernelSessionManager {
                 runningCells: new Set(),
                 pendingCells: new Set(),
                 executionCounts: {},
+                executionTimes: {},
                 executedCells: new Set(),
                 pendingExecutions: new Map(),
                 pendingCompletions: new Map(),
@@ -404,11 +406,22 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
                     newExecCounts[cellId] = userMax + 1;
                 }
 
+                // Record actual execution duration for this cell. Backed by the
+                // startedAt timestamp we stamped into pendingExecutions when
+                // execute_request was sent. Used by the cell badge so the user
+                // sees "1.23s" right after the cell finishes, without waiting
+                // for a DB round-trip via last_execution_time_ms.
+                const newExecTimes = { ...currentSession.executionTimes };
+                if (cellId && execution?.startedAt) {
+                    newExecTimes[cellId] = Date.now() - execution.startedAt;
+                }
+
                 // Update state BEFORE calling resolve()
                 sessionManager.updateSession(notebookId, {
                     runningCells: newRunningCells,
                     executedCells: newExecutedCells,
                     executionCounts: newExecCounts,
+                    executionTimes: newExecTimes,
                 });
 
                 // Delay resolve to let React paint pending state on remaining cells
@@ -956,6 +969,22 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
             return;
         }
 
+        // Kernel has a single execution slot — clicking Run on cell B while
+        // cell A is still running would (a) queue B on the kernel side and
+        // (b) make the frontend mark both as 'running'. Then a Stop on
+        // either cell sends one SIGINT that cancels whichever the kernel
+        // happens to be executing, looking to the user like "stopping one
+        // cell also stopped the other". Refuse the second click instead.
+        // Run All has its own queue (executeAllCells chains via onComplete)
+        // and is not affected.
+        const otherRunning = [...session.runningCells].filter(id => id !== cellId);
+        if (otherRunning.length > 0) {
+            toast.warning('Kernel is busy', {
+                description: 'Another cell is running. Wait for it to finish or click Stop on it first.',
+            });
+            return;
+        }
+
         // Policy Check: Skip for system-generated cells and exam mode (kernel proxy).
         // 'init-spark-context' is the auto-init cell injected by NotebookPage.
         const isSystemCell = cellId?.startsWith('spark-connect-')
@@ -1037,10 +1066,13 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
             channel: 'shell'
         };
 
-        // Track this execution
+        // Track this execution. startedAt is captured here (vs in execute_reply
+        // metadata) so we measure WS-round-trip-inclusive wall time — what the
+        // user actually waited for, not just kernel CPU time.
         session.pendingExecutions.set(msgId, {
             cellId,
             hadError: false,
+            startedAt: Date.now(),
             resolve: () => {
                 const exec = session.pendingExecutions.get(msgId);
                 if (onComplete) onComplete(exec?.hadError);
@@ -1340,6 +1372,7 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
         runningCells: session.runningCells,
         pendingCells: session.pendingCells,
         executionCounts: session.executionCounts,
+        executionTimes: session.executionTimes,
         executedCells: session.executedCells,
         connect,
         checkConnection,
