@@ -241,6 +241,23 @@ export default function NotebookPage() {
         if (connectionStatus !== 'connected' || !notebookId) return;
         let cancelled = false;
 
+        // Skip re-init when the kernel pod is the SAME one we already
+        // initialized in a previous tab/session. Spark context lives
+        // inside the pod, so a tab reload (or laptop sleep/wake) that
+        // reconnects to the same kernel_id needs no re-init — running
+        // it again clobbers user state and shows a spurious "Booting
+        // Spark…" badge. The localStorage flag is keyed per-notebook
+        // and stores the kernel_id whose init we observed complete;
+        // if the kernel restarts (manual restart or pod respawn), the
+        // new kernel_id won't match and init runs again as normal.
+        const currentKernelId = localStorage.getItem(`sparklabx_kernel_${notebookId}`);
+        const initedKernelId = localStorage.getItem(`sparklabx_spark_inited_${notebookId}`);
+        if (currentKernelId && currentKernelId === initedKernelId) {
+            devLog(`[NotebookPage] Skipping Spark init — kernel ${currentKernelId} already initialized`);
+            setSparkInitPending(false);
+            return;
+        }
+
         void (async () => {
             // Block user execution immediately on connect; init may take a while (first run downloads jars).
             setSparkInitPending(true);
@@ -590,7 +607,14 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                     // If still running, keep the initializing indicator on.
                     setSparkInitPending(!ok && stillRunning);
                     if (!ok && !stillRunning) toast.error('Spark initialization timed out');
-                    if (ok) setSparkInitPending(false);
+                    if (ok) {
+                        setSparkInitPending(false);
+                        // Remember which kernel pod we successfully
+                        // initialized so a tab reload (same pod)
+                        // skips re-init.
+                        const k = localStorage.getItem(`sparklabx_kernel_${notebookId}`);
+                        if (k) localStorage.setItem(`sparklabx_spark_inited_${notebookId}`, k);
+                    }
                 }
             }
         })();
