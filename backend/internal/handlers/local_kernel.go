@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/lib/pq"
 	"github.com/rs/zerolog/log"
 
 	"github.com/sparklabx/sparklabx/backend/internal/config"
@@ -528,6 +529,11 @@ func (h *LocalKernelHandler) Status(c *gin.Context) {
 // "stop this query, keep my state" UX users reach for after a misclick.
 //
 // POST /api/v1/notebooks/:id/kernel/interrupt
+// Optional body: { "clear_cells": [...] } — stamps the listed cells'
+// last_output as a KeyboardInterrupt traceback in the same request.
+// Folded together so the page-unload path can fire a single keepalive
+// fetch instead of N+1 (Chrome silently drops the tail when the JS
+// context is being killed).
 func (h *LocalKernelHandler) Interrupt(c *gin.Context) {
 	notebookID := c.Param("id")
 	if !checkNotebookWriteAccess(c, notebookID) {
@@ -535,6 +541,11 @@ func (h *LocalKernelHandler) Interrupt(c *gin.Context) {
 	}
 	userID := userIDString(c)
 	kernelKey := kernelKeyForNotebook(notebookID, userID)
+
+	var body struct {
+		ClearCells []string `json:"clear_cells"`
+	}
+	_ = c.ShouldBindJSON(&body)
 
 	kernelMapMu.Lock()
 	kernelID := kernelMap[kernelKey]
@@ -567,7 +578,17 @@ func (h *LocalKernelHandler) Interrupt(c *gin.Context) {
 		return
 	}
 
-	log.Info().Str("kernel_id", kernelID).Str("user_id", userID).Msg("kernel interrupted")
+	// Without this, the next page load would read the PREVIOUS successful
+	// run's last_output and render the killed cell as if it completed.
+	if len(body.ClearCells) > 0 {
+		const stmt = `UPDATE notebook_cells SET last_output = $1, last_execution_time_ms = NULL, updated_at = NOW() WHERE notebook_id = $2 AND id = ANY($3)`
+		interrupted := []byte(`{"outputs":[{"type":"error","ename":"KeyboardInterrupt","evalue":"Interrupted by tab reload","traceback":["KeyboardInterrupt: Interrupted by tab reload"]}],"executed":true}`)
+		if _, err := database.GetDB().Exec(stmt, interrupted, notebookID, pq.Array(body.ClearCells)); err != nil {
+			log.Warn().Err(err).Str("notebook_id", notebookID).Msg("interrupt: failed to stamp cell outputs")
+		}
+	}
+
+	log.Info().Str("kernel_id", kernelID).Str("user_id", userID).Strs("cleared", body.ClearCells).Msg("kernel interrupted")
 	c.JSON(http.StatusOK, gin.H{"status": "interrupted", "kernel_id": kernelID})
 }
 
