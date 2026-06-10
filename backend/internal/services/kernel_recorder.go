@@ -45,14 +45,22 @@ type CellOutput struct {
 // lifetime of one execution; a fresh execution of the same cell
 // creates a new record and supersedes the previous via cellLatest.
 type ExecutionRecord struct {
-	MsgID           string       `json:"msg_id"`
-	CellID          string       `json:"cell_id"`
-	StartedAt       time.Time    `json:"started_at"`
+	MsgID     string    `json:"msg_id"`
+	CellID    string    `json:"cell_id"`
+	StartedAt time.Time `json:"started_at"`
+	// KernelStartedAt is set when iopub status:busy with this
+	// record's msg_id first arrives — i.e. when the kernel
+	// actually picks the execute_request up off its FIFO queue.
+	// Nil while queued; non-nil once running. The FE uses this on
+	// reload restore to put a still-queued cell in pendingCells
+	// instead of runningCells.
+	KernelStartedAt *time.Time   `json:"kernel_started_at,omitempty"`
 	Completed       bool         `json:"completed"`
-	HasError        bool         `json:"has_error"`
 	Outputs         []CellOutput `json:"-"`
 	ExecutionCount  int          `json:"execution_count"`
 	ExecutionTimeMs int64        `json:"execution_time_ms"`
+
+	hasError bool // not exposed; influences DB executed flag only
 }
 
 // KernelRecorder is a singleton per kernel_id. Its WS to JKG stays
@@ -214,6 +222,7 @@ func (r *KernelRecorder) RegisterExecution(msgID, cellID string) {
 		MsgID:     msgID,
 		CellID:    cellID,
 		StartedAt: time.Now(),
+		Outputs:   []CellOutput{}, // non-nil so JSON always serializes as []
 	}
 	r.cellLatest[cellID] = msgID
 }
@@ -281,7 +290,7 @@ func (r *KernelRecorder) ingest(raw []byte) {
 				}
 			}
 		}
-		rec.HasError = true
+		rec.hasError = true
 		rec.Outputs = append(rec.Outputs, CellOutput{
 			Type: "error", Ename: ename, Evalue: evalue, Traceback: tb,
 		})
@@ -296,17 +305,29 @@ func (r *KernelRecorder) ingest(raw []byte) {
 		}
 
 	case "status":
-		// iopub status transitions are the only completion signal
-		// the recorder sees — shell channel's execute_reply only
-		// goes back to the requesting session (the proxy WS), not
-		// us. status:idle with parent = some execute_request means
-		// THAT execution just finished.
+		// iopub status transitions are the only execution lifecycle
+		// signal the recorder sees — shell channel's execute_reply
+		// only goes back to the requesting session (the proxy WS),
+		// not us.
 		state, _ := msg.Content["execution_state"].(string)
-		if state == "idle" {
+		switch state {
+		case "busy":
+			// First busy for an execute_request = kernel just dequeued
+			// it. Stamp so the FE on restore knows this is the running
+			// cell, not a still-queued one.
+			if rec.KernelStartedAt == nil {
+				now := time.Now()
+				rec.KernelStartedAt = &now
+			}
+		case "idle":
 			rec.Completed = true
-			rec.ExecutionTimeMs = time.Since(rec.StartedAt).Milliseconds()
-		} else {
-			return // busy / starting — no DB write needed
+			start := rec.StartedAt
+			if rec.KernelStartedAt != nil {
+				start = *rec.KernelStartedAt
+			}
+			rec.ExecutionTimeMs = time.Since(start).Milliseconds()
+		default:
+			return // starting, etc. — no state change
 		}
 
 	case "clear_output":
@@ -358,9 +379,6 @@ func (r *KernelRecorder) flushOnce() {
 		payload := map[string]interface{}{
 			"outputs":  rec.Outputs,
 			"executed": rec.Completed,
-		}
-		if rec.Outputs == nil {
-			payload["outputs"] = []CellOutput{}
 		}
 		b, err := json.Marshal(payload)
 		if err != nil {

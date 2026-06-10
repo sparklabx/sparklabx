@@ -227,6 +227,32 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
                 sessionManager.updateSession(notebookId, { status: 'connected', podPhase: '', podMessage: '' });
             }
 
+            // status:busy on iopub tells us THIS msg_id just started
+            // executing on the kernel. For Run All this is what
+            // promotes a queued cell into runningCells — until busy
+            // fires the cell is sitting in the kernel's FIFO queue,
+            // not actually executing.
+            if (executionState === 'busy' && parentMsgId) {
+                const pending = session.pendingExecutions.get(parentMsgId);
+                if (pending?.cellId) {
+                    const cur = sessionManager.getSession(notebookId);
+                    if (cur.pendingCells.has(pending.cellId)) {
+                        const np = new Set(cur.pendingCells);
+                        np.delete(pending.cellId);
+                        const nr = new Set(cur.runningCells);
+                        nr.add(pending.cellId);
+                        // Reset startedAt to "kernel actually started"
+                        // so the timer reflects real execution time, not
+                        // the time spent waiting in the kernel queue.
+                        pending.startedAt = Date.now();
+                        sessionManager.updateSession(notebookId, {
+                            pendingCells: np,
+                            runningCells: nr,
+                        });
+                    }
+                }
+            }
+
             // status:idle on iopub is the broadcast completion signal for
             // an execute_request. We get this even after a tab reload
             // (unlike execute_reply which is shell-channel point-to-point
@@ -503,24 +529,44 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
         // is still executing across a tab reload.
         try {
             const resp = await axios.get(`/api/v1/notebooks/${notebookId}/kernel/active-executions`);
-            const execs: Array<{ msg_id: string; cell_id: string; started_at: string; execution_count: number; has_error: boolean }>
-                = resp.data?.executions || [];
+            const execs: Array<{
+                msg_id: string;
+                cell_id: string;
+                started_at: string;
+                kernel_started_at?: string;
+                execution_count: number;
+            }> = resp.data?.executions || [];
             if (execs.length > 0) {
                 const session = sessionManager.getSession(notebookId);
                 const newRunning = new Set(session.runningCells);
+                const newPending = new Set(session.pendingCells);
+                const newCounts = { ...session.executionCounts };
                 for (const e of execs) {
                     if (!e.msg_id || !e.cell_id) continue;
                     if (session.pendingExecutions.has(e.msg_id)) continue;
-                    const startedAt = e.started_at ? new Date(e.started_at).getTime() : Date.now();
+                    const isRunning = !!e.kernel_started_at;
+                    const startedAt = isRunning
+                        ? new Date(e.kernel_started_at!).getTime()
+                        : (e.started_at ? new Date(e.started_at).getTime() : Date.now());
                     session.pendingExecutions.set(e.msg_id, {
                         cellId: e.cell_id,
-                        hadError: !!e.has_error,
                         startedAt,
                         resolve: () => { /* restored entry has no caller waiting */ },
                     });
-                    newRunning.add(e.cell_id);
+                    if (isRunning) {
+                        newRunning.add(e.cell_id);
+                    } else {
+                        newPending.add(e.cell_id);
+                    }
+                    if (e.execution_count > 0) {
+                        newCounts[e.cell_id] = e.execution_count;
+                    }
                 }
-                sessionManager.updateSession(notebookId, { runningCells: newRunning });
+                sessionManager.updateSession(notebookId, {
+                    runningCells: newRunning,
+                    pendingCells: newPending,
+                    executionCounts: newCounts,
+                });
                 devLog(`[JupyterKernel][${notebookId}] Restored ${execs.length} active execution(s) from backend recorder`);
             }
         } catch (e) {
@@ -1046,7 +1092,7 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
         cellId: string,
         code: string,
         onComplete?: (error?: boolean) => void,
-        options?: { silent?: boolean; storeHistory?: boolean }
+        options?: { silent?: boolean; storeHistory?: boolean; queued?: boolean }
     ) => {
         const session = sessionManager.getSession(notebookId);
         const ws = session.ws;
@@ -1059,20 +1105,19 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
             return;
         }
 
-        // Kernel has a single execution slot — clicking Run on cell B while
-        // cell A is still running would (a) queue B on the kernel side and
-        // (b) make the frontend mark both as 'running'. Then a Stop on
-        // either cell sends one SIGINT that cancels whichever the kernel
-        // happens to be executing, looking to the user like "stopping one
-        // cell also stopped the other". Refuse the second click instead.
-        // Run All has its own queue (executeAllCells chains via onComplete)
-        // and is not affected.
-        const otherRunning = [...session.runningCells].filter(id => id !== cellId);
-        if (otherRunning.length > 0) {
-            toast.warning('Kernel is busy', {
-                description: 'Another cell is running. Wait for it to finish or click Stop on it first.',
-            });
-            return;
+        // Single-click Run on a second cell while another is running is
+        // ambiguous — Stop sends one SIGINT and we can't tell which cell
+        // the user meant to stop. Refuse, unless this call is part of an
+        // intentional batch (Run All) where queueing on the kernel side
+        // is the whole point.
+        if (!options?.queued) {
+            const otherRunning = [...session.runningCells].filter(id => id !== cellId);
+            if (otherRunning.length > 0) {
+                toast.warning('Kernel is busy', {
+                    description: 'Another cell is running. Wait for it to finish or click Stop on it first.',
+                });
+                return;
+            }
         }
 
         // Policy Check: Skip for system-generated cells and exam mode (kernel proxy).
@@ -1115,11 +1160,19 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
 
         devLog(`[JupyterKernel][${notebookId}] Executing cell ${cellId}`, options?.silent ? '(silent)' : '');
 
-        // Clear previous output and remove from pending (if was queued)
+        // Clear previous output. For a queued batch (Run All) the cell
+        // goes into pendingCells until iopub status:busy promotes it to
+        // running; for a direct Run it goes straight to runningCells.
         const newOutputs = { ...session.outputs, [cellId]: [] };
-        const newRunningCells = new Set(session.runningCells).add(cellId);
+        const newRunningCells = new Set(session.runningCells);
         const newPendingCells = new Set(session.pendingCells);
-        newPendingCells.delete(cellId);
+        if (options?.queued) {
+            newPendingCells.add(cellId);
+            newRunningCells.delete(cellId);
+        } else {
+            newRunningCells.add(cellId);
+            newPendingCells.delete(cellId);
+        }
 
         sessionManager.updateSession(notebookId, {
             outputs: newOutputs,
@@ -1190,42 +1243,22 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
             return;
         }
 
-        // Filter only code cells
         const codeCells = cells.filter(c => c.type === 'code');
         if (codeCells.length === 0) return;
 
-        devLog(`[JupyterKernel][${notebookId}] Run All: ${codeCells.length} cells`);
+        devLog(`[JupyterKernel][${notebookId}] Run All: ${codeCells.length} cells (queueing all upfront)`);
 
-        // Mark all cells as pending (except first which will run immediately)
-        const pendingCellIds = new Set(codeCells.slice(1).map(c => c.id));
-        sessionManager.updateSession(notebookId, { pendingCells: pendingCellIds });
-
-        // Execute cells sequentially using onComplete callback chain
-        let cellIndex = 0;
-
-        const executeNext = (error?: boolean) => {
-            if (error) {
-                const remaining = codeCells.length - cellIndex;
-                sessionManager.updateSession(notebookId, { pendingCells: new Set() });
-                toast.error(remaining > 0
-                    ? `Run All stopped: ${remaining} cell(s) skipped due to error`
-                    : 'Run All completed with error');
-                return;
-            }
-            if (cellIndex >= codeCells.length) {
-                devLog(`[JupyterKernel][${notebookId}] Run All complete`);
-                return;
-            }
-
-            const cell = codeCells[cellIndex];
-            cellIndex++;
-
-            executeCell(cell.id, cell.code, executeNext);
-        };
-
-        // Start with first cell
-        executeNext();
-
+        // Send every execute_request to the kernel immediately. Jupyter
+        // kernels process them FIFO and honor stop_on_error so a failure
+        // aborts the rest server-side — meaning a tab close mid-batch no
+        // longer halts the run (the kernel finishes the queue on its
+        // own, recorder captures output, next page load restores it).
+        codeCells.forEach((cell, idx) => {
+            // First cell goes straight to runningCells; the rest sit in
+            // pendingCells until iopub status:busy promotes each one as
+            // the kernel actually picks it up.
+            executeCell(cell.id, cell.code, undefined, { queued: idx > 0 });
+        });
     }, [notebookId, executeCell]);
 
     // Clear all pending cells (for canceling Run All)

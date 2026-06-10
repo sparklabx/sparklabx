@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -529,6 +530,8 @@ func (h *LocalKernelHandler) Status(c *gin.Context) {
 // "stop this query, keep my state" UX users reach for after a misclick.
 //
 // POST /api/v1/notebooks/:id/kernel/interrupt
+// Forwards SIGINT to the kernel; output flow continues to land in the
+// recorder so the next page load shows the interrupt traceback.
 func (h *LocalKernelHandler) Interrupt(c *gin.Context) {
 	notebookID := c.Param("id")
 	if !checkNotebookWriteAccess(c, notebookID) {
@@ -716,10 +719,8 @@ func (h *LocalKernelHandler) WebSocket(c *gin.Context) {
 	// Lazy-start the persistent recorder so output keeps flowing to
 	// DB even after THIS client closes. Idempotent — subsequent
 	// clients reuse the same recorder.
-	if rec, recErr := services.GetOrCreateRecorder(notebookID, kernelID, targetURL); recErr != nil {
+	if _, recErr := services.GetOrCreateRecorder(notebookID, kernelID, targetURL); recErr != nil {
 		logger.Warn().Err(recErr).Msg("failed to start kernel recorder — output persistence disabled for this kernel")
-	} else {
-		_ = rec
 	}
 
 	errChan := make(chan error, 2)
@@ -772,9 +773,7 @@ func (h *LocalKernelHandler) WebSocket(c *gin.Context) {
 // (msg_id → cell_id) mapping on the kernel's recorder so iopub
 // messages from this execution can be routed to the right cell.
 func captureExecuteRequest(kernelID string, msg []byte) {
-	// Cheap pre-check before JSON parse — execute_request is the only
-	// shell message we care about and most messages aren't that type.
-	if !bytesContains(msg, []byte(`"execute_request"`)) {
+	if !bytes.Contains(msg, []byte(`"execute_request"`)) {
 		return
 	}
 	var parsed struct {
@@ -795,27 +794,6 @@ func captureExecuteRequest(kernelID string, msg []byte) {
 	if r := services.GetRecorder(kernelID); r != nil {
 		r.RegisterExecution(parsed.Header.MsgID, parsed.Metadata.CellID)
 	}
-}
-
-// bytesContains is a tiny stdlib-free check; avoids importing "bytes"
-// for one call. Keeps the cheap pre-check fast.
-func bytesContains(haystack, needle []byte) bool {
-	if len(needle) == 0 || len(haystack) < len(needle) {
-		return false
-	}
-	for i := 0; i <= len(haystack)-len(needle); i++ {
-		match := true
-		for j := 0; j < len(needle); j++ {
-			if haystack[i+j] != needle[j] {
-				match = false
-				break
-			}
-		}
-		if match {
-			return true
-		}
-	}
-	return false
 }
 
 // ActiveExecutions returns the in-flight executions known to the
