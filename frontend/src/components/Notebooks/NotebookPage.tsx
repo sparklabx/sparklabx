@@ -1084,14 +1084,19 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                 const outputs = cellOutputs[cellId] || [];
                 const isExecuted = executedCells.has(cellId);
                 const execCount = executionCounts[cellId];
+                const execTime = executionTimes[cellId];
 
-                // Use existing queue to ensure serialization
+                // Use existing queue to ensure serialization. Persist
+                // last_execution_time_ms so the badge survives a page
+                // reload — without it the in-session executionTimes map
+                // is lost and the cell goes back to showing no duration.
                 queuedUpdateCell(cellId, {
                     last_output: {
                         outputs: outputs,
                         executed: isExecuted
                     },
                     ...(execCount != null ? { execution_count: execCount } : {}),
+                    ...(execTime != null ? { last_execution_time_ms: Math.round(execTime) } : {}),
                 });
             }
             setSaveStatus('saved');
