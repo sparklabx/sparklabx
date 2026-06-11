@@ -1009,6 +1009,14 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
         return saveQueueRef.current;
     }, [updateCell]);
 
+    // Ref-mirror for the autosave interval below. saveDirtyCells validates
+    // cells against notebookRef.current — the save call must bind to the
+    // SAME notebook state. A stale queuedUpdateCell closure (bound to the
+    // previously-open notebook) combined with fresh refs sent cell updates
+    // to the wrong notebook id when switching notebooks.
+    const queuedUpdateCellRef = useRef(queuedUpdateCell);
+    queuedUpdateCellRef.current = queuedUpdateCell;
+
     // Track cells that need saving (memory as source of truth)
     const dirtyCellIdsRef = useRef<Set<string>>(new Set());
     const prevCellOutputs = useRef<Record<string, CellOutput[]>>({});
@@ -1115,7 +1123,7 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                 // last_execution_time_ms so the badge survives a page
                 // reload — without it the in-session executionTimes map
                 // is lost and the cell goes back to showing no duration.
-                queuedUpdateCell(cellId, {
+                queuedUpdateCellRef.current(cellId, {
                     last_output: {
                         outputs: outputs,
                         executed: isExecuted
@@ -1158,7 +1166,11 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
             window.removeEventListener('pagehide', handlePageHide);
             saveDirtyCells();
         };
-    }, [queuedUpdateCell]);
+        // Mount-once: every piece of state saveDirtyCells touches goes
+        // through a render-assigned ref, all bound to the same notebook
+        // state — consistent even mid-switch between notebooks.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     // Track dirty state when outputs change
     useEffect(() => {
