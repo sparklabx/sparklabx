@@ -40,10 +40,29 @@ export default defineConfig(() => {
       rollupOptions: {
         output: {
           manualChunks(id) {
+            // Vite's virtual helper modules (preload helper, commonjs
+            // helpers) are shared by every chunk that uses dynamic import.
+            // Left unassigned, Rollup hoists them into vendor-monaco —
+            // making the tiny helper drag the whole 3.7MB Monaco chunk into
+            // the entry's static imports (and a modulepreload on login).
+            // Pin them next to React, which the entry always loads anyway.
+            if (id.includes('\0vite/') || id.includes('commonjsHelpers')) {
+              return 'vendor-react';
+            }
             if (id.includes('node_modules')) {
+              // Anchor React in its own chunk. Without this, Rollup hoists
+              // react/react-dom INTO the vendor-monaco manual chunk (first
+              // manual chunk that depends on them), which makes the entry
+              // statically import — and the browser preload — all of Monaco
+              // on the login screen.
+              if (/node_modules\/(react|react-dom|scheduler)\//.test(id)) {
+                return 'vendor-react';
+              }
               // Monaco is huge and only needed by the notebook editor —
-              // keep it in its own long-cacheable chunk.
-              if (id.includes('monaco')) return 'vendor-monaco';
+              // keep it in its own long-cacheable chunk. Match the package
+              // dir exactly: a bare 'monaco' substring also catches
+              // @monaco-editor/react and drags shared deps along.
+              if (id.includes('node_modules/monaco-editor/')) return 'vendor-monaco';
               // Everything else: let Rollup split along dynamic-import
               // boundaries. The previous catch-all 'vendor' chunk forced
               // the login screen to download @jupyterlab/services,
