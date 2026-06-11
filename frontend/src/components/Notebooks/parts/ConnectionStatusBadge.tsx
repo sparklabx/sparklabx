@@ -34,7 +34,14 @@ export const ConnectionStatusBadge: React.FC<{
             ) : (
                 <Circle className={`h-3 w-3 ${config.color} fill-current`} />
             )}
-            {!compact && <span className="text-sm text-muted-foreground whitespace-nowrap">{config.label}</span>}
+            {!compact && (
+                // Fixed width sized to the longest label ("Disconnecting…" /
+                // "Booting Spark…") so toolbar items to the right don't
+                // shift when the status changes.
+                <span className="text-sm text-muted-foreground whitespace-nowrap inline-block w-32">
+                    {config.label}
+                </span>
+            )}
         </div>
     );
 };
