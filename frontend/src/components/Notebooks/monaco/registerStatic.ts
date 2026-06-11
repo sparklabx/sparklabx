@@ -1,3 +1,6 @@
+// Side-effect import MUST come first: configures the loader with our
+// trimmed local Monaco bundle before any loader.init()/Editor mount.
+import './setup';
 import { loader } from '@monaco-editor/react';
 import { registerPythonStatic } from './pythonStaticCompletions';
 import { registerScalaStatic } from './scalaStaticCompletions';

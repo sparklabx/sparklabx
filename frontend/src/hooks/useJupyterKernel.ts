@@ -83,6 +83,15 @@ export interface InspectionResult {
 class KernelSessionManager {
     private sessions = new Map<string, KernelSession>();
     private listeners = new Map<string, Set<() => void>>();
+    private notifyTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    private lastNotifyAt = new Map<string, number>();
+    // Minimum gap between React notifications per notebook. Session data is
+    // mutated synchronously (pollers reading getSession() always see fresh
+    // state); only the React re-render is coalesced. A cell streaming
+    // hundreds of stdout lines used to force one full-page render per IOPub
+    // message — now at most ~20 renders/s with a trailing flush so the last
+    // chunk is never dropped.
+    private static readonly NOTIFY_INTERVAL_MS = 50;
 
     getSession(notebookId: string): KernelSession {
         if (!this.sessions.has(notebookId)) {
@@ -125,7 +134,23 @@ class KernelSessionManager {
     }
 
     private notifyListeners(notebookId: string) {
-        this.listeners.get(notebookId)?.forEach(cb => cb());
+        const now = Date.now();
+        const last = this.lastNotifyAt.get(notebookId) || 0;
+        const elapsed = now - last;
+
+        // Isolated updates (status change, Run click) notify immediately;
+        // only bursts inside the window get coalesced into a trailing flush.
+        if (elapsed >= KernelSessionManager.NOTIFY_INTERVAL_MS) {
+            this.lastNotifyAt.set(notebookId, now);
+            this.listeners.get(notebookId)?.forEach(cb => cb());
+            return;
+        }
+        if (this.notifyTimers.has(notebookId)) return;
+        this.notifyTimers.set(notebookId, setTimeout(() => {
+            this.notifyTimers.delete(notebookId);
+            this.lastNotifyAt.set(notebookId, Date.now());
+            this.listeners.get(notebookId)?.forEach(cb => cb());
+        }, KernelSessionManager.NOTIFY_INTERVAL_MS - elapsed));
     }
 
     deleteSession(notebookId: string) {
@@ -133,6 +158,12 @@ class KernelSessionManager {
         if (session?.ws) {
             session.ws.close();
         }
+        const timer = this.notifyTimers.get(notebookId);
+        if (timer) {
+            clearTimeout(timer);
+            this.notifyTimers.delete(notebookId);
+        }
+        this.lastNotifyAt.delete(notebookId);
         this.sessions.delete(notebookId);
         this.listeners.delete(notebookId);
     }
