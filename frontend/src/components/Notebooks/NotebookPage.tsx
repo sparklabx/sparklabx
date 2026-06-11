@@ -1773,6 +1773,7 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                 {/* Menu Bar Row */}
                 <div className="flex items-center px-2 py-1 border-b border-border bg-muted/50 shrink-0 h-8 gap-1">
                     <MenuBar
+                        onNewNotebook={openCreateDialog}
                         onExportHTML={async () => {
                             try {
                                 await exportNotebookAsHTML(notebook.id, notebook.name);
