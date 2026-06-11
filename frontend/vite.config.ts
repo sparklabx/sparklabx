@@ -41,8 +41,14 @@ export default defineConfig(() => {
         output: {
           manualChunks(id) {
             if (id.includes('node_modules')) {
+              // Monaco is huge and only needed by the notebook editor —
+              // keep it in its own long-cacheable chunk.
               if (id.includes('monaco')) return 'vendor-monaco';
-              return 'vendor';
+              // Everything else: let Rollup split along dynamic-import
+              // boundaries. The previous catch-all 'vendor' chunk forced
+              // the login screen to download @jupyterlab/services,
+              // md-editor, hyparquet etc. before first paint.
+              return undefined;
             }
           },
         },
