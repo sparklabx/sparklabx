@@ -6,11 +6,12 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { ConfirmDeleteDialog } from '../ui/confirm-delete-dialog';
 import {
   Upload, FileText, Trash2, Download, FolderOpen, Copy, RefreshCw,
-  ChevronLeft, Database, FolderPlus, Plus, HardDrive, Search, Eye,
+  ChevronLeft, Database, FolderPlus, Plus, HardDrive, Globe, Search, Eye,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import axios from 'axios';
 import * as minioService from '../../services/minioStorageService';
+import { getUserDataPath } from '../../services/notebookStorageService';
 import { parseCsv, parseJsonTable } from '../../lib/dataUtils';
 
 const StoragePage: React.FC = () => {
@@ -133,10 +134,34 @@ const StoragePage: React.FC = () => {
     setCurrentPath(parts.length > 0 ? parts.join('/') + '/' : '');
   };
 
+  // Real s3a:// roots for the 'my' / 'public' logical buckets. Without
+  // these the copied path would be s3a://my/... which isn't a real
+  // bucket name and Spark can't read it.
+  const [s3aRoots, setS3aRoots] = useState<{ private: string; public: string }>({ private: '', public: '' });
+  useEffect(() => {
+    (async () => {
+      const info = await getUserDataPath().catch(() => null);
+      const priv = (info as any)?.private_path || info?.path || '';
+      const pub = (info as any)?.public_path || '';
+      setS3aRoots({ private: priv, public: pub });
+    })();
+  }, []);
+
   // Copy path
   const copyPath = (path: string) => {
     navigator.clipboard.writeText(path);
     toast.success('Copied');
+  };
+
+  // Resolve a bucket+key pair to its real s3a:// URI.
+  const buildS3aPath = (bucket: string, key: string): string => {
+    if (bucket === 'my' && s3aRoots.private) {
+      return s3aRoots.private.replace(/\/$/, '') + '/' + key;
+    }
+    if (bucket === 'public' && s3aRoots.public) {
+      return s3aRoots.public.replace(/\/$/, '') + '/' + key;
+    }
+    return `s3a://${bucket}/${key}`;
   };
 
   // Filtered files
@@ -164,7 +189,7 @@ const StoragePage: React.FC = () => {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold flex items-center gap-2"><Database className="h-6 w-6" /> Storage</h1>
         <Button variant="outline" onClick={() => setCreateBucketOpen(true)}>
-          <Plus className="h-4 w-4 mr-1" /> New Bucket
+          <Plus className="h-4 w-4 mr-1" /> New Space
         </Button>
       </div>
 
@@ -172,7 +197,7 @@ const StoragePage: React.FC = () => {
         {/* Bucket list */}
         <Card>
           <CardHeader className="py-3 px-4">
-            <CardTitle className="text-sm">Buckets</CardTitle>
+            <CardTitle className="text-sm">Spaces</CardTitle>
           </CardHeader>
           <CardContent className="p-0">
             {buckets.map(b => (
@@ -184,30 +209,42 @@ const StoragePage: React.FC = () => {
                 <button
                   onClick={() => { setSelectedBucket(b.name); setCurrentPath(''); }}
                   className="flex items-center gap-2 flex-1 min-w-0 text-left"
+                  title={b.name}
                 >
-                  <HardDrive className="h-3.5 w-3.5 shrink-0" />
-                  <span className="truncate">{b.name}</span>
+                  {b.name === 'public' ? (
+                    <Globe className="h-3.5 w-3.5 shrink-0" />
+                  ) : (
+                    <HardDrive className="h-3.5 w-3.5 shrink-0" />
+                  )}
+                  <span className="truncate">
+                    {b.name === 'my' ? 'My Space' : b.name === 'public' ? 'Public' : b.name}
+                  </span>
                 </button>
-                <Button size="sm" variant="ghost" className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 text-destructive"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setConfirmDelete({
-                      type: 'bucket',
-                      name: b.name,
-                      action: async () => {
-                        const ok = await minioService.deleteBucket(b.name);
-                        if (ok) {
-                          toast.success(`Bucket "${b.name}" deleted`);
-                          if (selectedBucket === b.name) setSelectedBucket('');
-                          loadBuckets();
-                        } else {
-                          toast.error('Failed to delete bucket (must be empty)');
-                        }
-                      },
-                    });
-                  }}>
-                  <Trash2 className="h-3 w-3" />
-                </Button>
+                {/* System buckets ('my', 'public') are not user-managed
+                    and shouldn't be deletable from the UI — backend
+                    recreates them on next start anyway. */}
+                {b.name !== 'my' && b.name !== 'public' && (
+                  <Button size="sm" variant="ghost" className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 text-destructive"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setConfirmDelete({
+                        type: 'bucket',
+                        name: b.name,
+                        action: async () => {
+                          const ok = await minioService.deleteBucket(b.name);
+                          if (ok) {
+                            toast.success(`Bucket "${b.name}" deleted`);
+                            if (selectedBucket === b.name) setSelectedBucket('');
+                            loadBuckets();
+                          } else {
+                            toast.error('Failed to delete bucket (must be empty)');
+                          }
+                        },
+                      });
+                    }}>
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
+                )}
               </div>
             ))}
             {buckets.length === 0 && (
@@ -219,14 +256,23 @@ const StoragePage: React.FC = () => {
         {/* File browser */}
         <Card>
           <CardHeader className="py-3 px-4 flex flex-row items-center justify-between">
-            <div className="flex items-center gap-2 flex-1 min-w-0">
-              {currentPath && (
-                <Button size="sm" variant="ghost" className="h-7 px-2" onClick={navigateUp}>
-                  <ChevronLeft className="h-4 w-4" />
-                </Button>
-              )}
+            {/* Path bar — reserve the back-arrow slot at root so the
+                path text doesn't shift when entering a subfolder. The
+                bucket name is already shown in the left-hand list, no
+                need to repeat it in the breadcrumb. */}
+            <div className="flex items-center flex-1 min-w-0">
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2 shrink-0 disabled:opacity-40"
+                onClick={navigateUp}
+                disabled={!currentPath}
+                title="Go Up"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
               <span className="text-sm font-mono text-muted-foreground truncate">
-                {selectedBucket ? `${selectedBucket}/${currentPath}` : 'Select a bucket'}
+                {selectedBucket ? `/${currentPath}` : 'Select a bucket'}
               </span>
             </div>
             <div className="flex gap-1">
@@ -275,27 +321,27 @@ const StoragePage: React.FC = () => {
             ) : filteredFiles.length === 0 ? (
               <div className="px-4 py-12 text-center text-muted-foreground text-sm">Empty</div>
             ) : (
-              <table className="w-full text-sm">
+              <table className="w-full text-sm table-fixed">
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
                     <th className="text-left px-4 py-2 font-medium">Name</th>
                     <th className="text-right px-4 py-2 font-medium w-24">Size</th>
                     <th className="text-right px-4 py-2 font-medium w-44">Modified</th>
-                    <th className="text-right px-4 py-2 font-medium w-28">Actions</th>
+                    <th className="text-right px-4 py-2 font-medium w-40">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredFiles.map(f => (
-                    <tr key={f.key} className="border-b hover:bg-muted/30 group">
-                      <td className="px-4 py-2">
-                        <div className="flex items-center gap-2 cursor-pointer"
+                    <tr key={f.key} className="border-b hover:bg-muted/30 group h-10">
+                      <td className="px-4 py-2 overflow-hidden">
+                        <div className="flex items-center gap-2 cursor-pointer min-w-0"
                           onClick={() => f.is_folder ? navigateFolder(f) : undefined}>
                           {f.is_folder ? (
                             <FolderOpen className="h-4 w-4 text-yellow-500 shrink-0" />
                           ) : (
                             <FileText className="h-4 w-4 text-blue-500 shrink-0" />
                           )}
-                          <span className={f.is_folder ? 'font-medium hover:text-primary' : ''}>{f.name}</span>
+                          <span className={`truncate ${f.is_folder ? 'font-medium hover:text-primary' : ''}`} title={f.name}>{f.name}</span>
                         </div>
                       </td>
                       <td className="px-4 py-2 text-right text-xs text-muted-foreground">
@@ -307,7 +353,7 @@ const StoragePage: React.FC = () => {
                       <td className="px-4 py-2 text-right">
                         <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                           <Button size="sm" variant="ghost" className="h-7 w-7 p-0"
-                            onClick={() => copyPath(`s3a://${selectedBucket}/${f.key}`)} title="Copy S3 path">
+                            onClick={() => copyPath(buildS3aPath(selectedBucket, f.key))} title="Copy S3 path">
                             <Copy className="h-3.5 w-3.5" />
                           </Button>
                           {!f.is_folder && /\.(csv|tsv|json|jsonl|parquet)$/i.test(f.name) && (
@@ -351,9 +397,9 @@ const StoragePage: React.FC = () => {
       <Dialog open={createBucketOpen} onOpenChange={setCreateBucketOpen}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>Create Bucket</DialogTitle>
+            <DialogTitle>Create Space</DialogTitle>
           </DialogHeader>
-          <Input placeholder="Bucket name" value={newBucketName}
+          <Input placeholder="Space name" value={newBucketName}
             onChange={e => setNewBucketName(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') handleCreateBucket(); }}
             autoFocus />
@@ -386,9 +432,9 @@ const StoragePage: React.FC = () => {
         <ConfirmDeleteDialog
           open={!!confirmDelete}
           onOpenChange={() => setConfirmDelete(null)}
-          title={`Delete ${confirmDelete.type === 'bucket' ? 'bucket' : 'file'}?`}
+          title={`Delete ${confirmDelete.type === 'bucket' ? 'space' : 'file'}?`}
           description={confirmDelete.type === 'bucket'
-            ? `Delete bucket "${confirmDelete.name}"? Bucket must be empty.`
+            ? `Delete space "${confirmDelete.name}"? Space must be empty.`
             : `Delete "${confirmDelete.name}"? This action cannot be undone.`}
           confirmText={confirmDelete.name}
           onConfirm={async () => { await confirmDelete.action(); }}

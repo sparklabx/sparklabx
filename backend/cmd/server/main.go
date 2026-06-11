@@ -209,6 +209,7 @@ func main() {
 			nb.POST("/:id/kernel/connect", localKernelHandler.Connect)
 			nb.GET("/:id/kernel/status", localKernelHandler.Status)
 			nb.POST("/:id/kernel/interrupt", localKernelHandler.Interrupt)
+			nb.GET("/:id/kernel/active-executions", localKernelHandler.ActiveExecutions)
 			nb.DELETE("/:id/kernel/disconnect", localKernelHandler.Disconnect)
 			nb.DELETE("/:id/kernel/shutdown", localKernelHandler.Shutdown)
 			nb.Any("/:id/kernel/ws/:kernelId/*path", localKernelHandler.WebSocket)
