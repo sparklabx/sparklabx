@@ -33,12 +33,12 @@ func getOwner(c *gin.Context) (string, string) {
 }
 
 // checkNotebookReadAccess verifies the caller can read the notebook.
-// Admins can read all notebooks. Students can read their own notebooks and public notebooks.
+// Every user (including admins) may read only their OWN notebooks, plus any
+// notebook explicitly marked public. There is intentionally no admin override:
+// a notebook is a private workspace, consistent with the per-user object-store
+// isolation. If a support/admin "read any" tier is ever needed, gate it on the
+// superadmin role here — do NOT widen it to all admins.
 func checkNotebookReadAccess(c *gin.Context, notebookID string) bool {
-	role, _ := c.Get("role")
-	if role != "student" {
-		return true
-	}
 	ownerID, _ := getOwner(c)
 	db := database.GetDB()
 	var nbOwnerID string
@@ -54,13 +54,10 @@ func checkNotebookReadAccess(c *gin.Context, notebookID string) bool {
 	return true
 }
 
-// checkNotebookWriteAccess verifies the caller can modify or execute against the notebook.
-// Admins can write all notebooks. Students can write only their own notebooks.
+// checkNotebookWriteAccess verifies the caller can modify or execute against the
+// notebook. Only the owner may write — public notebooks are read-only to
+// non-owners. No admin override (see checkNotebookReadAccess).
 func checkNotebookWriteAccess(c *gin.Context, notebookID string) bool {
-	role, _ := c.Get("role")
-	if role != "student" {
-		return true
-	}
 	ownerID, _ := getOwner(c)
 	db := database.GetDB()
 	var nbOwnerID string
@@ -223,13 +220,13 @@ func (h *NotebookHandler) GetNotebook(c *gin.Context) {
 	}
 
 	// Inline access check — we already fetched owner_id/is_public above, so skip
-	// the redundant query that checkNotebookReadAccess() would make.
-	if role, _ := c.Get("role"); role == "student" {
-		callerID, _ := getOwner(c)
-		if nb.OwnerID != callerID && !nb.IsPublic {
-			c.JSON(http.StatusForbidden, gin.H{"error": "access denied"})
-			return
-		}
+	// the redundant query that checkNotebookReadAccess() would make. Same rule:
+	// owner-only, plus public notebooks. Applies to every caller (no admin
+	// override) so one user can't read another's notebook by id.
+	callerID, _ := getOwner(c)
+	if nb.OwnerID != callerID && !nb.IsPublic {
+		c.JSON(http.StatusForbidden, gin.H{"error": "access denied"})
+		return
 	}
 
 	// Fetch cells

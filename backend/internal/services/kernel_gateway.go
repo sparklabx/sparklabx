@@ -87,6 +87,7 @@ func (s *SharedGateway) EnsureSpawning(_ string) error { return nil }
 // the config package.
 type KernelGatewaySettings struct {
 	Mode              string        // "shared" | "docker_per_user" | "k8s_per_user"
+	Environment       string        // "production" | other — gates the shared-mode safety check
 	JupyterGatewayURL string        // only used in shared mode
 	PodImage          string        // kernel container/pod image
 	PodNamespace      string        // K8s namespace (k8s_per_user)
@@ -115,13 +116,26 @@ type KernelGatewaySettings struct {
 //                        Backend must run in-cluster with the RBAC in kubernetes/.
 func NewKernelGateway(s KernelGatewaySettings) (KernelGateway, error) {
 	mode := s.Mode
+	explicit := mode != ""
 	if mode == "" {
 		mode = "shared"
 	}
 
 	switch mode {
 	case "shared":
-		log.Info().Str("gateway", s.JupyterGatewayURL).Msg("kernel gateway: shared mode (no isolation)")
+		// Shared mode = one Jupyter Gateway for everyone, zero per-user
+		// isolation: any user's kernel can reach any other user's in-memory
+		// state and (without per-user MinIO IAM) their object-store data.
+		// Refuse to start this way in production — losing isolation must be a
+		// loud, deliberate choice, never a silent default.
+		if s.Environment == "production" {
+			return nil, fmt.Errorf("KERNEL_MODE=shared is unsafe in production (no per-user kernel isolation); set KERNEL_MODE=docker_per_user or k8s_per_user")
+		}
+		if explicit {
+			log.Warn().Str("gateway", s.JupyterGatewayURL).Msg("kernel gateway: SHARED mode — NO per-user isolation, all users share one kernel container (dev only)")
+		} else {
+			log.Warn().Str("gateway", s.JupyterGatewayURL).Msg("kernel gateway: KERNEL_MODE not set, defaulting to SHARED — NO per-user isolation (set docker_per_user/k8s_per_user for multi-user)")
+		}
 		return NewSharedGateway(s.JupyterGatewayURL), nil
 	case "docker_per_user":
 		gw, err := NewDockerPerUserGateway(DockerPerUserConfig{
