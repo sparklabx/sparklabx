@@ -11,7 +11,7 @@ import { devLog } from '@/lib/debug';
 // Ensure axios interceptors are registered (authService constructor sets up Bearer token)
 import '@/services/authService';
 
-export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'starting' | 'error' | 'dead';
+export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'starting' | 'disconnecting' | 'error' | 'dead';
 export type NotebookLanguage = 'python' | 'scala' | 'sql';
 
 function isScalaToolingCrash(text: string): boolean {
@@ -225,6 +225,62 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
                 // progress message is no longer useful and we want the UI to
                 // show "Connected" cleanly.
                 sessionManager.updateSession(notebookId, { status: 'connected', podPhase: '', podMessage: '' });
+            }
+
+            // status:busy on iopub tells us THIS msg_id just started
+            // executing on the kernel. For Run All this is what
+            // promotes a queued cell into runningCells — until busy
+            // fires the cell is sitting in the kernel's FIFO queue,
+            // not actually executing.
+            if (executionState === 'busy' && parentMsgId) {
+                const pending = session.pendingExecutions.get(parentMsgId);
+                if (pending?.cellId) {
+                    const cur = sessionManager.getSession(notebookId);
+                    if (cur.pendingCells.has(pending.cellId)) {
+                        const np = new Set(cur.pendingCells);
+                        np.delete(pending.cellId);
+                        const nr = new Set(cur.runningCells);
+                        nr.add(pending.cellId);
+                        // Reset startedAt to "kernel actually started"
+                        // so the timer reflects real execution time, not
+                        // the time spent waiting in the kernel queue.
+                        pending.startedAt = Date.now();
+                        sessionManager.updateSession(notebookId, {
+                            pendingCells: np,
+                            runningCells: nr,
+                        });
+                    }
+                }
+            }
+
+            // status:idle on iopub is the broadcast completion signal for
+            // an execute_request. We get this even after a tab reload
+            // (unlike execute_reply which is shell-channel point-to-point
+            // and only goes to the originating session). If we still have
+            // a pendingExecutions entry for the parent msg_id — i.e. the
+            // shell-channel cleanup hasn't already fired — clean up the
+            // cell's running state here.
+            if (executionState === 'idle' && parentMsgId) {
+                const pending = session.pendingExecutions.get(parentMsgId);
+                if (pending?.cellId) {
+                    const cur = sessionManager.getSession(notebookId);
+                    if (cur.runningCells.has(pending.cellId)) {
+                        const next = new Set(cur.runningCells);
+                        next.delete(pending.cellId);
+                        const execTimes = { ...cur.executionTimes };
+                        if (pending.startedAt) {
+                            execTimes[pending.cellId] = Date.now() - pending.startedAt;
+                        }
+                        const executed = new Set(cur.executedCells);
+                        executed.add(pending.cellId);
+                        sessionManager.updateSession(notebookId, {
+                            runningCells: next,
+                            executionTimes: execTimes,
+                            executedCells: executed,
+                        });
+                    }
+                    setTimeout(() => session.pendingExecutions.delete(parentMsgId), 5000);
+                }
             }
             return;
         }
@@ -464,7 +520,60 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
     }, [notebookId]);
 
     // Setup WebSocket connection
-    const setupWebSocket = useCallback((kernelId: string) => {
+    const setupWebSocket = useCallback(async (kernelId: string) => {
+        // Restore any in-flight executions from the backend recorder
+        // BEFORE the WS opens. This populates pendingExecutions +
+        // runningCells so the FIRST iopub message that lands has a
+        // parent_msg_id we can look up, and so the badge shows
+        // "running" with the correct startedAt for cells the kernel
+        // is still executing across a tab reload.
+        try {
+            const resp = await axios.get(`/api/v1/notebooks/${notebookId}/kernel/active-executions`);
+            const execs: Array<{
+                msg_id: string;
+                cell_id: string;
+                started_at: string;
+                kernel_started_at?: string;
+                execution_count: number;
+            }> = resp.data?.executions || [];
+            if (execs.length > 0) {
+                const session = sessionManager.getSession(notebookId);
+                const newRunning = new Set(session.runningCells);
+                const newPending = new Set(session.pendingCells);
+                const newCounts = { ...session.executionCounts };
+                for (const e of execs) {
+                    if (!e.msg_id || !e.cell_id) continue;
+                    if (session.pendingExecutions.has(e.msg_id)) continue;
+                    const isRunning = !!e.kernel_started_at;
+                    const startedAt = isRunning
+                        ? new Date(e.kernel_started_at!).getTime()
+                        : (e.started_at ? new Date(e.started_at).getTime() : Date.now());
+                    session.pendingExecutions.set(e.msg_id, {
+                        cellId: e.cell_id,
+                        startedAt,
+                        resolve: () => { /* restored entry has no caller waiting */ },
+                    });
+                    if (isRunning) {
+                        newRunning.add(e.cell_id);
+                    } else {
+                        newPending.add(e.cell_id);
+                    }
+                    if (e.execution_count > 0) {
+                        newCounts[e.cell_id] = e.execution_count;
+                    }
+                }
+                sessionManager.updateSession(notebookId, {
+                    runningCells: newRunning,
+                    pendingCells: newPending,
+                    executionCounts: newCounts,
+                });
+                devLog(`[JupyterKernel][${notebookId}] Restored ${execs.length} active execution(s) from backend recorder`);
+            }
+        } catch (e) {
+            // Endpoint may not exist on older backends — non-fatal.
+            devLog(`[JupyterKernel][${notebookId}] active-executions fetch failed:`, e);
+        }
+
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsHost = import.meta.env.VITE_BACKEND_WS_URL || `${wsProtocol}//${window.location.host}`;
 
@@ -632,8 +741,12 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
             currentSession.pendingInspections.forEach(c => c.resolve({ found: false, data: {}, metadata: {}, status: 'error' }));
             currentSession.pendingInspections.clear();
 
-            // Don't overwrite 'dead' status with 'disconnected' (keep the detailed reason)
-            if (!wasAlreadyDead) {
+            // Don't overwrite 'dead' status with 'disconnected' (keep the detailed reason).
+            // Also don't overwrite 'disconnecting' — that's a user-initiated tear-down in
+            // progress and disconnect() will land the final 'disconnected' itself after
+            // its min-visible delay (otherwise the badge skips the intermediate state).
+            const userTearingDown = currentSession.status === 'disconnecting';
+            if (!wasAlreadyDead && !userTearingDown) {
                 sessionManager.updateSession(notebookId, {
                     ws: null,
                     status: retryInProgress ? 'connecting' : 'disconnected',
@@ -914,20 +1027,43 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
     }, [notebookId, kernelProxyUrl, setupWebSocket]);
 
     // Disconnect from kernel
+    // Flip session.status to 'disconnecting' without running the
+    // disconnect side effects. Useful for Shutdown: we want the
+    // badge to show "Disconnecting..." while the backend kills the
+    // kernel, and we need it set BEFORE ws.onclose fires (the
+    // close handler checks this status to know it should leave
+    // status alone instead of overwriting with 'disconnected').
+    const markDisconnecting = useCallback(() => {
+        sessionManager.updateSession(notebookId, { status: 'disconnecting' });
+    }, [notebookId]);
+
     const disconnect = useCallback(async () => {
         try {
             const session = sessionManager.getSession(notebookId);
+
+            // Flip the badge to "Disconnecting…" before the DELETE
+            // round-trip so the user gets feedback (k8s_per_user
+            // mode can take a few seconds to ack).
+            sessionManager.updateSession(notebookId, { status: 'disconnecting' });
 
             // Close WebSocket
             if (session.ws) {
                 session.ws.close();
             }
 
-            // Tell backend to disconnect
+            // Tell backend to disconnect. Pair with a min-duration
+            // delay so the intermediate state stays visible long
+            // enough to register on fast (docker-compose) backends
+            // where DELETE often returns in <50ms.
+            const minVisible = new Promise(r => setTimeout(r, 800));
             try {
-                await axios.delete(`/api/v1/notebooks/${notebookId}/kernel/disconnect`);
+                await Promise.all([
+                    axios.delete(`/api/v1/notebooks/${notebookId}/kernel/disconnect`),
+                    minVisible,
+                ]);
             } catch (e) {
                 console.warn(`[JupyterKernel][${notebookId}] Failed to notify backend of disconnect:`, e);
+                await minVisible;
             }
 
             sessionManager.updateSession(notebookId, {
@@ -956,7 +1092,7 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
         cellId: string,
         code: string,
         onComplete?: (error?: boolean) => void,
-        options?: { silent?: boolean; storeHistory?: boolean }
+        options?: { silent?: boolean; storeHistory?: boolean; queued?: boolean }
     ) => {
         const session = sessionManager.getSession(notebookId);
         const ws = session.ws;
@@ -969,20 +1105,19 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
             return;
         }
 
-        // Kernel has a single execution slot — clicking Run on cell B while
-        // cell A is still running would (a) queue B on the kernel side and
-        // (b) make the frontend mark both as 'running'. Then a Stop on
-        // either cell sends one SIGINT that cancels whichever the kernel
-        // happens to be executing, looking to the user like "stopping one
-        // cell also stopped the other". Refuse the second click instead.
-        // Run All has its own queue (executeAllCells chains via onComplete)
-        // and is not affected.
-        const otherRunning = [...session.runningCells].filter(id => id !== cellId);
-        if (otherRunning.length > 0) {
-            toast.warning('Kernel is busy', {
-                description: 'Another cell is running. Wait for it to finish or click Stop on it first.',
-            });
-            return;
+        // Single-click Run on a second cell while another is running is
+        // ambiguous — Stop sends one SIGINT and we can't tell which cell
+        // the user meant to stop. Refuse, unless this call is part of an
+        // intentional batch (Run All) where queueing on the kernel side
+        // is the whole point.
+        if (!options?.queued) {
+            const otherRunning = [...session.runningCells].filter(id => id !== cellId);
+            if (otherRunning.length > 0) {
+                toast.warning('Kernel is busy', {
+                    description: 'Another cell is running. Wait for it to finish or click Stop on it first.',
+                });
+                return;
+            }
         }
 
         // Policy Check: Skip for system-generated cells and exam mode (kernel proxy).
@@ -1025,11 +1160,19 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
 
         devLog(`[JupyterKernel][${notebookId}] Executing cell ${cellId}`, options?.silent ? '(silent)' : '');
 
-        // Clear previous output and remove from pending (if was queued)
+        // Clear previous output. For a queued batch (Run All) the cell
+        // goes into pendingCells until iopub status:busy promotes it to
+        // running; for a direct Run it goes straight to runningCells.
         const newOutputs = { ...session.outputs, [cellId]: [] };
-        const newRunningCells = new Set(session.runningCells).add(cellId);
+        const newRunningCells = new Set(session.runningCells);
         const newPendingCells = new Set(session.pendingCells);
-        newPendingCells.delete(cellId);
+        if (options?.queued) {
+            newPendingCells.add(cellId);
+            newRunningCells.delete(cellId);
+        } else {
+            newRunningCells.add(cellId);
+            newPendingCells.delete(cellId);
+        }
 
         sessionManager.updateSession(notebookId, {
             outputs: newOutputs,
@@ -1053,7 +1196,12 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
                 version: '5.3'
             },
             parent_header: {},
-            metadata: {},
+            // sparklabx_cell_id lets the backend KernelRecorder tag
+            // iopub messages from this execution with the originating
+            // cell so output can be persisted to cells.last_output
+            // even after the browser tab closes. Jupyter ignores
+            // unknown metadata fields.
+            metadata: { sparklabx_cell_id: cellId },
             content: {
                 code,
                 silent: options?.silent ?? false,
@@ -1095,42 +1243,22 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
             return;
         }
 
-        // Filter only code cells
         const codeCells = cells.filter(c => c.type === 'code');
         if (codeCells.length === 0) return;
 
-        devLog(`[JupyterKernel][${notebookId}] Run All: ${codeCells.length} cells`);
+        devLog(`[JupyterKernel][${notebookId}] Run All: ${codeCells.length} cells (queueing all upfront)`);
 
-        // Mark all cells as pending (except first which will run immediately)
-        const pendingCellIds = new Set(codeCells.slice(1).map(c => c.id));
-        sessionManager.updateSession(notebookId, { pendingCells: pendingCellIds });
-
-        // Execute cells sequentially using onComplete callback chain
-        let cellIndex = 0;
-
-        const executeNext = (error?: boolean) => {
-            if (error) {
-                const remaining = codeCells.length - cellIndex;
-                sessionManager.updateSession(notebookId, { pendingCells: new Set() });
-                toast.error(remaining > 0
-                    ? `Run All stopped: ${remaining} cell(s) skipped due to error`
-                    : 'Run All completed with error');
-                return;
-            }
-            if (cellIndex >= codeCells.length) {
-                devLog(`[JupyterKernel][${notebookId}] Run All complete`);
-                return;
-            }
-
-            const cell = codeCells[cellIndex];
-            cellIndex++;
-
-            executeCell(cell.id, cell.code, executeNext);
-        };
-
-        // Start with first cell
-        executeNext();
-
+        // Send every execute_request to the kernel immediately. Jupyter
+        // kernels process them FIFO and honor stop_on_error so a failure
+        // aborts the rest server-side — meaning a tab close mid-batch no
+        // longer halts the run (the kernel finishes the queue on its
+        // own, recorder captures output, next page load restores it).
+        codeCells.forEach((cell, idx) => {
+            // First cell goes straight to runningCells; the rest sit in
+            // pendingCells until iopub status:busy promotes each one as
+            // the kernel actually picks it up.
+            executeCell(cell.id, cell.code, undefined, { queued: idx > 0 });
+        });
     }, [notebookId, executeCell]);
 
     // Clear all pending cells (for canceling Run All)
@@ -1363,6 +1491,17 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
         });
     }, [notebookId]);
 
+    // cellId → original execute_request startedAt (epoch ms). Lets
+    // the live timer in CellEditor keep ticking from the real start
+    // even after a tab reload (state restored from the backend
+    // recorder includes the original startedAt).
+    const runningCellStarts: Record<string, number> = {};
+    session.pendingExecutions.forEach(p => {
+        if (p.cellId && session.runningCells.has(p.cellId)) {
+            runningCellStarts[p.cellId] = p.startedAt;
+        }
+    });
+
     return {
         connectionStatus: session.status,
         deadReason: session.deadReason,  // Reason for kernel death (when status is 'dead')
@@ -1370,6 +1509,7 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
         podMessage: session.podMessage,  // human-readable phase message
         cellOutputs: session.outputs,
         runningCells: session.runningCells,
+        runningCellStarts,
         pendingCells: session.pendingCells,
         executionCounts: session.executionCounts,
         executionTimes: session.executionTimes,
@@ -1378,6 +1518,7 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
         checkConnection,
         waitForReady,
         disconnect,
+        markDisconnecting,
         restart,
         trackPodStatus,
         executeCell,

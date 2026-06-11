@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
-	"github.com/lib/pq"
 	"github.com/rs/zerolog/log"
 
 	"github.com/sparklabx/sparklabx/backend/internal/config"
@@ -284,6 +284,7 @@ func startKernelCleanup(gw services.KernelGateway) {
 
 			// Drop both cache + DB row for each victim, then kill kernel on gateway.
 			for _, v := range victims {
+				services.StopRecorder(v.kernelID)
 				deleteKernelMap(v.notebookID, v.userID)
 				if v.kernelID == "" {
 					continue
@@ -529,11 +530,8 @@ func (h *LocalKernelHandler) Status(c *gin.Context) {
 // "stop this query, keep my state" UX users reach for after a misclick.
 //
 // POST /api/v1/notebooks/:id/kernel/interrupt
-// Optional body: { "clear_cells": [...] } — stamps the listed cells'
-// last_output as a KeyboardInterrupt traceback in the same request.
-// Folded together so the page-unload path can fire a single keepalive
-// fetch instead of N+1 (Chrome silently drops the tail when the JS
-// context is being killed).
+// Forwards SIGINT to the kernel; output flow continues to land in the
+// recorder so the next page load shows the interrupt traceback.
 func (h *LocalKernelHandler) Interrupt(c *gin.Context) {
 	notebookID := c.Param("id")
 	if !checkNotebookWriteAccess(c, notebookID) {
@@ -541,11 +539,6 @@ func (h *LocalKernelHandler) Interrupt(c *gin.Context) {
 	}
 	userID := userIDString(c)
 	kernelKey := kernelKeyForNotebook(notebookID, userID)
-
-	var body struct {
-		ClearCells []string `json:"clear_cells"`
-	}
-	_ = c.ShouldBindJSON(&body)
 
 	kernelMapMu.Lock()
 	kernelID := kernelMap[kernelKey]
@@ -578,17 +571,7 @@ func (h *LocalKernelHandler) Interrupt(c *gin.Context) {
 		return
 	}
 
-	// Without this, the next page load would read the PREVIOUS successful
-	// run's last_output and render the killed cell as if it completed.
-	if len(body.ClearCells) > 0 {
-		const stmt = `UPDATE notebook_cells SET last_output = $1, last_execution_time_ms = NULL, updated_at = NOW() WHERE notebook_id = $2 AND id = ANY($3)`
-		interrupted := []byte(`{"outputs":[{"type":"error","ename":"KeyboardInterrupt","evalue":"Interrupted by tab reload","traceback":["KeyboardInterrupt: Interrupted by tab reload"]}],"executed":true}`)
-		if _, err := database.GetDB().Exec(stmt, interrupted, notebookID, pq.Array(body.ClearCells)); err != nil {
-			log.Warn().Err(err).Str("notebook_id", notebookID).Msg("interrupt: failed to stamp cell outputs")
-		}
-	}
-
-	log.Info().Str("kernel_id", kernelID).Str("user_id", userID).Strs("cleared", body.ClearCells).Msg("kernel interrupted")
+	log.Info().Str("kernel_id", kernelID).Str("user_id", userID).Msg("kernel interrupted")
 	c.JSON(http.StatusOK, gin.H{"status": "interrupted", "kernel_id": kernelID})
 }
 
@@ -625,6 +608,12 @@ func (h *LocalKernelHandler) Shutdown(c *gin.Context) {
 	kernelMapMu.Unlock()
 
 	if kernelID != "" {
+		// Stop the recorder BEFORE deleting the kernel so its final
+		// flush lands while the kernel's WS is still alive (the
+		// recorder's WS would error out the moment JKG kills the
+		// kernel, dropping any pending in-memory state).
+		services.StopRecorder(kernelID)
+
 		deleteKernelMap(notebookID, userID)
 		gatewayURL, ok := h.gatewayURLFor(c, userID)
 		if !ok {
@@ -727,6 +716,13 @@ func (h *LocalKernelHandler) WebSocket(c *gin.Context) {
 
 	logger.Info().Msg("local kernel WebSocket proxy established")
 
+	// Lazy-start the persistent recorder so output keeps flowing to
+	// DB even after THIS client closes. Idempotent — subsequent
+	// clients reuse the same recorder.
+	if _, recErr := services.GetOrCreateRecorder(notebookID, kernelID, targetURL); recErr != nil {
+		logger.Warn().Err(recErr).Msg("failed to start kernel recorder — output persistence disabled for this kernel")
+	}
+
 	errChan := make(chan error, 2)
 
 	go func() {
@@ -737,6 +733,11 @@ func (h *LocalKernelHandler) WebSocket(c *gin.Context) {
 				return
 			}
 			touchKernelLastUsed(kernelKey)
+			// Sniff execute_request so the recorder knows which cell
+			// each subsequent iopub message belongs to.
+			if msgType == websocket.TextMessage {
+				captureExecuteRequest(kernelID, msg)
+			}
 			if err := backendConn.WriteMessage(msgType, msg); err != nil {
 				errChan <- err
 				return
@@ -765,6 +766,62 @@ func (h *LocalKernelHandler) WebSocket(c *gin.Context) {
 	if err != nil && !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 		logger.Debug().Err(err).Msg("local kernel WebSocket proxy closed")
 	}
+}
+
+// captureExecuteRequest sniffs an outgoing client message; if it's an
+// execute_request carrying metadata.sparklabx_cell_id, register the
+// (msg_id → cell_id) mapping on the kernel's recorder so iopub
+// messages from this execution can be routed to the right cell.
+func captureExecuteRequest(kernelID string, msg []byte) {
+	if !bytes.Contains(msg, []byte(`"execute_request"`)) {
+		return
+	}
+	var parsed struct {
+		Header struct {
+			MsgType string `json:"msg_type"`
+			MsgID   string `json:"msg_id"`
+		} `json:"header"`
+		Metadata struct {
+			CellID string `json:"sparklabx_cell_id"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(msg, &parsed); err != nil {
+		return
+	}
+	if parsed.Header.MsgType != "execute_request" || parsed.Metadata.CellID == "" {
+		return
+	}
+	if r := services.GetRecorder(kernelID); r != nil {
+		r.RegisterExecution(parsed.Header.MsgID, parsed.Metadata.CellID)
+	}
+}
+
+// ActiveExecutions returns the in-flight executions known to the
+// kernel recorder, used by the FE on mount to rebuild runningCells
+// + pendingExecutions before opening the WebSocket. This is the
+// HTTP state-restore path that replaces WS replay envelopes.
+//
+// GET /api/v1/notebooks/:id/kernel/active-executions
+func (h *LocalKernelHandler) ActiveExecutions(c *gin.Context) {
+	notebookID := c.Param("id")
+	if !checkNotebookWriteAccess(c, notebookID) {
+		return
+	}
+	userID := userIDString(c)
+	kernelKey := kernelKeyForNotebook(notebookID, userID)
+	kernelMapMu.Lock()
+	kernelID := kernelMap[kernelKey]
+	kernelMapMu.Unlock()
+	if kernelID == "" {
+		c.JSON(http.StatusOK, gin.H{"executions": []services.ExecutionRecord{}})
+		return
+	}
+	rec := services.GetRecorder(kernelID)
+	if rec == nil {
+		c.JSON(http.StatusOK, gin.H{"executions": []services.ExecutionRecord{}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"executions": rec.ActiveExecutions()})
 }
 
 // ProxyHTTP proxies REST API calls to the user's kernel gateway.
