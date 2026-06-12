@@ -864,7 +864,7 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
         const text = parts.join('\n');
         const FAIL_RE = /(failed to resolve|not found|error downloading|unresolved|resolutionexception|could not (find|download)|module not found)/i;
         if (FAIL_RE.test(text)) errored = true;
-        const coordRe = /([a-zA-Z0-9_.\-]+)[#:]([a-zA-Z0-9_.\-]+)[;:]([a-zA-Z0-9_.\-]+)/g;
+        const coordRe = /([a-zA-Z0-9_.-]+)[#:]([a-zA-Z0-9_.-]+)[;:]([a-zA-Z0-9_.-]+)/g;
         const coords = new Set<string>();
         for (const line of text.split('\n')) {
             if (!FAIL_RE.test(line)) continue;
