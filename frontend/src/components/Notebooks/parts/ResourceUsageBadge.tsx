@@ -68,18 +68,21 @@ export const ResourceUsageBadge: React.FC<{ enabled: boolean; compact?: boolean 
     const memDetail = limitGB > 0 ? `${usedGB.toFixed(1)}/${trim(limitGB)} GB` : `${usedGB.toFixed(1)} GB`;
     const title = `Kernel CPU ${cpuPct}% (${cpuDetail}) · RAM ${memPct}% (${memDetail})`;
 
-    return (
-        <div
-            className="grid grid-cols-[auto_auto_auto] gap-x-1.5 gap-y-0 items-center text-[10px] leading-[1.2] tabular-nums"
-            title={title}
-        >
-            <span className="text-muted-foreground">CPU</span>
-            <span className={`text-right ${sevColor(cpuPct)}`}>{cpuPct}%</span>
-            {compact ? <span /> : <span className="text-muted-foreground">{cpuDetail}</span>}
+    // Two flex rows with fixed-width cells so the columns line up. Avoid
+    // Tailwind arbitrary grid-cols-[...] which didn't render here (the spans
+    // stacked vertically instead of forming columns).
+    const Row: React.FC<{ label: string; pct: number; detail: string }> = ({ label, pct, detail }) => (
+        <div className="flex items-center gap-1.5 whitespace-nowrap">
+            <span className="w-7 text-muted-foreground">{label}</span>
+            <span className={`w-8 text-right ${sevColor(pct)}`}>{pct}%</span>
+            {!compact && <span className="text-muted-foreground">{detail}</span>}
+        </div>
+    );
 
-            <span className="text-muted-foreground">RAM</span>
-            <span className={`text-right ${sevColor(memPct)}`}>{memPct}%</span>
-            {compact ? <span /> : <span className="text-muted-foreground">{memDetail}</span>}
+    return (
+        <div className="flex flex-col leading-[1.25] text-[10px] tabular-nums shrink-0" title={title}>
+            <Row label="CPU" pct={cpuPct} detail={cpuDetail} />
+            <Row label="RAM" pct={memPct} detail={memDetail} />
         </div>
     );
 };
