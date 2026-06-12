@@ -94,6 +94,39 @@ function isScalaDetailText(text: string): boolean {
     return matchedLines.length > 0 && matchedLines.length >= Math.max(1, Math.ceil(lines.length * 0.6));
 }
 
+// Per-output memo caches. Output objects keep their identity once appended
+// (the kernel hook only appends new entries), so a WeakMap keyed on the
+// output object avoids re-running the regex line classifier and the
+// ANSI→HTML conversion for every already-rendered output each time a new
+// stream chunk arrives. Without this, a long-running cell re-processes its
+// entire scrollback on every flush — O(n²) over the stream's lifetime.
+const splitCache = new WeakMap<CellOutput, { userLines: string; logLines: string; detailLines: string }>();
+
+function splitStreamOutputCached(output: CellOutput): { userLines: string; logLines: string; detailLines: string } {
+    let v = splitCache.get(output);
+    if (!v) {
+        v = splitStreamOutput(output.text || '');
+        splitCache.set(output, v);
+    }
+    return v;
+}
+
+// Bounded string-keyed cache for ANSI→HTML. Keys are the exact output
+// strings already held in memory by the outputs state, so the cache adds
+// only the converted HTML; FIFO eviction caps growth across cells.
+const ansiHtmlCache = new Map<string, string>();
+function ansiToHtmlCached(text: string): string {
+    const hit = ansiHtmlCache.get(text);
+    if (hit !== undefined) return hit;
+    const html = ansiToHtml(text);
+    if (ansiHtmlCache.size >= 500) {
+        const oldest = ansiHtmlCache.keys().next().value;
+        if (oldest !== undefined) ansiHtmlCache.delete(oldest);
+    }
+    ansiHtmlCache.set(text, html);
+    return html;
+}
+
 // Split stream text into user output, spark logs, and Scala REPL details.
 function splitStreamOutput(text: string): { userLines: string; logLines: string; detailLines: string } {
     const lines = text.split('\n');
@@ -145,7 +178,7 @@ const CellOutputRendererInner: React.FC<{ outputs: CellOutput[]; language?: stri
         outputs.forEach((o, i) => {
             if (o.type === 'stream' && o.text) {
                 // Check if this stream contains spark logs
-                const { userLines, logLines, detailLines } = splitStreamOutput(o.text);
+                const { userLines, logLines, detailLines } = splitStreamOutputCached(o);
                 if (logLines) allLogLines += (allLogLines ? '\n' : '') + logLines;
                 if (detailLines) allScalaDetails += (allScalaDetails ? '\n' : '') + detailLines;
 
@@ -160,7 +193,7 @@ const CellOutputRendererInner: React.FC<{ outputs: CellOutput[]; language?: stri
     const processedOutputs = outputs.map((o, i) => {
         if (o.type === 'stream' && o.text) {
             if (consumedStreamIndices.has(i)) return null; // Will be shown in error box
-            const { userLines, logLines, detailLines } = splitStreamOutput(o.text);
+            const { userLines, logLines, detailLines } = splitStreamOutputCached(o);
             if (logLines && !hasError) allLogLines += (allLogLines ? '\n' : '') + logLines;
             if (detailLines) allScalaDetails += (allScalaDetails ? '\n' : '') + detailLines;
             return { ...o, text: userLines };
@@ -186,7 +219,7 @@ const CellOutputRendererInner: React.FC<{ outputs: CellOutput[]; language?: stri
                 <pre
                     key={idx}
                     className={`whitespace-pre-wrap text-foreground ${mbClass}`}
-                    dangerouslySetInnerHTML={{ __html: ansiToHtml(output.text || '') }}
+                    dangerouslySetInnerHTML={{ __html: ansiToHtmlCached(output.text || '') }}
                 />
             );
         }
@@ -237,7 +270,7 @@ const CellOutputRendererInner: React.FC<{ outputs: CellOutput[]; language?: stri
                         <pre
                             key={idx}
                             className={`whitespace-pre overflow-auto text-xs bg-background p-2 rounded border ${mbClass}`}
-                            dangerouslySetInnerHTML={{ __html: ansiToHtml(text) }}
+                            dangerouslySetInnerHTML={{ __html: ansiToHtmlCached(text) }}
                         />
                     );
                 }
@@ -245,7 +278,7 @@ const CellOutputRendererInner: React.FC<{ outputs: CellOutput[]; language?: stri
                     <pre
                         key={idx}
                         className={`whitespace-pre-wrap text-emerald-600 dark:text-emerald-400 ${mbClass}`}
-                        dangerouslySetInnerHTML={{ __html: ansiToHtml(text) }}
+                        dangerouslySetInnerHTML={{ __html: ansiToHtmlCached(text) }}
                     />
                 );
             }
@@ -298,11 +331,11 @@ Please explain this error and suggest a fix.`;
                             {mergedStreamText && (
                                 <div
                                     className="mb-2 pb-2 border-b border-red-200 dark:border-red-800/30"
-                                    dangerouslySetInnerHTML={{ __html: ansiToHtml(mergedStreamText) }}
+                                    dangerouslySetInnerHTML={{ __html: ansiToHtmlCached(mergedStreamText) }}
                                 />
                             )}
                             {output.traceback && (
-                                <div dangerouslySetInnerHTML={{ __html: ansiToHtml(output.traceback.join('\n')) }} />
+                                <div dangerouslySetInnerHTML={{ __html: ansiToHtmlCached(output.traceback.join('\n')) }} />
                             )}
                         </pre>
                     )}
@@ -344,7 +377,7 @@ Please explain this error and suggest a fix.`;
                     {showScalaDetails && (
                         <pre
                             className="mt-1 text-[10px] whitespace-pre-wrap max-h-56 overflow-auto bg-background/50 rounded p-2 border"
-                            dangerouslySetInnerHTML={{ __html: ansiToHtml(allScalaDetails) }}
+                            dangerouslySetInnerHTML={{ __html: ansiToHtmlCached(allScalaDetails) }}
                         />
                     )}
                 </div>

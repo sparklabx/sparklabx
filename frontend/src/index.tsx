@@ -3,25 +3,9 @@ import ReactDOM from 'react-dom/client';
 import './index.css';
 import App from './App';
 
-// Configure Monaco Editor to use local bundle instead of CDN
-// This is required for K8s environments where CDN may be blocked
-import { loader } from '@monaco-editor/react';
-import * as monaco from 'monaco-editor';
-
-// Configure Monaco environment for workers
-(self as any).MonacoEnvironment = {
-  getWorker(_workerId: string, _label: string) {
-    // Return inline worker for all types
-    const workerUrl = URL.createObjectURL(
-      new Blob(['self.MonacoEnvironment = { baseUrl: "' + window.location.origin + '" };'], {
-        type: 'text/javascript',
-      })
-    );
-    return new Worker(workerUrl, { type: 'module' });
-  },
-};
-
-loader.config({ monaco });
+// Monaco is configured in components/Notebooks/monaco/setup.ts (imported by
+// the lazy NotebookPage chunk) so the editor bundle is not downloaded on the
+// login screen or notebook list.
 
 // Suppress ResizeObserver errors (common with react-resizable-panels)
 // This is a known harmless error that doesn't affect functionality

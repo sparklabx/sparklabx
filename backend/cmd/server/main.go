@@ -79,6 +79,7 @@ func main() {
 	// KernelGateway: shared single container OR per-user pod via KERNEL_MODE.
 	kernelGateway, err := services.NewKernelGateway(services.KernelGatewaySettings{
 		Mode:              cfg.KernelMode,
+		Environment:       cfg.Environment,
 		JupyterGatewayURL: cfg.JupyterGatewayURL,
 		PodImage:          cfg.KernelPodImage,
 		PodNamespace:      cfg.KernelPodNamespace,
