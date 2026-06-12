@@ -75,9 +75,11 @@ export const ResourceUsageBadge: React.FC<{ enabled: boolean; compact?: boolean 
     // Tailwind arbitrary grid-cols-[...] which didn't render here (the spans
     // stacked vertically instead of forming columns).
     const Row: React.FC<{ label: string; pct: number; detail: string }> = ({ label, pct, detail }) => (
-        <div className="flex items-center gap-1.5 whitespace-nowrap">
-            <span className="w-7 text-muted-foreground">{label}</span>
-            <span className={`w-8 text-right ${sevColor(pct)}`}>{pct}%</span>
+        <div className="flex items-center gap-1 whitespace-nowrap">
+            <span className="text-muted-foreground">{label}</span>
+            {/* Just wide enough for "100%"; right-aligned so the detail column
+                still lines up between the two rows without a big gap. */}
+            <span className={`w-[1.9rem] text-right ${sevColor(pct)}`}>{pct}%</span>
             {!compact && <span className="text-muted-foreground">{detail}</span>}
         </div>
     );
