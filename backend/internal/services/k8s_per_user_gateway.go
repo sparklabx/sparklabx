@@ -337,7 +337,7 @@ func (g *K8sPerUserGateway) GetGatewayURL(ctx context.Context, userID string) (s
 	if err := g.EnsureSpawning(userID, nil); err != nil {
 		return "", err
 	}
-	url, spawnErr := g.spawnAndWait(ctx, userID, podName)
+	url, spawnErr := g.spawnAndWait(ctx, userID, podName, g.rowSizes(userID))
 	if spawnErr != nil {
 		g.updatePhase(userID, PhaseFailed, spawnErr.Error())
 		return "", spawnErr
@@ -361,7 +361,7 @@ func (g *K8sPerUserGateway) EnsureSpawning(userID string, spec *ResourceSpec) er
 	}
 	db := database.GetDB()
 	podName := podNameForUser(userID)
-	cpuReq, memReq, cpuLim, memLim := g.resolveSpec(spec)
+	sizes := g.resolveSpec(spec)
 
 	var dbStatus, dbURL string
 	err := db.QueryRow(
@@ -406,18 +406,22 @@ func (g *K8sPerUserGateway) EnsureSpawning(userID string, spec *ResourceSpec) er
 		 VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $8, $9, $10)
 		 ON CONFLICT (user_id) DO UPDATE SET status = $4, phase_message = $5, created_at = $6, last_used_at = $6, pod_url = '', cpu_request = $7, mem_request = $8, cpu_limit = $9, mem_limit = $10`,
 		userID, podName, g.cfg.Namespace, PhaseSpawning, "Preparing kernel pod...", time.Now(),
-		cpuReq, memReq, cpuLim, memLim,
+		sizes.cpuReq, sizes.memReq, sizes.cpuLim, sizes.memLim,
 	)
 	if err != nil {
 		return fmt.Errorf("db insert: %w", err)
 	}
 
 	// Detached spawn goroutine. Use background context with explicit deadline so
-	// the spawn outlives the HTTP request that triggered it.
+	// the spawn outlives the HTTP request that triggered it. The resolved
+	// resources are passed DIRECTLY (not re-read from the row inside the
+	// goroutine): a concurrent Destroy — e.g. the resize path destroying the
+	// predecessor — deletes the row asynchronously and can race the read,
+	// silently reverting the pod to default sizes.
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), spawnTimeout+30*time.Second)
 		defer cancel()
-		url, spawnErr := g.spawnAndWait(ctx, userID, podName)
+		url, spawnErr := g.spawnAndWait(ctx, userID, podName, sizes)
 		if spawnErr != nil {
 			g.updatePhase(userID, PhaseFailed, spawnErr.Error())
 			log.Warn().Err(spawnErr).Str("user_id", userID).Msg("background spawn failed")
@@ -441,7 +445,7 @@ func (g *K8sPerUserGateway) EnsureSpawning(userID string, spec *ResourceSpec) er
 //
 // Phase is written to DB on every meaningful transition so FE polling shows
 // "Pulling image…" / "Container starting…" / etc. without guessing.
-func (g *K8sPerUserGateway) spawnAndWait(ctx context.Context, userID, podName string) (string, error) {
+func (g *K8sPerUserGateway) spawnAndWait(ctx context.Context, userID, podName string, res podSizes) (string, error) {
 	pods := g.client.CoreV1().Pods(g.cfg.Namespace)
 
 	// Step 1 — handle terminating predecessor
@@ -455,7 +459,7 @@ func (g *K8sPerUserGateway) spawnAndWait(ctx context.Context, userID, podName st
 	}
 
 	// Step 2 — Create (idempotent)
-	pod := g.buildPodSpec(userID, podName)
+	pod := g.buildPodSpec(userID, podName, res)
 	if _, err := pods.Create(ctx, pod, metav1.CreateOptions{}); err != nil {
 		if !errors.IsAlreadyExists(err) {
 			return "", fmt.Errorf("pod create: %w", err)
@@ -609,45 +613,49 @@ func derivePhase(p *corev1.Pod) (phase, message string) {
 	return PhaseSpawning, ""
 }
 
-// resolveSpec turns a user-picked *ResourceSpec into the four request/limit
-// strings the pod spec needs. A valid spec applies its CPU/memory as BOTH
-// request and limit (Guaranteed QoS — the user gets exactly what they picked);
-// nil or incomplete falls back to the gateway's configured defaults (which are
-// burstable: a small request with a larger limit).
-func (g *K8sPerUserGateway) resolveSpec(spec *ResourceSpec) (cpuReq, memReq, cpuLim, memLim string) {
-	if spec != nil && spec.CPU != "" && spec.Memory != "" {
-		return spec.CPU, spec.Memory, spec.CPU, spec.Memory
-	}
-	return g.cfg.CPURequest, g.cfg.MemoryRequest, g.cfg.CPULimit, g.cfg.MemoryLimit
+// podSizes carries the resolved request/limit quantities for one pod spawn.
+// Always fully populated (never empty strings — resource.MustParse would
+// panic). Threaded explicitly from EnsureSpawning into the spawn goroutine
+// instead of being re-read from the DB row, which a concurrent Destroy (the
+// resize path destroying the predecessor) can delete mid-spawn, silently
+// reverting the pod to default sizes.
+type podSizes struct {
+	cpuReq, memReq, cpuLim, memLim string
 }
 
-// podResources reads the per-pod resources persisted on the user_kernel_pods
-// row (written by EnsureSpawning). Falls back to gateway defaults when the row
-// is missing the columns (legacy rows) — never returns empty quantities, which
-// would make resource.MustParse panic.
-func (g *K8sPerUserGateway) podResources(userID string) (cpuReq, memReq, cpuLim, memLim string) {
-	cpuReq, memReq, cpuLim, memLim = g.cfg.CPURequest, g.cfg.MemoryRequest, g.cfg.CPULimit, g.cfg.MemoryLimit
+// resolveSpec turns a user-picked *ResourceSpec into the pod's request/limit
+// quantities. A valid spec applies its CPU/memory as BOTH request and limit
+// (Guaranteed QoS — the user gets exactly what they picked); nil or incomplete
+// falls back to the gateway's configured defaults (which are burstable: a
+// small request with a larger limit).
+func (g *K8sPerUserGateway) resolveSpec(spec *ResourceSpec) podSizes {
+	if spec != nil && spec.CPU != "" && spec.Memory != "" {
+		return podSizes{spec.CPU, spec.Memory, spec.CPU, spec.Memory}
+	}
+	return podSizes{g.cfg.CPURequest, g.cfg.MemoryRequest, g.cfg.CPULimit, g.cfg.MemoryLimit}
+}
+
+// rowSizes reads the sizes recorded on the user_kernel_pods row — used by the
+// legacy GetGatewayURL respawn path, which has no user-picked spec, so a
+// respawn keeps the size the user last chose. Falls back to gateway defaults
+// when the row is missing or predates the resource columns.
+func (g *K8sPerUserGateway) rowSizes(userID string) podSizes {
 	var cr, mr, cl, ml string
 	err := database.GetDB().QueryRow(
 		`SELECT cpu_request, mem_request, cpu_limit, mem_limit FROM user_kernel_pods WHERE user_id = $1`,
 		userID,
 	).Scan(&cr, &mr, &cl, &ml)
-	if err != nil {
-		return
+	if err == nil && cr != "" && mr != "" && cl != "" && ml != "" {
+		return podSizes{cr, mr, cl, ml}
 	}
-	if cr != "" && mr != "" && cl != "" && ml != "" {
-		cpuReq, memReq, cpuLim, memLim = cr, mr, cl, ml
-	}
-	return
+	return podSizes{g.cfg.CPURequest, g.cfg.MemoryRequest, g.cfg.CPULimit, g.cfg.MemoryLimit}
 }
 
-func (g *K8sPerUserGateway) buildPodSpec(userID, podName string) *corev1.Pod {
+func (g *K8sPerUserGateway) buildPodSpec(userID, podName string, res podSizes) *corev1.Pod {
 	// Resolve per-user MinIO creds. Empty creds → fall back to root creds via
 	// SecretKeyRef (legacy / IAM-not-configured). Per-user creds are injected
 	// as plain env values; the pod is per-user and ephemeral so leakage risk
 	// is bounded to the pod's lifetime.
-	cpuReq, memReq, cpuLim, memLim := g.podResources(userID)
-
 	var (
 		userAccessKey, userSecretKey string
 		usePerUserCreds              bool
@@ -716,12 +724,12 @@ func (g *K8sPerUserGateway) buildPodSpec(userID, podName string) *corev1.Pod {
 					},
 					Resources: corev1.ResourceRequirements{
 						Requests: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse(cpuReq),
-							corev1.ResourceMemory: resource.MustParse(memReq),
+							corev1.ResourceCPU:    resource.MustParse(res.cpuReq),
+							corev1.ResourceMemory: resource.MustParse(res.memReq),
 						},
 						Limits: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse(cpuLim),
-							corev1.ResourceMemory: resource.MustParse(memLim),
+							corev1.ResourceCPU:    resource.MustParse(res.cpuLim),
+							corev1.ResourceMemory: resource.MustParse(res.memLim),
 						},
 					},
 					// Spark s3a reads these from env to build core-site.xml / spark-defaults
@@ -805,12 +813,16 @@ func (g *K8sPerUserGateway) Destroy(userID string) error {
 	}
 
 	// Background: wait for pod fully gone, then drop the row so the next spawn
-	// from this user starts cleanly without bumping into the terminating-handshake path.
+	// from this user starts cleanly without bumping into the terminating-handshake
+	// path. Guarded on status=terminating: the resize flow calls Destroy and then
+	// immediately EnsureSpawning, which inserts a fresh spawning row (with the
+	// newly picked sizes) — an unconditional delete here would race that insert
+	// and wipe the new row mid-spawn.
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
 		_ = g.waitForGone(ctx, podName, 90*time.Second)
-		db.Exec(`DELETE FROM user_kernel_pods WHERE user_id = $1`, userID)
+		db.Exec(`DELETE FROM user_kernel_pods WHERE user_id = $1 AND status = $2`, userID, PhaseTerminating)
 		log.Info().Str("user_id", userID).Str("pod", podName).Msg("terminating handshake complete")
 	}()
 	return nil
