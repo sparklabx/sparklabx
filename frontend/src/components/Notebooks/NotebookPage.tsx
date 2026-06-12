@@ -90,9 +90,12 @@ function normalizePackageInput(value?: string): string {
 }
 
 // A Maven coordinate must be group:artifact:version — three non-empty,
-// colon-separated, whitespace-free segments. Catches typos like "abc" before
-// they ever reach the kernel and fail the whole resolve. (#92)
-const MAVEN_COORD_RE = /^[^:\s]+:[^:\s]+:[^:\s]+$/;
+// whitespace-free segments. Catches typos like "abc" before they ever reach
+// the kernel and fail the whole resolve (#92). The group/artifact separator
+// may be `:` OR `::` — Ammonite/Coursier (Scala) accepts `org::name:version`
+// to append the Scala binary version, and we pass coordinates straight to
+// `import $ivy`, so that form is valid input we must not reject (#A).
+const MAVEN_COORD_RE = /^[^:\s]+::?[^:\s]+:[^:\s]+$/;
 function invalidCoordinates(list: string[]): string[] {
     return list.filter(c => !MAVEN_COORD_RE.test(c.trim()));
 }

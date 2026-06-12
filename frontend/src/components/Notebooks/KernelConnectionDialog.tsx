@@ -170,37 +170,47 @@ export function KernelConnectionDialog({
     useEffect(() => {
         if (!open) return;
         let alive = true;
-        // Best-effort: learn the size of the kernel that's already running so
-        // the dialog can warn that picking a different one restarts it.
         (async () => {
-            try {
-                const res = await axios.get('/api/v1/kernel/usage', { timeout: 3000 });
-                if (alive && res.data?.available) {
-                    setRunningSize({
-                        cores: res.data.cpu_limit_cores ?? 0,
-                        memGB: (res.data.mem_limit_bytes ?? 0) / 1024 ** 3,
-                    });
-                } else if (alive) {
-                    setRunningSize(null);
-                }
-            } catch {
-                if (alive) setRunningSize(null);
-            }
-        })();
-        (async () => {
-            const cfg = await fetchResourcePresets();
+            // ONE usage fetch feeds BOTH the running-size warning and the initial
+            // selection, so they can never disagree (two separate fetches could
+            // race / one fail, leaving the warning showing a size the picker
+            // didn't pre-select).
+            const [usage, cfg] = await Promise.all([
+                axios.get('/api/v1/kernel/usage', { timeout: 3000 }).then(r => r.data).catch(() => null),
+                fetchResourcePresets(),
+            ]);
             if (!alive) return;
+
+            const running = usage?.available
+                ? { cores: usage.cpu_limit_cores ?? 0, memGB: (usage.mem_limit_bytes ?? 0) / 1024 ** 3 }
+                : null;
+            setRunningSize(running); // drives the "kernel is running at …" warning
+
             setResourceConfig(cfg);
             if (!cfg.enabled || cfg.presets.length === 0) return;
             const ids = cfg.presets.map(p => p.id);
+
+            // If a kernel is running, default to the preset matching its current
+            // size so opening the dialog and hitting Connect doesn't resize (and
+            // restart) it by accident. Fall back to saved / configured default
+            // only when nothing is running. (#resize-default)
+            const matchPreset = running
+                ? cfg.presets.find(p =>
+                    Math.abs(parseFloat(coresFromQuantity(p.cpu)) - running.cores) < 0.05 &&
+                    Math.abs(parseFloat(gbFromQuantity(p.memory)) - running.memGB) < 0.25)
+                : undefined;
+
             const initial =
+                (matchPreset && matchPreset.id) ||
                 (savedResourcePreset && (ids.includes(savedResourcePreset) || (savedResourcePreset === 'custom' && cfg.allow_custom)) && savedResourcePreset) ||
                 (cfg.default_preset && ids.includes(cfg.default_preset) && cfg.default_preset) ||
                 ids[0];
             setSelectedResource(initial);
-            if (savedResourceCustom) {
-                // Saved values are k8s quantities ("1500m"/"3Gi") — the inputs
-                // hold plain numbers.
+
+            if (running && !matchPreset && cfg.allow_custom) {
+                setCustomCpu(String(running.cores));
+                setCustomMemory(String(Math.round(running.memGB)));
+            } else if (savedResourceCustom) {
                 setCustomCpu(coresFromQuantity(savedResourceCustom.cpu));
                 setCustomMemory(gbFromQuantity(savedResourceCustom.memory));
             }
@@ -308,7 +318,7 @@ export function KernelConnectionDialog({
             // Reject malformed coordinates before connecting — a typo like "abc"
             // would otherwise fail the kernel's whole resolve and obscure which
             // library is wrong. (#92)
-            const badCoords = packageList.filter(c => !/^[^:\s]+:[^:\s]+:[^:\s]+$/.test(c.trim()));
+            const badCoords = packageList.filter(c => !/^[^:\s]+::?[^:\s]+:[^:\s]+$/.test(c.trim()));
             if (badCoords.length) {
                 toast.error(`Invalid coordinate${badCoords.length === 1 ? '' : 's'}`, {
                     description: `${badCoords.join(', ')} — use group:artifact:version (e.g. io.delta:delta-spark_2.12:3.3.2).`,
