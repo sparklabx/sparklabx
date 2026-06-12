@@ -73,6 +73,13 @@ type ResourceUsage struct {
 	CPULimitCores float64 `json:"cpu_limit_cores"` // quota in cores (e.g. 2); 0 = unlimited
 	MemUsedBytes  int64   `json:"mem_used_bytes"`
 	MemLimitBytes int64   `json:"mem_limit_bytes"`
+	// MetricsLive is false when the limits are known (pod exists) but live
+	// usage isn't available yet — e.g. k8s metrics-server hasn't scraped the
+	// fresh pod (~15s lag after spawn). The limit fields are still valid; only
+	// the used/percent figures are zero-placeholder. Consumers that just need
+	// the kernel's size (the Resources picker warning) can rely on the limits
+	// regardless; the live badge can render a neutral state until it flips true.
+	MetricsLive bool `json:"metrics_live"`
 }
 
 // ResourceSpec is the resolved CPU/memory for a single kernel pod. Both the

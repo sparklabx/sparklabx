@@ -572,6 +572,7 @@ func (g *DockerPerUserGateway) Usage(ctx context.Context, userID string) (Resour
 		CPULimitCores: limitCores,
 		MemUsedBytes:  memUsed,
 		MemLimitBytes: s.MemoryStats.Limit,
+		MetricsLive:   true, // docker stats is immediate; no scrape lag
 	}
 
 	g.usageMu.Lock()

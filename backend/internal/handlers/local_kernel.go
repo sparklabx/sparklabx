@@ -131,6 +131,7 @@ func (h *LocalKernelHandler) Usage(c *gin.Context) {
 		"cpu_limit_cores": u.CPULimitCores,
 		"mem_used_bytes":  u.MemUsedBytes,
 		"mem_limit_bytes": u.MemLimitBytes,
+		"metrics_live":    u.MetricsLive,
 	})
 }
 
