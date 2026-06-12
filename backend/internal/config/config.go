@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"strconv"
 	"strings"
@@ -64,8 +65,26 @@ type Config struct {
 	KernelPodCPULimit      string
 	KernelPodMemoryLimit   string
 
+	// Per-notebook resource presets (k8s_per_user only). When the preset list is
+	// empty the feature is disabled and every pod uses the KernelPod*Limit values
+	// above. Each preset's cpu/memory is applied as BOTH request and limit
+	// (Guaranteed QoS) so a user gets exactly what they pick.
+	KernelResourcePresets       []ResourcePreset
+	KernelResourceDefaultPreset string // id of the preset pre-selected in the UI
+	KernelResourceAllowCustom   bool   // show the "Custom" row in the dialog
+	KernelResourceCustomMaxCPU  string // hard ceiling for custom cpu, e.g. "8"
+	KernelResourceCustomMaxMem  string // hard ceiling for custom memory, e.g. "16Gi"
+
 	// CORS
 	CORSOrigins []string
+}
+
+// ResourcePreset is one selectable kernel-pod size offered to the user.
+type ResourcePreset struct {
+	ID     string `json:"id"`
+	Label  string `json:"label"`
+	CPU    string `json:"cpu"`
+	Memory string `json:"memory"`
 }
 
 func Load() *Config {
@@ -113,6 +132,12 @@ func Load() *Config {
 		KernelPodCPULimit:      getEnv("KERNEL_POD_CPU_LIMIT", "2000m"),
 		KernelPodMemoryLimit:   getEnv("KERNEL_POD_MEMORY_LIMIT", "4Gi"),
 
+		KernelResourcePresets:       parseResourcePresets(getEnv("KERNEL_RESOURCE_PRESETS", "")),
+		KernelResourceDefaultPreset: getEnv("KERNEL_RESOURCE_DEFAULT_PRESET", ""),
+		KernelResourceAllowCustom:   getEnvBool("KERNEL_RESOURCE_ALLOW_CUSTOM", false),
+		KernelResourceCustomMaxCPU:  getEnv("KERNEL_RESOURCE_CUSTOM_MAX_CPU", ""),
+		KernelResourceCustomMaxMem:  getEnv("KERNEL_RESOURCE_CUSTOM_MAX_MEMORY", ""),
+
 		CORSOrigins: strings.Split(getEnv("CORS_ORIGINS", "http://localhost:3000"), ","),
 	}
 }
@@ -131,4 +156,38 @@ func getEnvInt(key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	if value, ok := os.LookupEnv(key); ok {
+		if b, err := strconv.ParseBool(value); err == nil {
+			return b
+		}
+	}
+	return fallback
+}
+
+// parseResourcePresets reads the KERNEL_RESOURCE_PRESETS JSON array. Malformed
+// JSON or entries missing cpu/memory are dropped (logged at the call site is
+// overkill for config) so a typo disables presets rather than crashing boot.
+func parseResourcePresets(raw string) []ResourcePreset {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var presets []ResourcePreset
+	if err := json.Unmarshal([]byte(raw), &presets); err != nil {
+		return nil
+	}
+	out := presets[:0]
+	for _, p := range presets {
+		if p.ID == "" || p.CPU == "" || p.Memory == "" {
+			continue
+		}
+		if p.Label == "" {
+			p.Label = p.ID
+		}
+		out = append(out, p)
+	}
+	return out
 }

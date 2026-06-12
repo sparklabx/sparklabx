@@ -935,7 +935,11 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
     }, [notebookId]);
 
     // Connect to kernel via Backend API or Kernel Proxy
-    const connect = useCallback(async (language: NotebookLanguage = 'python', kernelName?: string) => {
+    const connect = useCallback(async (
+        language: NotebookLanguage = 'python',
+        kernelName?: string,
+        resources?: { preset?: string; custom?: { cpu: string; memory: string } },
+    ) => {
         try {
             sessionManager.updateSession(notebookId, { status: 'connecting' });
 
@@ -985,12 +989,22 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
             const langLower = language.toLowerCase();
             devLog(`[JupyterKernel][${notebookId}] Requesting kernel:`, { language: langLower, kernel_name: kernelName });
 
-            const payload: { tier: string; language: string; kernel_name?: string } = {
-                tier: "medium",
+            const payload: {
+                language: string;
+                kernel_name?: string;
+                resources?: { preset?: string; custom?: { cpu: string; memory: string } };
+            } = {
                 language: langLower
             };
             if (kernelName) {
                 payload.kernel_name = kernelName;
+            }
+            // Per-notebook kernel-pod size (k8s_per_user, issue #41). Omitted when
+            // the dialog didn't set one → backend falls back to cluster defaults.
+            if (resources?.custom) {
+                payload.resources = { custom: resources.custom };
+            } else if (resources?.preset) {
+                payload.resources = { preset: resources.preset };
             }
 
             // Async connect protocol:
@@ -1085,11 +1099,15 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
             // Tell backend to disconnect. Pair with a min-duration
             // delay so the intermediate state stays visible long
             // enough to register on fast (docker-compose) backends
-            // where DELETE often returns in <50ms.
+            // where DELETE often returns in <50ms. The 10s timeout is
+            // load-bearing: without it an unreachable backend (restart,
+            // network blip) leaves the request hanging forever and the
+            // "Disconnecting…" badge spinning with it — the local
+            // disconnect below must happen regardless.
             const minVisible = new Promise(r => setTimeout(r, 800));
             try {
                 await Promise.all([
-                    axios.delete(`/api/v1/notebooks/${notebookId}/kernel/disconnect`),
+                    axios.delete(`/api/v1/notebooks/${notebookId}/kernel/disconnect`, { timeout: 10_000 }),
                     minVisible,
                 ]);
             } catch (e) {
