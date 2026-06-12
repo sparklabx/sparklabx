@@ -770,6 +770,59 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
         return false;
     };
 
+    // Scan the spark-init cell output for dependency-resolution failures
+    // (Coursier/Ivy). A bad Maven coordinate makes getOrCreate() (PySpark) or
+    // `import $ivy` (Almond) throw, and the resolver prints "not found" /
+    // "Failed to resolve" into the init cell — but nothing surfaces in the UI.
+    // Returns the failing coordinate(s), or null when resolution looks clean.
+    // Issue #33.
+    const detectLibraryResolutionErrors = (): string[] | null => {
+        const outs = cellOutputsRef.current['init-spark-context'] || [];
+        const text = (outs as any[])
+            .map(o => o?.text ? String(o.text)
+                : o?.ename ? `${o.ename}: ${o.evalue}\n${(o.traceback || []).join('\n')}`
+                : JSON.stringify(o?.data ?? ''))
+            .join('\n');
+        const FAIL_RE = /(failed to resolve|error downloading|not found:|failed to download|resolutionexception|unresolved dependenc|could not find artifact)/i;
+        if (!FAIL_RE.test(text)) return null;
+
+        // Pull group:artifact:version tokens off the lines that mention a failure.
+        const coordRe = /[a-zA-Z0-9_.\-]+:[a-zA-Z0-9_.\-]+:[a-zA-Z0-9_.\-]+/g;
+        const failed = new Set<string>();
+        for (const line of text.split('\n')) {
+            if (FAIL_RE.test(line)) (line.match(coordRe) || []).forEach(c => failed.add(c));
+        }
+        // Fallback: failure detected but no coordinate parsed → blame the whole
+        // requested set so the user at least knows where to look.
+        if (failed.size === 0) {
+            const requested = (sparkPackages || (notebook as any)?.cluster_config?.['spark.jars.packages'] || '')
+                .split(/[,\n]/).map((p: string) => p.trim()).filter(Boolean);
+            requested.forEach((p: string) => failed.add(p));
+        }
+        return failed.size ? Array.from(failed) : null;
+    };
+
+    // Surface the outcome of a library load (after the spark-init cell settles).
+    // Shared by the connect flow and Manage Libraries → Apply & Restart.
+    const reportLibraryOutcome = (initOk: boolean, requestedCount: number) => {
+        const failed = detectLibraryResolutionErrors();
+        if (failed && failed.length) {
+            toast.error(`Failed to load ${failed.length} ${failed.length === 1 ? 'library' : 'libraries'}`, {
+                description: `${failed.join(', ')} — check the coordinate exists on Maven Central (repo1.maven.org).`,
+                duration: 12000,
+            });
+            return false;
+        }
+        if (!initOk) {
+            toast.error('Spark initialization timed out');
+            return false;
+        }
+        if (requestedCount > 0) {
+            toast.success(`Loaded ${requestedCount} ${requestedCount === 1 ? 'library' : 'libraries'}`);
+        }
+        return true;
+    };
+
     const getStoredKernelProfile = () => {
         const cc = (notebook as any)?.cluster_config || {};
         const cpu = cc['sparklabx.kernel.resourceCpu'] as string | undefined;
@@ -847,13 +900,19 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
 
             devLog('[NotebookPage] Waiting for Spark init to complete...');
             const sparkInitReady = await waitForSparkInitCompletion();
-            if (!sparkInitReady) {
-                toast.error('Spark initialization timed out');
-                return;
-            }
 
             devLog('[NotebookPage] Kernel ready!');
-            toast.success('Kernel connected');
+            // If libraries were requested, report load success/failure (#33);
+            // otherwise just confirm the connection.
+            const requestedCount = packageListFromInput(options.sparkPackages || '').length;
+            if (requestedCount > 0) {
+                const ok = reportLibraryOutcome(sparkInitReady, requestedCount);
+                if (ok) toast.success('Kernel connected');
+            } else if (!sparkInitReady) {
+                toast.error('Spark initialization timed out');
+            } else {
+                toast.success('Kernel connected');
+            }
         } catch (error) {
             console.error('Failed to connect:', error);
             toast.error('Connection failed');
@@ -2089,7 +2148,17 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                                 // In-pod restart — no pod respawn. New SparkSession is built by
                                 // the auto-injected init cell (which reads sparkPackages state)
                                 // when the kernel reports 'connected' again (~1-2s).
+                                clearCellOutput('init-spark-context'); // drop the previous run's output before we scan
                                 await restart();
+                                // Wait for the fresh init cell to settle, then report whether
+                                // every requested coordinate actually resolved (#33).
+                                const back = await waitForReady(60000);
+                                if (back) {
+                                    const initOk = await waitForSparkInitCompletion();
+                                    reportLibraryOutcome(initOk, packageListFromInput(packages).length);
+                                } else {
+                                    toast.error('Kernel did not come back after restart');
+                                }
                             } catch { toast.error('Failed to update libraries'); }
                         }}>
                             Apply & Restart Kernel

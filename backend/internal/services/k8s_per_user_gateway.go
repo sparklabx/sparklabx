@@ -202,8 +202,12 @@ func (g *K8sPerUserGateway) Usage(ctx context.Context, userID string) (ResourceU
 		AbsPath("/apis/metrics.k8s.io/v1beta1/namespaces/" + g.cfg.Namespace + "/pods/" + podName).
 		DoRaw(ctx)
 	if err != nil {
-		// metrics-server absent or not ready yet.
-		return ResourceUsage{}, ErrUsageUnsupported
+		// metrics-server absent, or hasn't scraped this pod yet (~15s lag after
+		// spawn). The pod's limits are still known, so return those with
+		// MetricsLive=false rather than hiding the kernel's size entirely —
+		// the Resources picker needs the size right after a connect/resize.
+		// Not cached: we want to re-check metrics on the next poll.
+		return ResourceUsage{CPULimitCores: cpuLimitCores, MemLimitBytes: memLimitBytes, MetricsLive: false}, nil
 	}
 	var pm struct {
 		Containers []struct {
@@ -237,6 +241,7 @@ func (g *K8sPerUserGateway) Usage(ctx context.Context, userID string) (ResourceU
 		CPULimitCores: cpuLimitCores,
 		MemUsedBytes:  usedBytes,
 		MemLimitBytes: memLimitBytes,
+		MetricsLive:   true,
 	}
 
 	g.usageMu.Lock()
