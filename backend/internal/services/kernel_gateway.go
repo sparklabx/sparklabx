@@ -63,7 +63,9 @@ type KernelGateway interface {
 // is capped at); 0 means "no limit set" so the UI should fall back to the
 // host total or hide the denominator.
 type ResourceUsage struct {
-	CPUPercent    float64 `json:"cpu_percent"`
+	CPUPercent    float64 `json:"cpu_percent"`     // 0–100, relative to the container's CPU quota
+	CPUUsedCores  float64 `json:"cpu_used_cores"`  // cores currently consumed (e.g. 0.24)
+	CPULimitCores float64 `json:"cpu_limit_cores"` // quota in cores (e.g. 2); 0 = unlimited
 	MemUsedBytes  int64   `json:"mem_used_bytes"`
 	MemLimitBytes int64   `json:"mem_limit_bytes"`
 }

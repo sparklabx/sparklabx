@@ -112,6 +112,8 @@ func (h *LocalKernelHandler) Usage(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"available":       true,
 		"cpu_percent":     u.CPUPercent,
+		"cpu_used_cores":  u.CPUUsedCores,
+		"cpu_limit_cores": u.CPULimitCores,
 		"mem_used_bytes":  u.MemUsedBytes,
 		"mem_limit_bytes": u.MemLimitBytes,
 	})

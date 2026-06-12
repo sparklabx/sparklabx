@@ -485,6 +485,8 @@ func (g *DockerPerUserGateway) Usage(ctx context.Context, userID string) (Resour
 
 	usage := ResourceUsage{
 		CPUPercent:    cpuPct,
+		CPUUsedCores:  usedCores,
+		CPULimitCores: limitCores,
 		MemUsedBytes:  memUsed,
 		MemLimitBytes: s.MemoryStats.Limit,
 	}
