@@ -226,7 +226,7 @@ func (g *DockerPerUserGateway) GetGatewayURL(ctx context.Context, userID string)
 	}
 
 	// Spawn fresh
-	if err := g.EnsureSpawning(userID); err != nil {
+	if err := g.EnsureSpawning(userID, nil); err != nil {
 		return "", err
 	}
 
@@ -249,7 +249,11 @@ func (g *DockerPerUserGateway) GetGatewayURL(ctx context.Context, userID string)
 
 // EnsureSpawning creates and starts the user's container if it isn't already
 // running. Idempotent — returns nil if the container exists in any phase.
-func (g *DockerPerUserGateway) EnsureSpawning(userID string) error {
+//
+// spec is accepted for interface parity with the k8s gateway but ignored here:
+// per-notebook resource presets are a k8s_per_user feature (issue #41), and
+// docker_per_user keeps the single configured CPU/memory limit.
+func (g *DockerPerUserGateway) EnsureSpawning(userID string, _ *ResourceSpec) error {
 	if userID == "" {
 		return fmt.Errorf("userID empty")
 	}

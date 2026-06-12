@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog/log"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/sparklabx/sparklabx/backend/internal/config"
 	"github.com/sparklabx/sparklabx/backend/internal/database"
@@ -27,6 +28,15 @@ import (
 type LocalKernelHandler struct {
 	gateway  services.KernelGateway
 	upgrader websocket.Upgrader
+
+	// Per-notebook resource presets (k8s_per_user only, issue #41). An empty
+	// preset list means the feature is off: Connect ignores any resources field
+	// and the presets endpoint reports enabled=false.
+	resourcePresets       []config.ResourcePreset
+	resourceDefaultPreset string
+	resourceAllowCustom   bool
+	resourceCustomMaxCPU  string
+	resourceCustomMaxMem  string
 }
 
 func NewLocalKernelHandler(cfg *config.Config, gateway services.KernelGateway) *LocalKernelHandler {
@@ -35,7 +45,12 @@ func NewLocalKernelHandler(cfg *config.Config, gateway services.KernelGateway) *
 		allowedOrigins[o] = true
 	}
 	return &LocalKernelHandler{
-		gateway: gateway,
+		gateway:               gateway,
+		resourcePresets:       cfg.KernelResourcePresets,
+		resourceDefaultPreset: cfg.KernelResourceDefaultPreset,
+		resourceAllowCustom:   cfg.KernelResourceAllowCustom,
+		resourceCustomMaxCPU:  cfg.KernelResourceCustomMaxCPU,
+		resourceCustomMaxMem:  cfg.KernelResourceCustomMaxMem,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				origin := r.Header.Get("Origin")
@@ -354,6 +369,94 @@ func parseKernelKey(key string) (notebookID, userID string) {
 // 'ready'), so docker-compose flow is unchanged.
 //
 // POST /api/v1/notebooks/:id/kernel/connect
+// connectResources is the optional resources block in a /kernel/connect body.
+// Either preset (an id from the configured list) OR custom (explicit CPU/memory)
+// — preset wins if both are sent.
+type connectResources struct {
+	Preset string `json:"preset"`
+	Custom *struct {
+		CPU    string `json:"cpu"`
+		Memory string `json:"memory"`
+	} `json:"custom"`
+}
+
+// resolveResources validates a connect request's resources field against the
+// configured presets/caps and returns the pod size to spawn with.
+//   - (nil, nil): feature off, or no resources requested → gateway uses defaults.
+//   - (spec, nil): a valid preset or custom size.
+//   - (nil, err): client sent something invalid → handler returns 400.
+func (h *LocalKernelHandler) resolveResources(r *connectResources) (*services.ResourceSpec, error) {
+	if len(h.resourcePresets) == 0 || r == nil {
+		return nil, nil
+	}
+
+	if r.Preset != "" {
+		for _, p := range h.resourcePresets {
+			if p.ID == r.Preset {
+				return &services.ResourceSpec{CPU: p.CPU, Memory: p.Memory}, nil
+			}
+		}
+		return nil, fmt.Errorf("unknown resource preset %q", r.Preset)
+	}
+
+	if r.Custom != nil {
+		if !h.resourceAllowCustom {
+			return nil, fmt.Errorf("custom resources are not allowed")
+		}
+		cpu, mem := strings.TrimSpace(r.Custom.CPU), strings.TrimSpace(r.Custom.Memory)
+		if cpu == "" || mem == "" {
+			return nil, fmt.Errorf("custom resources require both cpu and memory")
+		}
+		cpuQ, err := resource.ParseQuantity(cpu)
+		if err != nil {
+			return nil, fmt.Errorf("invalid cpu quantity %q", cpu)
+		}
+		memQ, err := resource.ParseQuantity(mem)
+		if err != nil {
+			return nil, fmt.Errorf("invalid memory quantity %q", mem)
+		}
+		if cpuQ.Sign() <= 0 || memQ.Sign() <= 0 {
+			return nil, fmt.Errorf("cpu and memory must be positive")
+		}
+		if h.resourceCustomMaxCPU != "" {
+			if maxQ, err := resource.ParseQuantity(h.resourceCustomMaxCPU); err == nil && cpuQ.Cmp(maxQ) > 0 {
+				return nil, fmt.Errorf("cpu %s exceeds the allowed max of %s", cpu, h.resourceCustomMaxCPU)
+			}
+		}
+		if h.resourceCustomMaxMem != "" {
+			if maxQ, err := resource.ParseQuantity(h.resourceCustomMaxMem); err == nil && memQ.Cmp(maxQ) > 0 {
+				return nil, fmt.Errorf("memory %s exceeds the allowed max of %s", mem, h.resourceCustomMaxMem)
+			}
+		}
+		return &services.ResourceSpec{CPU: cpu, Memory: mem}, nil
+	}
+
+	return nil, nil
+}
+
+// ResourcePresets serves the configured kernel-pod sizes to the frontend so the
+// Connect dialog can render a picker. enabled=false (empty preset list) tells
+// the UI to hide the Resources section entirely.
+func (h *LocalKernelHandler) ResourcePresets(c *gin.Context) {
+	presets := make([]gin.H, 0, len(h.resourcePresets))
+	for _, p := range h.resourcePresets {
+		presets = append(presets, gin.H{
+			"id":     p.ID,
+			"label":  p.Label,
+			"cpu":    p.CPU,
+			"memory": p.Memory,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"enabled":        len(h.resourcePresets) > 0,
+		"presets":        presets,
+		"default_preset": h.resourceDefaultPreset,
+		"allow_custom":   h.resourceAllowCustom,
+		"max_cpu":        h.resourceCustomMaxCPU,
+		"max_memory":     h.resourceCustomMaxMem,
+	})
+}
+
 func (h *LocalKernelHandler) Connect(c *gin.Context) {
 	startKernelCleanup(h.gateway)
 
@@ -365,11 +468,18 @@ func (h *LocalKernelHandler) Connect(c *gin.Context) {
 	kernelKey := kernelKeyForNotebook(notebookID, userID)
 
 	var req struct {
-		Language   string `json:"language"`
-		KernelName string `json:"kernel_name"`
+		Language   string            `json:"language"`
+		KernelName string            `json:"kernel_name"`
+		Resources  *connectResources `json:"resources"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+
+	resourceSpec, err := h.resolveResources(req.Resources)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -399,7 +509,7 @@ func (h *LocalKernelHandler) Connect(c *gin.Context) {
 
 	// Non-blocking spawn trigger. Returns immediately; in k8s_per_user mode
 	// this kicks off a goroutine that updates DB phase as the pod progresses.
-	if err := h.gateway.EnsureSpawning(userID); err != nil {
+	if err := h.gateway.EnsureSpawning(userID, resourceSpec); err != nil {
 		log.Error().Err(err).Str("user_id", userID).Msg("ensure spawning failed")
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 		return

@@ -22,8 +22,8 @@ import {
     SelectValue,
 } from '@/components/ui/select';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
-import { Loader2, AlertCircle, CheckCircle2, Server, Plus, X } from 'lucide-react';
-import { fetchKernelSpecs, type KernelSpec } from '@/services/notebookService';
+import { Loader2, AlertCircle, CheckCircle2, Server, Plus, X, Cpu, MemoryStick } from 'lucide-react';
+import { fetchKernelSpecs, fetchResourcePresets, type KernelSpec, type ResourcePresetsResponse } from '@/services/notebookService';
 import { toast } from 'sonner';
 
 // ... (previous code)
@@ -37,9 +37,13 @@ interface KernelConnectionDialogProps {
         kernelName?: string;
         sparkPackages?: string;
         icebergWarehousePath?: string;
+        resourcePreset?: string;
+        resourceCustom?: { cpu: string; memory: string };
     }) => Promise<void>;
     savedPackages?: string;
     savedIcebergWarehousePath?: string;
+    savedResourcePreset?: string;
+    savedResourceCustom?: { cpu: string; memory: string };
 }
 
 interface PackagePreset {
@@ -95,6 +99,8 @@ export function KernelConnectionDialog({
     onConnect,
     savedPackages,
     savedIcebergWarehousePath,
+    savedResourcePreset,
+    savedResourceCustom,
 }: KernelConnectionDialogProps) {
     // Kernel selection
     const [kernelSpecs, setKernelSpecs] = useState<Record<string, KernelSpec>>({});
@@ -103,6 +109,13 @@ export function KernelConnectionDialog({
     const [sparkPackages, setSparkPackages] = useState<string>('');
     const [activePresetId, setActivePresetId] = useState<string | null>(null);
     const [icebergWarehousePath, setIcebergWarehousePath] = useState<string>('');
+
+    // Resource sizing (k8s_per_user, issue #41). resourceConfig.enabled gates the
+    // whole section. selectedResource is a preset id, or the sentinel 'custom'.
+    const [resourceConfig, setResourceConfig] = useState<ResourcePresetsResponse | null>(null);
+    const [selectedResource, setSelectedResource] = useState<string>('');
+    const [customCpu, setCustomCpu] = useState<string>('');
+    const [customMemory, setCustomMemory] = useState<string>('');
 
     const [isSubmitting, setIsSubmitting] = useState(false);
     const packageRows = sparkPackages ? sparkPackages.split('\n') : [''];
@@ -113,6 +126,30 @@ export function KernelConnectionDialog({
             fetchKernelSpecsList();
         }
     }, [open]);
+
+    // Fetch resource presets when dialog opens. Pick the saved preset, else the
+    // configured default, else the first preset. 'custom' only if allowed.
+    useEffect(() => {
+        if (!open) return;
+        let alive = true;
+        (async () => {
+            const cfg = await fetchResourcePresets();
+            if (!alive) return;
+            setResourceConfig(cfg);
+            if (!cfg.enabled || cfg.presets.length === 0) return;
+            const ids = cfg.presets.map(p => p.id);
+            const initial =
+                (savedResourcePreset && (ids.includes(savedResourcePreset) || (savedResourcePreset === 'custom' && cfg.allow_custom)) && savedResourcePreset) ||
+                (cfg.default_preset && ids.includes(cfg.default_preset) && cfg.default_preset) ||
+                ids[0];
+            setSelectedResource(initial);
+            if (savedResourceCustom) {
+                setCustomCpu(savedResourceCustom.cpu);
+                setCustomMemory(savedResourceCustom.memory);
+            }
+        })();
+        return () => { alive = false; };
+    }, [open, savedResourcePreset, savedResourceCustom]);
 
     // Auto-select default kernel based on language
     useEffect(() => {
@@ -218,11 +255,32 @@ export function KernelConnectionDialog({
                 setIsSubmitting(false);
                 return;
             }
+
+            // Resolve the chosen kernel-pod size, if the feature is enabled.
+            let resourcePreset: string | undefined;
+            let resourceCustom: { cpu: string; memory: string } | undefined;
+            if (resourceConfig?.enabled) {
+                if (selectedResource === 'custom') {
+                    const cpu = customCpu.trim();
+                    const memory = customMemory.trim();
+                    if (!cpu || !memory) {
+                        toast.error('Enter both CPU and memory for a custom size');
+                        setIsSubmitting(false);
+                        return;
+                    }
+                    resourceCustom = { cpu, memory };
+                } else if (selectedResource) {
+                    resourcePreset = selectedResource;
+                }
+            }
+
             await onConnect({
                 enableSpark: false, // Explicitly false as per new requirement
                 kernelName: selectedKernelName || undefined,
                 sparkPackages: normalizedPackages || undefined,
                 icebergWarehousePath: icebergWarehousePath.trim() || undefined,
+                resourcePreset,
+                resourceCustom,
             });
             onClose();
         } catch (error) {
@@ -314,6 +372,78 @@ export function KernelConnectionDialog({
                             </div>
                         )}
                     </div>
+
+                    {/* Resources (k8s_per_user only). Hidden unless the admin
+                        configured presets. */}
+                    {resourceConfig?.enabled && resourceConfig.presets.length > 0 && (
+                        <div className="space-y-2">
+                            <Label className="text-sm font-medium">Resources</Label>
+                            <div className="grid grid-cols-2 gap-2">
+                                {resourceConfig.presets.map((preset) => {
+                                    const active = selectedResource === preset.id;
+                                    return (
+                                        <button
+                                            key={preset.id}
+                                            type="button"
+                                            onClick={() => setSelectedResource(preset.id)}
+                                            className={`flex flex-col items-start gap-1 rounded-md border p-2.5 text-left transition-colors ${
+                                                active
+                                                    ? 'border-primary bg-primary/5 ring-1 ring-primary'
+                                                    : 'border-input hover:bg-muted/50'
+                                            }`}
+                                        >
+                                            <span className="text-sm font-medium">{preset.label}</span>
+                                            <span className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                                                <span className="flex items-center gap-1"><Cpu className="h-3 w-3" />{preset.cpu}</span>
+                                                <span className="flex items-center gap-1"><MemoryStick className="h-3 w-3" />{preset.memory}</span>
+                                            </span>
+                                        </button>
+                                    );
+                                })}
+                                {resourceConfig.allow_custom && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setSelectedResource('custom')}
+                                        className={`flex flex-col items-start gap-1 rounded-md border p-2.5 text-left transition-colors ${
+                                            selectedResource === 'custom'
+                                                ? 'border-primary bg-primary/5 ring-1 ring-primary'
+                                                : 'border-input hover:bg-muted/50'
+                                        }`}
+                                    >
+                                        <span className="text-sm font-medium">Custom</span>
+                                        <span className="text-[11px] text-muted-foreground">Set CPU &amp; memory</span>
+                                    </button>
+                                )}
+                            </div>
+                            {selectedResource === 'custom' && (
+                                <div className="flex gap-2">
+                                    <div className="flex-1 space-y-1">
+                                        <Label className="text-[11px] text-muted-foreground">CPU (cores)</Label>
+                                        <input
+                                            className="flex h-9 w-full rounded-md border border-input bg-background px-2 py-1 text-xs font-mono ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                                            placeholder="e.g. 2 or 1500m"
+                                            value={customCpu}
+                                            onChange={(e) => setCustomCpu(e.target.value)}
+                                        />
+                                    </div>
+                                    <div className="flex-1 space-y-1">
+                                        <Label className="text-[11px] text-muted-foreground">Memory</Label>
+                                        <input
+                                            className="flex h-9 w-full rounded-md border border-input bg-background px-2 py-1 text-xs font-mono ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                                            placeholder="e.g. 4Gi"
+                                            value={customMemory}
+                                            onChange={(e) => setCustomMemory(e.target.value)}
+                                        />
+                                    </div>
+                                </div>
+                            )}
+                            <p className="text-[10px] text-muted-foreground">
+                                {resourceConfig.allow_custom && (resourceConfig.max_cpu || resourceConfig.max_memory)
+                                    ? `Applies to this kernel; changing it restarts the kernel. Custom max: ${resourceConfig.max_cpu || '∞'} CPU / ${resourceConfig.max_memory || '∞'}.`
+                                    : 'Applies to this kernel; changing it restarts the kernel.'}
+                            </p>
+                        </div>
+                    )}
 
                     {/* Spark Packages / JARs */}
                     <div className="space-y-2">

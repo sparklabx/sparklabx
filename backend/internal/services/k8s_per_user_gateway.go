@@ -332,7 +332,9 @@ func (g *K8sPerUserGateway) GetGatewayURL(ctx context.Context, userID string) (s
 	// briefly. The Connect handler doesn't go through here anymore (it uses
 	// EnsureSpawning + Status to stay non-blocking) so this path is only hit
 	// when something tries to proxy through a dead pod.
-	if err := g.EnsureSpawning(userID); err != nil {
+	// nil spec → fall back to whatever resources are already on the row (or
+	// gateway defaults). This proxy path never originates a user's size choice.
+	if err := g.EnsureSpawning(userID, nil); err != nil {
 		return "", err
 	}
 	url, spawnErr := g.spawnAndWait(ctx, userID, podName)
@@ -353,12 +355,13 @@ func (g *K8sPerUserGateway) GetGatewayURL(ctx context.Context, userID string) (s
 // EnsureSpawning kicks off pod spawn in a goroutine if no spawn is in flight
 // and pod isn't already ready. Returns immediately. Idempotent: safe to call
 // many times — only the first call from a fresh state triggers actual work.
-func (g *K8sPerUserGateway) EnsureSpawning(userID string) error {
+func (g *K8sPerUserGateway) EnsureSpawning(userID string, spec *ResourceSpec) error {
 	if userID == "" {
 		return fmt.Errorf("userID is required")
 	}
 	db := database.GetDB()
 	podName := podNameForUser(userID)
+	cpuReq, memReq, cpuLim, memLim := g.resolveSpec(spec)
 
 	var dbStatus, dbURL string
 	err := db.QueryRow(
@@ -395,11 +398,15 @@ func (g *K8sPerUserGateway) EnsureSpawning(userID string) error {
 	}
 
 	// Insert spawning row — ON CONFLICT serializes concurrent EnsureSpawning calls.
+	// The resolved resources are persisted on the row so buildPodSpec (which runs
+	// in the detached goroutine) and any later respawn use the size the user
+	// picked for THIS spawn, not the cluster default.
 	_, err = db.Exec(
-		`INSERT INTO user_kernel_pods (user_id, pod_name, pod_namespace, status, phase_message, created_at, last_used_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $6)
-		 ON CONFLICT (user_id) DO UPDATE SET status = $4, phase_message = $5, created_at = $6, last_used_at = $6, pod_url = ''`,
+		`INSERT INTO user_kernel_pods (user_id, pod_name, pod_namespace, status, phase_message, created_at, last_used_at, cpu_request, mem_request, cpu_limit, mem_limit)
+		 VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $8, $9, $10)
+		 ON CONFLICT (user_id) DO UPDATE SET status = $4, phase_message = $5, created_at = $6, last_used_at = $6, pod_url = '', cpu_request = $7, mem_request = $8, cpu_limit = $9, mem_limit = $10`,
 		userID, podName, g.cfg.Namespace, PhaseSpawning, "Preparing kernel pod...", time.Now(),
+		cpuReq, memReq, cpuLim, memLim,
 	)
 	if err != nil {
 		return fmt.Errorf("db insert: %w", err)
@@ -602,11 +609,45 @@ func derivePhase(p *corev1.Pod) (phase, message string) {
 	return PhaseSpawning, ""
 }
 
+// resolveSpec turns a user-picked *ResourceSpec into the four request/limit
+// strings the pod spec needs. A valid spec applies its CPU/memory as BOTH
+// request and limit (Guaranteed QoS — the user gets exactly what they picked);
+// nil or incomplete falls back to the gateway's configured defaults (which are
+// burstable: a small request with a larger limit).
+func (g *K8sPerUserGateway) resolveSpec(spec *ResourceSpec) (cpuReq, memReq, cpuLim, memLim string) {
+	if spec != nil && spec.CPU != "" && spec.Memory != "" {
+		return spec.CPU, spec.Memory, spec.CPU, spec.Memory
+	}
+	return g.cfg.CPURequest, g.cfg.MemoryRequest, g.cfg.CPULimit, g.cfg.MemoryLimit
+}
+
+// podResources reads the per-pod resources persisted on the user_kernel_pods
+// row (written by EnsureSpawning). Falls back to gateway defaults when the row
+// is missing the columns (legacy rows) — never returns empty quantities, which
+// would make resource.MustParse panic.
+func (g *K8sPerUserGateway) podResources(userID string) (cpuReq, memReq, cpuLim, memLim string) {
+	cpuReq, memReq, cpuLim, memLim = g.cfg.CPURequest, g.cfg.MemoryRequest, g.cfg.CPULimit, g.cfg.MemoryLimit
+	var cr, mr, cl, ml string
+	err := database.GetDB().QueryRow(
+		`SELECT cpu_request, mem_request, cpu_limit, mem_limit FROM user_kernel_pods WHERE user_id = $1`,
+		userID,
+	).Scan(&cr, &mr, &cl, &ml)
+	if err != nil {
+		return
+	}
+	if cr != "" && mr != "" && cl != "" && ml != "" {
+		cpuReq, memReq, cpuLim, memLim = cr, mr, cl, ml
+	}
+	return
+}
+
 func (g *K8sPerUserGateway) buildPodSpec(userID, podName string) *corev1.Pod {
 	// Resolve per-user MinIO creds. Empty creds → fall back to root creds via
 	// SecretKeyRef (legacy / IAM-not-configured). Per-user creds are injected
 	// as plain env values; the pod is per-user and ephemeral so leakage risk
 	// is bounded to the pod's lifetime.
+	cpuReq, memReq, cpuLim, memLim := g.podResources(userID)
+
 	var (
 		userAccessKey, userSecretKey string
 		usePerUserCreds              bool
@@ -675,12 +716,12 @@ func (g *K8sPerUserGateway) buildPodSpec(userID, podName string) *corev1.Pod {
 					},
 					Resources: corev1.ResourceRequirements{
 						Requests: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse(g.cfg.CPURequest),
-							corev1.ResourceMemory: resource.MustParse(g.cfg.MemoryRequest),
+							corev1.ResourceCPU:    resource.MustParse(cpuReq),
+							corev1.ResourceMemory: resource.MustParse(memReq),
 						},
 						Limits: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse(g.cfg.CPULimit),
-							corev1.ResourceMemory: resource.MustParse(g.cfg.MemoryLimit),
+							corev1.ResourceCPU:    resource.MustParse(cpuLim),
+							corev1.ResourceMemory: resource.MustParse(memLim),
 						},
 					},
 					// Spark s3a reads these from env to build core-site.xml / spark-defaults

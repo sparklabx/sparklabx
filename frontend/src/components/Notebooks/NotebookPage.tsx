@@ -770,15 +770,24 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
         return false;
     };
 
-    const getStoredKernelProfile = () => ({
-        sparkPackages: ((notebook as any)?.cluster_config?.['spark.jars.packages'] as string | undefined) || undefined,
-        icebergWarehousePath: ((notebook as any)?.cluster_config?.['spark.sql.catalog.iceberg.warehouse'] as string | undefined) || undefined,
-    });
+    const getStoredKernelProfile = () => {
+        const cc = (notebook as any)?.cluster_config || {};
+        const cpu = cc['sparklabx.kernel.resourceCpu'] as string | undefined;
+        const memory = cc['sparklabx.kernel.resourceMemory'] as string | undefined;
+        return {
+            sparkPackages: (cc['spark.jars.packages'] as string | undefined) || undefined,
+            icebergWarehousePath: (cc['spark.sql.catalog.iceberg.warehouse'] as string | undefined) || undefined,
+            resourcePreset: (cc['sparklabx.kernel.resourcePreset'] as string | undefined) || undefined,
+            resourceCustom: cpu && memory ? { cpu, memory } : undefined,
+        };
+    };
 
     const handleKernelDialogConnect = async (options: {
         kernelName?: string;
         sparkPackages?: string;
         icebergWarehousePath?: string;
+        resourcePreset?: string;
+        resourceCustom?: { cpu: string; memory: string };
     }) => {
         if (!notebook) return;
         const existingProfile = getStoredKernelProfile();
@@ -792,6 +801,16 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                 }
                 if (nextIcebergWarehousePath) {
                     nextClusterConfig['spark.sql.catalog.iceberg.warehouse'] = nextIcebergWarehousePath;
+                }
+                // Persist the chosen kernel-pod size so the dialog defaults to it
+                // next time (e.g. reconnecting after an idle reap). These keys are
+                // ignored by Spark; only the Connect flow reads them.
+                if (options.resourceCustom) {
+                    nextClusterConfig['sparklabx.kernel.resourcePreset'] = 'custom';
+                    nextClusterConfig['sparklabx.kernel.resourceCpu'] = options.resourceCustom.cpu;
+                    nextClusterConfig['sparklabx.kernel.resourceMemory'] = options.resourceCustom.memory;
+                } else if (options.resourcePreset) {
+                    nextClusterConfig['sparklabx.kernel.resourcePreset'] = options.resourcePreset;
                 }
                 await updateNotebook({ cluster_config: nextClusterConfig });
                 devLog('[NotebookPage] Saved spark packages to notebook config');
@@ -811,7 +830,10 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
             // shadowing the kernel's lazy `spark` val). Single path now.
             setSparkPackages(options.sparkPackages);
             setIcebergWarehousePath(nextIcebergWarehousePath);
-            connect(lang, options.kernelName);
+            connect(lang, options.kernelName, {
+                preset: options.resourcePreset,
+                custom: options.resourceCustom,
+            });
 
             // Wait for kernel to be fully ready (max 60s). The auto-init effect
             // handles init code injection once the kernel reports connected.
@@ -1875,6 +1897,16 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                 onConnect={handleKernelDialogConnect}
                 savedPackages={(notebook as any)?.cluster_config?.['spark.jars.packages'] || ''}
                 savedIcebergWarehousePath={(notebook as any)?.cluster_config?.['spark.sql.catalog.iceberg.warehouse'] || ''}
+                savedResourcePreset={(notebook as any)?.cluster_config?.['sparklabx.kernel.resourcePreset'] || ''}
+                savedResourceCustom={
+                    (notebook as any)?.cluster_config?.['sparklabx.kernel.resourceCpu'] &&
+                    (notebook as any)?.cluster_config?.['sparklabx.kernel.resourceMemory']
+                        ? {
+                              cpu: (notebook as any).cluster_config['sparklabx.kernel.resourceCpu'],
+                              memory: (notebook as any).cluster_config['sparklabx.kernel.resourceMemory'],
+                          }
+                        : undefined
+                }
             />
 
             {/* Create Notebook Dialog */}

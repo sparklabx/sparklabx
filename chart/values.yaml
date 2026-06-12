@@ -44,6 +44,33 @@ kernel:
       cpu: 2000m
       memory: 4Gi
 
+    # ── Per-notebook resource presets (k8s_per_user only, issue #41) ──
+    # OPT-IN. While `presets` is empty the Connect dialog shows no size picker
+    # and every pod uses the requests/limits above — i.e. upgrading changes
+    # nothing. Populate `presets` to let users pick a size per kernel session.
+    #
+    # A preset's cpu/memory is applied as BOTH request and limit (Guaranteed
+    # QoS — the user gets exactly what they pick), so size large presets to
+    # what your nodes can actually schedule or pods sit Pending.
+    #
+    # Example (uncomment to enable):
+    # presets:
+    #   - { id: small,  label: "Small",  cpu: "500m", memory: "1Gi" }
+    #   - { id: medium, label: "Medium", cpu: "1",    memory: "2Gi" }
+    #   - { id: large,  label: "Large",  cpu: "2",    memory: "4Gi" }
+    #   - { id: xlarge, label: "XLarge", cpu: "4",    memory: "8Gi" }
+    # defaultPreset: small      # id pre-selected in the dialog
+    # allowCustom: false        # show a "Custom" row with free CPU/memory inputs
+    # custom:
+    #   maxCpu: "8"             # hard ceiling for custom cpu
+    #   maxMemory: "16Gi"       # hard ceiling for custom memory
+    presets: []
+    defaultPreset: ""
+    allowCustom: false
+    custom:
+      maxCpu: ""
+      maxMemory: ""
+
 # ─────────────────────────────────────────────────────────────
 # Pre-pulling image configurations
 # ─────────────────────────────────────────────────────────────

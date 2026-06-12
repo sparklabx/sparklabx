@@ -83,6 +83,13 @@ func MigrateAndSeed(cfg *config.Config) error {
 			last_used_at   TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_kernel_pods_idle ON user_kernel_pods(status, last_used_at)`,
+		// Per-pod resources chosen at connect time (issue #41, k8s_per_user
+		// presets). Empty string on legacy rows → gateway falls back to cluster
+		// defaults, so no backfill is needed.
+		`ALTER TABLE user_kernel_pods ADD COLUMN IF NOT EXISTS cpu_request TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE user_kernel_pods ADD COLUMN IF NOT EXISTS mem_request TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE user_kernel_pods ADD COLUMN IF NOT EXISTS cpu_limit TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE user_kernel_pods ADD COLUMN IF NOT EXISTS mem_limit TEXT NOT NULL DEFAULT ''`,
 
 		// Notebook→kernel cache (UNLOGGED, regenerable)
 		`CREATE UNLOGGED TABLE IF NOT EXISTS notebook_kernels (

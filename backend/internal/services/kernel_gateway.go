@@ -48,7 +48,12 @@ type KernelGateway interface {
 	// block for minutes waiting on image pull. Caller then polls Status to
 	// learn when phase reaches "ready". SharedGateway is a pure no-op since
 	// there's nothing to spawn.
-	EnsureSpawning(userID string) error
+	//
+	// spec sets the pod's CPU/memory for THIS spawn; nil → gateway defaults.
+	// It only takes effect on a fresh spawn — if a pod is already ready or
+	// spawning, the size is fixed until that pod is destroyed (the kernel pod
+	// is per-user, not per-notebook, so resizing means restarting the kernel).
+	EnsureSpawning(userID string, spec *ResourceSpec) error
 
 	// Usage returns live CPU/memory usage of the user's kernel container/pod.
 	// Returns ErrUsageUnsupported when the mode has no per-user container to
@@ -68,6 +73,15 @@ type ResourceUsage struct {
 	CPULimitCores float64 `json:"cpu_limit_cores"` // quota in cores (e.g. 2); 0 = unlimited
 	MemUsedBytes  int64   `json:"mem_used_bytes"`
 	MemLimitBytes int64   `json:"mem_limit_bytes"`
+}
+
+// ResourceSpec is the resolved CPU/memory for a single kernel pod. Both the
+// request and the limit are set to these values (Guaranteed QoS) so a user
+// gets exactly what they picked. Quantities are in k8s format ("1", "500m",
+// "2Gi"). A nil *ResourceSpec means "use the gateway's configured defaults".
+type ResourceSpec struct {
+	CPU    string
+	Memory string
 }
 
 // ErrUsageUnsupported signals that resource usage can't be measured for this
@@ -104,7 +118,7 @@ func (s *SharedGateway) Status(_ string) (PodStatus, error) {
 	// Shared gateway has no spawn step — always ready.
 	return PodStatus{Phase: PhaseReady, Message: "Kernel ready", URL: s.url}, nil
 }
-func (s *SharedGateway) EnsureSpawning(_ string) error { return nil }
+func (s *SharedGateway) EnsureSpawning(_ string, _ *ResourceSpec) error { return nil }
 func (s *SharedGateway) Usage(_ context.Context, _ string) (ResourceUsage, error) {
 	// One shared container for everyone — no per-user figure to report.
 	return ResourceUsage{}, ErrUsageUnsupported
