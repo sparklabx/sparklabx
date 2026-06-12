@@ -26,6 +26,11 @@ rules:
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["get", "list", "create", "delete"]
+  # Read per-user pod CPU/memory for the Resource Usage widget. Requires
+  # metrics-server installed in the cluster; without it the widget hides.
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

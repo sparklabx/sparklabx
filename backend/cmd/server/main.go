@@ -222,6 +222,7 @@ func main() {
 		kernelMeta.Use(middleware.RequireAdmin(cfg))
 		{
 			kernelMeta.GET("/spawn-status", localKernelHandler.SpawnStatus)
+			kernelMeta.GET("/usage", localKernelHandler.Usage)
 		}
 	}
 
