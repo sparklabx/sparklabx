@@ -164,7 +164,36 @@ func (g *DockerPerUserGateway) Status(userID string) (PodStatus, error) {
 		// No row → no spawn in flight. Return empty (not error).
 		return PodStatus{}, nil
 	}
+	// Self-heal a stale row: if the row claims a settled phase (terminating /
+	// ready) but the container no longer exists — it died out of band (daemon
+	// restart, OOM, host reboot) — the row is garbage. Left as-is it pins the
+	// user at "terminating"/"connected" forever and blocks reconnect. Clear it
+	// so the next connect spawns fresh. We skip the spawning/starting/pulling
+	// phases: those run before the container exists, so absence there is normal.
+	if (s.Phase == PhaseTerminating || s.Phase == PhaseReady) && s.PodName != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if g.containerGone(ctx, s.PodName) {
+			log.Info().Str("user", userID).Str("container", s.PodName).Str("phase", s.Phase).
+				Msg("stale kernel row (container gone); clearing so reconnect can spawn")
+			database.GetDB().Exec(`DELETE FROM user_kernel_pods WHERE user_id = $1`, userID)
+			return PodStatus{}, nil
+		}
+	}
 	return s, nil
+}
+
+// containerGone reports whether Docker is CERTAIN the container is absent — a
+// 404 from the daemon. A transport error or any non-404 status returns false:
+// we must not treat "couldn't reach the daemon" as "container gone", or a
+// transient daemon blip would delete the row of a still-running kernel.
+func (g *DockerPerUserGateway) containerGone(ctx context.Context, name string) bool {
+	resp, err := g.dockerReq(ctx, "GET", "/containers/"+name+"/json", nil)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == 404
 }
 
 // GetGatewayURL returns the container URL. Spawns if not running. Blocks until
