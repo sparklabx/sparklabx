@@ -592,17 +592,19 @@ export function KernelConnectionDialog({
                                         value={pkg}
                                         onChange={(e) => updatePackageRow(index, e.target.value)}
                                     />
-                                    {pkg.trim() && (
-                                        <Button
-                                            type="button"
-                                            variant="ghost"
-                                            size="icon"
-                                            className="h-8 w-8 shrink-0 text-muted-foreground"
-                                            onClick={() => removePackageRow(index)}
-                                        >
-                                            <X className="h-4 w-4" />
-                                        </Button>
-                                    )}
+                                    {/* Always render the slot so the input doesn't
+                                        rescale when the X appears on paste. */}
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="icon"
+                                        aria-hidden={!pkg.trim()}
+                                        tabIndex={pkg.trim() ? 0 : -1}
+                                        className={`h-8 w-8 shrink-0 text-muted-foreground ${pkg.trim() ? '' : 'invisible pointer-events-none'}`}
+                                        onClick={() => removePackageRow(index)}
+                                    >
+                                        <X className="h-4 w-4" />
+                                    </Button>
                                 </div>
                             ))}
                             <Button

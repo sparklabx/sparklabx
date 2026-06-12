@@ -880,6 +880,11 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
     const restart = useCallback(async () => {
         const sess = sessionManager.getSession(notebookId);
         if (!sess.kernelId) return;
+        // A restart starts a FRESH kernel process (same kernel_id), so the
+        // "Spark already initialized for this kernel" marker is now void —
+        // clear it or NotebookPage's auto-init effect would skip re-running the
+        // init cell and the new libraries (or a clean restart) would never load.
+        try { localStorage.removeItem(`sparklabx_spark_inited_${notebookId}`); } catch { /* ignore */ }
         try {
             if (kernelProxyUrl) {
                 await axios.post(`${kernelProxyUrl}/api/kernels/${sess.kernelId}/restart`);
@@ -899,6 +904,30 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
             });
             sess.pendingExecutions.forEach(p => p.resolve?.());
             sess.pendingExecutions.clear();
+
+            // Prompt the kernel to report idle so connectionStatus returns to
+            // 'connected'. Without this the post-restart iopub idle can be missed
+            // (it can arrive before we set 'starting', so the status handler's
+            // guard drops it) and the badge sticks on 'starting' until a reload —
+            // which also blocks NotebookPage's auto-init effect from re-running.
+            // Mirrors the connect path's shell kernel_info_request + fallback.
+            const promptIdle = () => {
+                const s = sessionManager.getSession(notebookId);
+                if (s.ws && s.ws.readyState === WebSocket.OPEN) {
+                    s.ws.send(JSON.stringify({
+                        header: { msg_id: crypto.randomUUID(), msg_type: 'kernel_info_request', username: 'user', session: crypto.randomUUID(), date: new Date().toISOString(), version: '5.3' },
+                        parent_header: {}, metadata: {}, content: {}, buffers: [], channel: 'shell',
+                    }));
+                }
+            };
+            setTimeout(promptIdle, 600);
+            setTimeout(promptIdle, 2500);
+            setTimeout(() => {
+                const s = sessionManager.getSession(notebookId);
+                if (s.status === 'starting') {
+                    sessionManager.updateSession(notebookId, { status: 'connected', podPhase: '', podMessage: '' });
+                }
+            }, 15000);
         } catch (e) {
             console.error(`[JupyterKernel][${notebookId}] restart failed`, e);
             throw e;
