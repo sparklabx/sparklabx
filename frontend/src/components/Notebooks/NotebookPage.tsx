@@ -89,6 +89,14 @@ function normalizePackageInput(value?: string): string {
         .join('\n');
 }
 
+// A Maven coordinate must be group:artifact:version — three non-empty,
+// colon-separated, whitespace-free segments. Catches typos like "abc" before
+// they ever reach the kernel and fail the whole resolve. (#92)
+const MAVEN_COORD_RE = /^[^:\s]+:[^:\s]+:[^:\s]+$/;
+function invalidCoordinates(list: string[]): string[] {
+    return list.filter(c => !MAVEN_COORD_RE.test(c.trim()));
+}
+
 function packageListFromInput(value?: string): string[] {
     return normalizePackageInput(value)
         .split('\n')
@@ -876,15 +884,18 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
         if (!initOk) await new Promise(r => setTimeout(r, 600));
         const fromLogs = await fetchLibraryErrors(requested);
         const cell = scanInitCellErrors(requested);
-        let failed = Array.from(new Set([...fromLogs, ...cell.coords]));
-        // A failure happened (cell errored, init never reached ready, or coords
-        // found) but we couldn't pin the coordinate → blame the requested set.
+        const failed = Array.from(new Set([...fromLogs, ...cell.coords]));
         const failureDetected = failed.length > 0 || cell.errored || !initOk;
-        if (failed.length === 0 && failureDetected && requested.length) {
-            failed = [...requested];
-        }
+
+        // Always pass `description` (even undefined) on every branch: the toasts
+        // share one id so a later call UPDATES the earlier toast in place, and
+        // sonner keeps the previous description if a new call omits it — which
+        // showed a green "Loaded 1 library" still carrying the prior failure's
+        // text. Setting it explicitly clears the stale line. (#33 follow-up)
         if (failed.length) {
-            // Stable id → a residual double-call replaces rather than stacks.
+            // We pinned the exact coordinate(s) — name only those, never the
+            // whole requested set (a valid coordinate must not be implicated
+            // just because a sibling failed). (#92)
             toast.error(`Failed to load ${failed.length} ${failed.length === 1 ? 'library' : 'libraries'}`, {
                 id: 'kernel-library-outcome',
                 description: `${failed.join(', ')} — not found on Maven Central. Check the coordinate and version.`,
@@ -892,12 +903,22 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
             });
             return false;
         }
-        if (!initOk) {
-            toast.error('Spark failed to start — check the library coordinates and try again.', { id: 'kernel-library-outcome' });
+        if (failureDetected) {
+            // A failure happened but the resolver output didn't attribute it to a
+            // specific coordinate → stay generic instead of blaming every
+            // requested library (which wrongly implicated valid ones). (#92)
+            toast.error('A library failed to load', {
+                id: 'kernel-library-outcome',
+                description: 'One or more coordinates could not be resolved — check your library versions.',
+                duration: 14000,
+            });
             return false;
         }
         if (requested.length > 0) {
-            toast.success(`Loaded ${requested.length} ${requested.length === 1 ? 'library' : 'libraries'}`, { id: 'kernel-library-outcome' });
+            toast.success(`Loaded ${requested.length} ${requested.length === 1 ? 'library' : 'libraries'}`, {
+                id: 'kernel-library-outcome',
+                description: undefined,
+            });
         }
         return true;
     };
@@ -2230,8 +2251,20 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                     <DialogFooter>
                         <Button variant="outline" onClick={() => setLibraryDialogOpen(false)}>Cancel</Button>
                         <Button variant="destructive" onClick={async () => {
+                            const pkgList = packageListFromInput(libraryInput);
+                            // Reject malformed coordinates up front so they never
+                            // reach the kernel (where one typo fails the whole
+                            // resolve and muddies which library is at fault). (#92)
+                            const bad = invalidCoordinates(pkgList);
+                            if (bad.length) {
+                                toast.error(`Invalid coordinate${bad.length === 1 ? '' : 's'}`, {
+                                    description: `${bad.join(', ')} — use group:artifact:version (e.g. io.delta:delta-spark_2.12:3.3.2).`,
+                                    duration: 10000,
+                                });
+                                return;
+                            }
                             setLibraryDialogOpen(false);
-                            const packages = packageListFromInput(libraryInput).join(',') || undefined;
+                            const packages = pkgList.join(',') || undefined;
                             try {
                                 toast.info('Restarting kernel with new libraries...');
                                 // Persist packages to notebook config so they survive reload.
