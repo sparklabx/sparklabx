@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -468,6 +469,57 @@ func kernelSizeDiffers(userID string, spec *services.ResourceSpec) bool {
 		return cpu != spec.CPU || mem != spec.Memory
 	}
 	return curCPU.Cmp(newCPU) != 0 || curMem.Cmp(newMem) != 0
+}
+
+// LibraryErrors scans the user's recent kernel logs for Spark/Coursier
+// dependency-resolution failures and returns the offending coordinate(s).
+// Spark prints "unresolved dependency: group#artifact;version: not found" to
+// the JVM stderr (container log), which never reaches the notebook cell — so
+// the frontend can't detect a bad Maven coordinate without this (#33).
+func (h *LocalKernelHandler) LibraryErrors(c *gin.Context) {
+	userID := userIDString(c)
+	if userID == "" {
+		c.JSON(http.StatusOK, gin.H{"failed": []string{}})
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 4*time.Second)
+	defer cancel()
+	logs, err := h.gateway.RecentLogs(ctx, userID, 400)
+	if err != nil {
+		// No container / shared mode / unreachable — nothing to report.
+		c.JSON(http.StatusOK, gin.H{"failed": []string{}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"failed": parseUnresolvedCoordinates(logs)})
+}
+
+// failureLineRe matches the log lines that signal a dependency couldn't be
+// resolved (Spark's Ivy resolver and Coursier/Almond phrase it differently).
+var failureLineRe = regexp.MustCompile(`(?i)unresolved dependenc|not found|failed to (resolve|download)|error downloading|could not find artifact|module not found`)
+
+// coordRe pulls Maven coordinates in either the colon form (group:artifact:version,
+// as users type them) or Ivy's hash/semicolon form (group#artifact;version, as
+// Spark prints them). The captured groups normalize both to group:artifact:version.
+var coordRe = regexp.MustCompile(`([a-zA-Z0-9_.\-]+)[#:]([a-zA-Z0-9_.\-]+)[;:]([a-zA-Z0-9_.\-]+)`)
+
+// parseUnresolvedCoordinates returns the distinct coordinates named on log
+// lines that indicate a resolution failure, normalized to group:artifact:version.
+func parseUnresolvedCoordinates(logs string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, line := range strings.Split(logs, "\n") {
+		if !failureLineRe.MatchString(line) {
+			continue
+		}
+		for _, m := range coordRe.FindAllStringSubmatch(line, -1) {
+			coord := m[1] + ":" + m[2] + ":" + m[3]
+			if !seen[coord] {
+				seen[coord] = true
+				out = append(out, coord)
+			}
+		}
+	}
+	return out
 }
 
 // ResourcePresets serves the configured kernel-pod sizes to the frontend so the

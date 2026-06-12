@@ -61,6 +61,14 @@ type KernelGateway interface {
 	// metrics-server) — callers should treat that as "hide the widget", not
 	// a hard error.
 	Usage(ctx context.Context, userID string) (ResourceUsage, error)
+
+	// RecentLogs returns the last `tailLines` of the user's kernel
+	// container/pod stdout+stderr. Used to surface dependency-resolution
+	// failures (issue #33): Spark/Coursier print "unresolved dependency …"
+	// to the JVM's stderr, which lands in the container log — NOT in the
+	// notebook cell — so the UI can't see it without reading the log here.
+	// Returns ErrUsageUnsupported for SharedGateway (no per-user container).
+	RecentLogs(ctx context.Context, userID string, tailLines int) (string, error)
 }
 
 // ResourceUsage is a point-in-time snapshot of a kernel container/pod's
@@ -129,6 +137,9 @@ func (s *SharedGateway) EnsureSpawning(_ string, _ *ResourceSpec) error { return
 func (s *SharedGateway) Usage(_ context.Context, _ string) (ResourceUsage, error) {
 	// One shared container for everyone — no per-user figure to report.
 	return ResourceUsage{}, ErrUsageUnsupported
+}
+func (s *SharedGateway) RecentLogs(_ context.Context, _ string, _ int) (string, error) {
+	return "", ErrUsageUnsupported
 }
 
 // KernelGatewaySettings is the fully-resolved config needed to build a gateway.

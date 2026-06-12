@@ -224,6 +224,7 @@ func main() {
 			kernelMeta.GET("/spawn-status", localKernelHandler.SpawnStatus)
 			kernelMeta.GET("/usage", localKernelHandler.Usage)
 			kernelMeta.GET("/resource-presets", localKernelHandler.ResourcePresets)
+			kernelMeta.GET("/library-errors", localKernelHandler.LibraryErrors)
 		}
 	}
 
