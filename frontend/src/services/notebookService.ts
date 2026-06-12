@@ -482,6 +482,36 @@ export async function fetchKernelSpecs(): Promise<KernelSpecsResponse> {
     return response.data;
 }
 
+// ============ Resource presets (k8s_per_user, issue #41) ============
+
+export interface ResourcePreset {
+    id: string;
+    label: string;
+    cpu: string;
+    memory: string;
+}
+
+export interface ResourcePresetsResponse {
+    enabled: boolean;
+    presets: ResourcePreset[];
+    default_preset: string;
+    allow_custom: boolean;
+    max_cpu: string;
+    max_memory: string;
+}
+
+// Fetch the kernel-pod size presets the admin configured. enabled=false means
+// the deployment has no presets (or isn't k8s_per_user) → hide the picker.
+// Resolves to a disabled response on any error so the dialog still works.
+export async function fetchResourcePresets(): Promise<ResourcePresetsResponse> {
+    try {
+        const response = await api.get<ResourcePresetsResponse>('/api/v1/kernel/resource-presets');
+        return response.data;
+    } catch {
+        return { enabled: false, presets: [], default_preset: '', allow_custom: false, max_cpu: '', max_memory: '' };
+    }
+}
+
 // ============ Export ============
 
 export const notebookService = {
@@ -504,6 +534,7 @@ export const notebookService = {
     // Kernel
     getKernelSession,
     fetchKernelSpecs,
+    fetchResourcePresets,
 
     // WebSocket
     connectNotebookWebSocket,

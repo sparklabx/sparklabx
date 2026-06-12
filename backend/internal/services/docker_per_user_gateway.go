@@ -133,19 +133,19 @@ func dockerContainerName(userID string) string {
 }
 
 // hostConfig builds the Docker HostConfig fragment. Resource limits are
-// only attached when the operator opted in via CPULimit/MemoryLimit — a
-// zero value means "no limit" so existing deployments keep working.
-func hostConfig(cfg DockerPerUserConfig) map[string]any {
+// only attached when set (per-spawn spec or operator CPULimit/MemoryLimit) —
+// a zero value means "no limit" so existing deployments keep working.
+func hostConfig(cfg DockerPerUserConfig, nanoCPUs, memoryBytes int64) map[string]any {
 	hc := map[string]any{
 		"RestartPolicy": map[string]any{"Name": "no"},
 		"NetworkMode":   cfg.Network,
 		"AutoRemove":    false,
 	}
-	if cfg.nanoCPUs > 0 {
-		hc["NanoCpus"] = cfg.nanoCPUs
+	if nanoCPUs > 0 {
+		hc["NanoCpus"] = nanoCPUs
 	}
-	if cfg.memoryBytes > 0 {
-		hc["Memory"] = cfg.memoryBytes
+	if memoryBytes > 0 {
+		hc["Memory"] = memoryBytes
 	}
 	return hc
 }
@@ -196,6 +196,30 @@ func (g *DockerPerUserGateway) containerGone(ctx context.Context, name string) b
 	return resp.StatusCode == 404
 }
 
+// containerNanoCPUs reads the container's actual CPU quota from inspect.
+// Containers can differ from the configured default since per-spawn presets
+// (issue #41), so the static cfg value can't be trusted for usage math.
+// Returns 0 (= no limit) when the container is missing or has no quota.
+func (g *DockerPerUserGateway) containerNanoCPUs(ctx context.Context, name string) int64 {
+	resp, err := g.dockerReq(ctx, "GET", "/containers/"+name+"/json", nil)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return 0
+	}
+	var info struct {
+		HostConfig struct {
+			NanoCpus int64 `json:"NanoCpus"`
+		} `json:"HostConfig"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return 0
+	}
+	return info.HostConfig.NanoCpus
+}
+
 // GetGatewayURL returns the container URL. Spawns if not running. Blocks until
 // the container's Jupyter port responds (max ~60s).
 func (g *DockerPerUserGateway) GetGatewayURL(ctx context.Context, userID string) (string, error) {
@@ -226,7 +250,7 @@ func (g *DockerPerUserGateway) GetGatewayURL(ctx context.Context, userID string)
 	}
 
 	// Spawn fresh
-	if err := g.EnsureSpawning(userID); err != nil {
+	if err := g.EnsureSpawning(userID, nil); err != nil {
 		return "", err
 	}
 
@@ -249,7 +273,13 @@ func (g *DockerPerUserGateway) GetGatewayURL(ctx context.Context, userID string)
 
 // EnsureSpawning creates and starts the user's container if it isn't already
 // running. Idempotent — returns nil if the container exists in any phase.
-func (g *DockerPerUserGateway) EnsureSpawning(userID string) error {
+//
+// spec sets THIS container's CPU/memory limits (issue #41 presets); nil falls
+// back to the configured CPULimit/MemoryLimit. Like k8s, the size only takes
+// effect on a fresh spawn — an already-running container keeps its limits
+// until the kernel is restarted. Docker has no "request" concept, so the spec
+// maps to limits only.
+func (g *DockerPerUserGateway) EnsureSpawning(userID string, spec *ResourceSpec) error {
 	if userID == "" {
 		return fmt.Errorf("userID empty")
 	}
@@ -306,7 +336,29 @@ func (g *DockerPerUserGateway) EnsureSpawning(userID string) error {
 		"S3_ENDPOINT=" + g.cfg.MinIOEndpoint,
 	}
 
+	// Per-spawn limits: user-picked spec wins over the configured defaults.
+	// The spec was already validated by the handler, so a parse failure here
+	// just falls back to the defaults instead of failing the spawn.
+	nanoCPUs, memoryBytes := g.cfg.nanoCPUs, g.cfg.memoryBytes
+	cpuStr, memStr := g.cfg.CPULimit, g.cfg.MemoryLimit
+	if spec != nil && spec.CPU != "" && spec.Memory != "" {
+		if q, err := resource.ParseQuantity(spec.CPU); err == nil {
+			nanoCPUs = q.MilliValue() * 1_000_000
+			cpuStr = spec.CPU
+		}
+		if q, err := resource.ParseQuantity(spec.Memory); err == nil {
+			memoryBytes = q.Value()
+			memStr = spec.Memory
+		}
+	}
+
 	g.upsertRow(userID, name, "", PhaseSpawning, "Creating kernel container")
+	// Record the limits this container was created with (docker has no
+	// requests, so the request columns mirror the limits).
+	database.GetDB().Exec(
+		`UPDATE user_kernel_pods SET cpu_request = $1, mem_request = $2, cpu_limit = $1, mem_limit = $2 WHERE user_id = $3`,
+		cpuStr, memStr, userID,
+	)
 
 	cfg := map[string]any{
 		"Image": g.cfg.Image,
@@ -316,7 +368,7 @@ func (g *DockerPerUserGateway) EnsureSpawning(userID string) error {
 			"sparklabx.user":   userID,
 		},
 		"ExposedPorts": map[string]any{"8888/tcp": map[string]any{}},
-		"HostConfig": hostConfig(g.cfg),
+		"HostConfig": hostConfig(g.cfg, nanoCPUs, memoryBytes),
 	}
 	if err := g.containerCreate(ctx, name, cfg); err != nil {
 		g.updatePhase(userID, PhaseFailed, err.Error())
@@ -494,10 +546,12 @@ func (g *DockerPerUserGateway) Usage(ctx context.Context, userID string) (Resour
 	// Express as a percentage of the container's OWN quota so 100% = "using
 	// the whole limit" (consistent with how RAM is shown vs its limit). With
 	// a 2-core limit this caps near 100% instead of the confusing 200% a raw
-	// docker-stats percentage would show. Falls back to %-of-host when the
-	// container has no CPU limit.
+	// docker-stats percentage would show. The quota is read from the container
+	// itself (inspect), not the static config — per-spawn presets (issue #41)
+	// mean each container can have its own limit. Falls back to %-of-host when
+	// the container has no CPU limit.
 	cpuPct := 0.0
-	limitCores := float64(g.cfg.nanoCPUs) / 1e9
+	limitCores := float64(g.containerNanoCPUs(ctx, name)) / 1e9
 	if limitCores <= 0 {
 		limitCores = float64(cpus)
 	}

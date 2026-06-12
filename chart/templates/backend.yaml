@@ -108,6 +108,20 @@ spec:
               value: {{ .Values.kernel.resources.limits.cpu | quote }}
             - name: KERNEL_POD_MEMORY_LIMIT
               value: {{ .Values.kernel.resources.limits.memory | quote }}
+            {{- with .Values.kernel.resources.presets }}
+            # Per-notebook resource presets (k8s_per_user, issue #41). Serialized
+            # to JSON for the backend; empty list disables the picker entirely.
+            - name: KERNEL_RESOURCE_PRESETS
+              value: {{ toJson . | quote }}
+            - name: KERNEL_RESOURCE_DEFAULT_PRESET
+              value: {{ $.Values.kernel.resources.defaultPreset | default "" | quote }}
+            - name: KERNEL_RESOURCE_ALLOW_CUSTOM
+              value: {{ $.Values.kernel.resources.allowCustom | default false | quote }}
+            - name: KERNEL_RESOURCE_CUSTOM_MAX_CPU
+              value: {{ $.Values.kernel.resources.custom.maxCpu | default "" | quote }}
+            - name: KERNEL_RESOURCE_CUSTOM_MAX_MEMORY
+              value: {{ $.Values.kernel.resources.custom.maxMemory | default "" | quote }}
+            {{- end }}
           resources:
             {{- toYaml .Values.backend.resources | nindent 12 }}
           readinessProbe:
