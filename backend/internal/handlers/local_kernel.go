@@ -502,9 +502,21 @@ var failureLineRe = regexp.MustCompile(`(?i)unresolved dependenc|not found|faile
 // Spark prints them). The captured groups normalize both to group:artifact:version.
 var coordRe = regexp.MustCompile(`([a-zA-Z0-9_.\-]+)[#:]([a-zA-Z0-9_.\-]+)[;:]([a-zA-Z0-9_.\-]+)`)
 
+// definitiveFailureRe marks a log that genuinely failed to resolve. Ivy/Coursier
+// print "not found" / "failed to download" PER REPO while probing — a coordinate
+// found in the 2nd repo still logged "not found" against the 1st. So we only trust
+// per-line coordinate extraction when the log also contains one of these terminal
+// markers, which appear only in the final unresolved summary (#92-B).
+var definitiveFailureRe = regexp.MustCompile(`(?i)unresolved dependenc|::\s*unresolved|module not found|resolutionexception|could not find artifact`)
+
 // parseUnresolvedCoordinates returns the distinct coordinates named on log
 // lines that indicate a resolution failure, normalized to group:artifact:version.
 func parseUnresolvedCoordinates(logs string) []string {
+	// No terminal failure marker → resolution succeeded (any "not found" lines
+	// are just repo-probe noise). Don't extract coordinates from a success log.
+	if !definitiveFailureRe.MatchString(logs) {
+		return []string{}
+	}
 	seen := map[string]bool{}
 	out := []string{}
 	for _, line := range strings.Split(logs, "\n") {
