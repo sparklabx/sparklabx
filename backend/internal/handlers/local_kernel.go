@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog/log"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/sparklabx/sparklabx/backend/internal/config"
 	"github.com/sparklabx/sparklabx/backend/internal/database"
@@ -27,6 +28,15 @@ import (
 type LocalKernelHandler struct {
 	gateway  services.KernelGateway
 	upgrader websocket.Upgrader
+
+	// Per-session resource presets (issue #41, k8s + docker per-user modes).
+	// An empty preset list means the feature is off: Connect ignores any
+	// resources field and the presets endpoint reports enabled=false.
+	resourcePresets       []config.ResourcePreset
+	resourceDefaultPreset string
+	resourceAllowCustom   bool
+	resourceCustomMaxCPU  string
+	resourceCustomMaxMem  string
 }
 
 func NewLocalKernelHandler(cfg *config.Config, gateway services.KernelGateway) *LocalKernelHandler {
@@ -35,7 +45,12 @@ func NewLocalKernelHandler(cfg *config.Config, gateway services.KernelGateway) *
 		allowedOrigins[o] = true
 	}
 	return &LocalKernelHandler{
-		gateway: gateway,
+		gateway:               gateway,
+		resourcePresets:       cfg.KernelResourcePresets,
+		resourceDefaultPreset: cfg.KernelResourceDefaultPreset,
+		resourceAllowCustom:   cfg.KernelResourceAllowCustom,
+		resourceCustomMaxCPU:  cfg.KernelResourceCustomMaxCPU,
+		resourceCustomMaxMem:  cfg.KernelResourceCustomMaxMem,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				origin := r.Header.Get("Origin")
@@ -354,6 +369,129 @@ func parseKernelKey(key string) (notebookID, userID string) {
 // 'ready'), so docker-compose flow is unchanged.
 //
 // POST /api/v1/notebooks/:id/kernel/connect
+// connectResources is the optional resources block in a /kernel/connect body.
+// Either preset (an id from the configured list) OR custom (explicit CPU/memory)
+// — preset wins if both are sent.
+type connectResources struct {
+	Preset string `json:"preset"`
+	Custom *struct {
+		CPU    string `json:"cpu"`
+		Memory string `json:"memory"`
+	} `json:"custom"`
+}
+
+// resolveResources validates a connect request's resources field against the
+// configured presets/caps and returns the pod size to spawn with.
+//   - (nil, nil): feature off, or no resources requested → gateway uses defaults.
+//   - (spec, nil): a valid preset or custom size.
+//   - (nil, err): client sent something invalid → handler returns 400.
+func (h *LocalKernelHandler) resolveResources(r *connectResources) (*services.ResourceSpec, error) {
+	if len(h.resourcePresets) == 0 || r == nil {
+		return nil, nil
+	}
+
+	if r.Preset != "" {
+		for _, p := range h.resourcePresets {
+			if p.ID == r.Preset {
+				return &services.ResourceSpec{CPU: p.CPU, Memory: p.Memory}, nil
+			}
+		}
+		return nil, fmt.Errorf("unknown resource preset %q", r.Preset)
+	}
+
+	if r.Custom != nil {
+		if !h.resourceAllowCustom {
+			return nil, fmt.Errorf("custom resources are not allowed")
+		}
+		cpu, mem := strings.TrimSpace(r.Custom.CPU), strings.TrimSpace(r.Custom.Memory)
+		if cpu == "" || mem == "" {
+			return nil, fmt.Errorf("custom resources require both cpu and memory")
+		}
+		cpuQ, err := resource.ParseQuantity(cpu)
+		if err != nil {
+			return nil, fmt.Errorf("invalid cpu quantity %q", cpu)
+		}
+		memQ, err := resource.ParseQuantity(mem)
+		if err != nil {
+			return nil, fmt.Errorf("invalid memory quantity %q", mem)
+		}
+		if cpuQ.Sign() <= 0 || memQ.Sign() <= 0 {
+			return nil, fmt.Errorf("cpu and memory must be positive")
+		}
+		// Sanity floors. A bare number like "3" parses as 3 BYTES of memory —
+		// almost certainly someone meaning 3 GB — and Docker/k8s would reject
+		// or OOM-kill such a container anyway. Catch it with a clear message.
+		if cpuQ.MilliValue() < 100 {
+			return nil, fmt.Errorf("cpu %s is below the 0.1-core minimum", cpu)
+		}
+		if memQ.Value() < 128<<20 {
+			return nil, fmt.Errorf("memory %s is below the 128Mi minimum (did you mean %sGi?)", mem, mem)
+		}
+		if h.resourceCustomMaxCPU != "" {
+			if maxQ, err := resource.ParseQuantity(h.resourceCustomMaxCPU); err == nil && cpuQ.Cmp(maxQ) > 0 {
+				return nil, fmt.Errorf("cpu %s exceeds the allowed max of %s", cpu, h.resourceCustomMaxCPU)
+			}
+		}
+		if h.resourceCustomMaxMem != "" {
+			if maxQ, err := resource.ParseQuantity(h.resourceCustomMaxMem); err == nil && memQ.Cmp(maxQ) > 0 {
+				return nil, fmt.Errorf("memory %s exceeds the allowed max of %s", mem, h.resourceCustomMaxMem)
+			}
+		}
+		return &services.ResourceSpec{CPU: cpu, Memory: mem}, nil
+	}
+
+	return nil, nil
+}
+
+// kernelSizeDiffers reports whether the user's running kernel was created with
+// a different size than spec. Legacy rows with empty resource columns count as
+// "different" — the user explicitly picked a size, so honor it (one extra
+// restart, after which the columns are recorded). Quantities are compared
+// semantically so "4" == "4000m".
+func kernelSizeDiffers(userID string, spec *services.ResourceSpec) bool {
+	var cpu, mem string
+	err := database.GetDB().QueryRow(
+		`SELECT cpu_limit, mem_limit FROM user_kernel_pods WHERE user_id = $1`, userID,
+	).Scan(&cpu, &mem)
+	if err != nil {
+		return false // no row (shared mode / nothing running) — nothing to resize
+	}
+	if cpu == "" || mem == "" {
+		return true
+	}
+	curCPU, err1 := resource.ParseQuantity(cpu)
+	curMem, err2 := resource.ParseQuantity(mem)
+	newCPU, err3 := resource.ParseQuantity(spec.CPU)
+	newMem, err4 := resource.ParseQuantity(spec.Memory)
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
+		return cpu != spec.CPU || mem != spec.Memory
+	}
+	return curCPU.Cmp(newCPU) != 0 || curMem.Cmp(newMem) != 0
+}
+
+// ResourcePresets serves the configured kernel-pod sizes to the frontend so the
+// Connect dialog can render a picker. enabled=false (empty preset list) tells
+// the UI to hide the Resources section entirely.
+func (h *LocalKernelHandler) ResourcePresets(c *gin.Context) {
+	presets := make([]gin.H, 0, len(h.resourcePresets))
+	for _, p := range h.resourcePresets {
+		presets = append(presets, gin.H{
+			"id":     p.ID,
+			"label":  p.Label,
+			"cpu":    p.CPU,
+			"memory": p.Memory,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"enabled":        len(h.resourcePresets) > 0,
+		"presets":        presets,
+		"default_preset": h.resourceDefaultPreset,
+		"allow_custom":   h.resourceAllowCustom,
+		"max_cpu":        h.resourceCustomMaxCPU,
+		"max_memory":     h.resourceCustomMaxMem,
+	})
+}
+
 func (h *LocalKernelHandler) Connect(c *gin.Context) {
 	startKernelCleanup(h.gateway)
 
@@ -365,11 +503,18 @@ func (h *LocalKernelHandler) Connect(c *gin.Context) {
 	kernelKey := kernelKeyForNotebook(notebookID, userID)
 
 	var req struct {
-		Language   string `json:"language"`
-		KernelName string `json:"kernel_name"`
+		Language   string            `json:"language"`
+		KernelName string            `json:"kernel_name"`
+		Resources  *connectResources `json:"resources"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+
+	resourceSpec, err := h.resolveResources(req.Resources)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -397,9 +542,26 @@ func (h *LocalKernelHandler) Connect(c *gin.Context) {
 		return
 	}
 
+	// Resize: a kernel is already running but with a different size than the
+	// user just picked. Container/pod resources are immutable, so honoring the
+	// new size means destroy + respawn (the dialog warns that changing size
+	// restarts the kernel). Only triggers on an explicit size choice AND a real
+	// difference — the FE's connect retry loop re-sends the same preset while
+	// polling, which must NOT loop into restart-on-every-poll.
+	if resourceSpec != nil {
+		if st, _ := h.gateway.Status(userID); st.Phase == services.PhaseReady && kernelSizeDiffers(userID, resourceSpec) {
+			log.Info().Str("user_id", userID).Str("cpu", resourceSpec.CPU).Str("mem", resourceSpec.Memory).
+				Msg("kernel size changed; restarting kernel at new size")
+			if err := h.gateway.Destroy(userID); err != nil {
+				log.Warn().Err(err).Str("user_id", userID).Msg("destroy for resize failed; keeping current kernel")
+			}
+			deleteKernelMap(notebookID, userID)
+		}
+	}
+
 	// Non-blocking spawn trigger. Returns immediately; in k8s_per_user mode
 	// this kicks off a goroutine that updates DB phase as the pod progresses.
-	if err := h.gateway.EnsureSpawning(userID); err != nil {
+	if err := h.gateway.EnsureSpawning(userID, resourceSpec); err != nil {
 		log.Error().Err(err).Str("user_id", userID).Msg("ensure spawning failed")
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 		return
