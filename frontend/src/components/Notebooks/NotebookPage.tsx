@@ -204,6 +204,11 @@ export default function NotebookPage() {
     const [libraryInput, setLibraryInput] = useState('');
     const libraryRows = libraryInput ? libraryInput.split('\n') : [''];
     const [sparkInitPending, setSparkInitPending] = useState(false);
+    // Spark init ran but FAILED (almost always a bad library coordinate). The
+    // kernel process is still alive — we keep it for a fast fix-and-retry — but
+    // it has no usable `spark`, so we don't show a green "Connected": the badge
+    // reads "Spark not ready" and Spark cells are blocked until it's fixed.
+    const [sparkFailed, setSparkFailed] = useState(false);
     const [sparkInitLogsOpen, setSparkInitLogsOpen] = useState(false);
 
     // Monaco instance for global registration
@@ -269,12 +274,14 @@ export default function NotebookPage() {
         if (currentKernelId && currentKernelId === initedKernelId) {
             devLog(`[NotebookPage] Skipping Spark init — kernel ${currentKernelId} already initialized`);
             setSparkInitPending(false);
+            setSparkFailed(false);
             return;
         }
 
         void (async () => {
             // Block user execution immediately on connect; init may take a while (first run downloads jars).
             setSparkInitPending(true);
+            setSparkFailed(false); // fresh attempt — clear any prior failure state
 
             // If a previous kernel session left outputs for init-spark-context around,
             // `waitForSparkInitCompletion()` could incorrectly return "ready" immediately.
@@ -607,7 +614,10 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
 
                 const initTimeoutMs = packages ? 300000 : 180000; // allow extra time for first-time jar downloads
                 let ok = await waitForSparkInitCompletion(initTimeoutMs);
-                if (!ok && !cancelled) {
+                // Only the genuine "still downloading" case warrants a retry. A
+                // detected failure (resolution error / cell error) is terminal —
+                // retrying it would just re-spin "Booting Spark…" for minutes.
+                if (!ok && !cancelled && !scanInitCellErrors([]).errored) {
                     const stillRunning = runningCellsRef.current.has('init-spark-context');
                     if (stillRunning) {
                         toast.warning('Spark is still initializing…', { description: 'This can take a few minutes the first time.' });
@@ -617,23 +627,40 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                 }
 
                 if (!cancelled) {
-                    const stillRunning = runningCellsRef.current.has('init-spark-context');
-                    // If still running, keep the initializing indicator on.
-                    setSparkInitPending(!ok && stillRunning);
-                    if (!ok && !stillRunning) toast.error('Spark initialization timed out');
+                    // Terminal: the init attempt is over (succeeded or failed) and
+                    // the kernel process is alive either way, so always clear the
+                    // "Booting Spark…" badge — never leave it spinning on a failure.
+                    setSparkInitPending(false);
+                    // Reflect failure honestly: connected-but-no-spark is useless
+                    // on a Spark platform, so flag it rather than show "Connected".
+                    setSparkFailed(!ok);
                     if (ok) {
-                        setSparkInitPending(false);
-                        // Remember which kernel pod we successfully
-                        // initialized so a tab reload (same pod)
-                        // skips re-init.
+                        // Remember which kernel pod we successfully initialized so
+                        // a tab reload (same pod) skips re-init.
                         const k = localStorage.getItem(`sparklabx_kernel_${notebookId}`);
                         if (k) localStorage.setItem(`sparklabx_spark_inited_${notebookId}`, k);
+                    }
+                    // Report the library-load outcome from the ONE place that
+                    // actually runs the init cell (covers fresh connect AND
+                    // Apply & Restart, no duplicate toasts).
+                    const requested = packageListFromInput(packages);
+                    if (requested.length > 0) {
+                        void reportLibraryOutcome(ok, requested);
+                    } else if (!ok) {
+                        toast.error('Spark initialization timed out');
                     }
                 }
             }
         })();
         return () => { cancelled = true; };
-    }, [connectionStatus, notebookId, notebookLanguage, sparkPackages, icebergWarehousePath, executeCell, clearCellOutput]);
+        // sparkPackages / icebergWarehousePath are intentionally NOT deps: init
+        // must run once per kernel (re)connect, reading the current packages via
+        // closure at that transition — keeping them as deps re-ran init on the
+        // OLD kernel the moment packages changed (before Apply & Restart's
+        // restart), racing the marker and double-reporting. connectionStatus
+        // cycles on every connect/restart, so fresh packages are always picked up.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [connectionStatus, notebookId, notebookLanguage, executeCell, clearCellOutput]);
 
 
 
@@ -735,6 +762,16 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
         const start = Date.now();
         let sawInitRunning = false;
 
+        // A dependency-resolution failure (Scala's `import $ivy` runs BEFORE the
+        // init template's try/catch, so it never prints the ❌ marker) or any
+        // cell error is terminal — bail immediately instead of polling to the
+        // timeout, which left the "Booting Spark…" badge spinning for minutes.
+        // Keep this STRICT: these phrases appear only in the FINAL failure
+        // summary. A bare "not found" shows up mid-resolution while Ivy probes
+        // repos for a coordinate it ultimately DOES find, so matching it here
+        // would false-fail a good package.
+        const FAIL_RE = /unresolved dependenc|module not found|resolutionexception|::\s*unresolved/i;
+
         while (Date.now() - start < timeoutMs) {
             const running = runningCellsRef.current;
             const initOutputs = cellOutputsRef.current['init-spark-context'];
@@ -744,8 +781,15 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                 sawInitRunning = true;
             }
 
+            let hasError = false;
             const flatText = (initOutputs || [])
-                .map((o: any) => (o?.text ? String(o.text) : JSON.stringify(o?.data ?? '')))
+                .map((o: any) => {
+                    if (o?.type === 'error' || o?.ename) {
+                        hasError = true;
+                        return `${o.ename || ''} ${o.evalue || ''}\n${(o.traceback || []).join('\n')}`;
+                    }
+                    return o?.text ? String(o.text) : JSON.stringify(o?.data ?? '');
+                })
                 .join('\n');
 
             if (flatText.includes('__SPARKLABX_SPARK_READY__') ||
@@ -754,7 +798,7 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                 return true;
             }
 
-            if (flatText.includes('❌ Spark initialization failed:')) {
+            if (flatText.includes('❌ Spark initialization failed:') || hasError || FAIL_RE.test(flatText)) {
                 return false;
             }
 
@@ -789,26 +833,71 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
         }
     };
 
+    // Scan the spark-init cell for a resolution failure. This is the Scala/
+    // Almond path: `import $ivy` resolves IN-PROCESS, so the error lands in the
+    // cell (an `error` output) — not the pod log — and it fails before the init
+    // template's ✅/❌ markers, so waitForSparkInitCompletion can't see it.
+    // Returns whether the cell errored and any coordinate(s) parsed from it.
+    const scanInitCellErrors = (requested: string[]): { errored: boolean; coords: string[] } => {
+        const outs = (cellOutputsRef.current['init-spark-context'] || []) as any[];
+        let errored = false;
+        const parts: string[] = [];
+        for (const o of outs) {
+            if (o?.type === 'error' || o?.ename) {
+                errored = true;
+                parts.push(`${o.ename || ''} ${o.evalue || ''}\n${(o.traceback || []).join('\n')}`);
+            } else if (o?.text) {
+                parts.push(String(o.text));
+            }
+        }
+        const text = parts.join('\n');
+        const FAIL_RE = /(failed to resolve|not found|error downloading|unresolved|resolutionexception|could not (find|download)|module not found)/i;
+        if (FAIL_RE.test(text)) errored = true;
+        const coordRe = /([a-zA-Z0-9_.\-]+)[#:]([a-zA-Z0-9_.\-]+)[;:]([a-zA-Z0-9_.\-]+)/g;
+        const coords = new Set<string>();
+        for (const line of text.split('\n')) {
+            if (!FAIL_RE.test(line)) continue;
+            let m: RegExpExecArray | null;
+            coordRe.lastIndex = 0;
+            while ((m = coordRe.exec(line))) coords.add(`${m[1]}:${m[2]}:${m[3]}`);
+        }
+        let arr = [...coords];
+        if (requested.length) arr = arr.filter(c => requested.includes(c));
+        return { errored, coords: arr };
+    };
+
     // Surface the outcome of a library load (after the spark-init cell settles).
-    // Shared by the connect flow and Manage Libraries → Apply & Restart. When
-    // init failed, give the JVM a moment to flush the resolver error to its log
-    // before reading it back.
+    // Shared by the connect flow and Manage Libraries → Apply & Restart. Checks
+    // BOTH sources — the kernel log (PySpark, JVM stderr) and the init cell
+    // (Scala/Almond, in-process Coursier) — since each kernel surfaces the
+    // failure in a different place. Falls back to naming the requested packages
+    // when a failure is detected but no coordinate could be parsed.
     const reportLibraryOutcome = async (initOk: boolean, requested: string[]): Promise<boolean> => {
         if (!initOk) await new Promise(r => setTimeout(r, 600));
-        const failed = await fetchLibraryErrors(requested);
+        const fromLogs = await fetchLibraryErrors(requested);
+        const cell = scanInitCellErrors(requested);
+        let failed = Array.from(new Set([...fromLogs, ...cell.coords]));
+        // A failure happened (cell errored, init never reached ready, or coords
+        // found) but we couldn't pin the coordinate → blame the requested set.
+        const failureDetected = failed.length > 0 || cell.errored || !initOk;
+        if (failed.length === 0 && failureDetected && requested.length) {
+            failed = [...requested];
+        }
         if (failed.length) {
+            // Stable id → a residual double-call replaces rather than stacks.
             toast.error(`Failed to load ${failed.length} ${failed.length === 1 ? 'library' : 'libraries'}`, {
+                id: 'kernel-library-outcome',
                 description: `${failed.join(', ')} — not found on Maven Central. Check the coordinate and version.`,
                 duration: 14000,
             });
             return false;
         }
         if (!initOk) {
-            toast.error('Spark failed to start — check the library coordinates and try again.');
+            toast.error('Spark failed to start — check the library coordinates and try again.', { id: 'kernel-library-outcome' });
             return false;
         }
         if (requested.length > 0) {
-            toast.success(`Loaded ${requested.length} ${requested.length === 1 ? 'library' : 'libraries'}`);
+            toast.success(`Loaded ${requested.length} ${requested.length === 1 ? 'library' : 'libraries'}`, { id: 'kernel-library-outcome' });
         }
         return true;
     };
@@ -892,16 +981,14 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
             const sparkInitReady = await waitForSparkInitCompletion();
 
             devLog('[NotebookPage] Kernel ready!');
-            // If libraries were requested, report load success/failure (#33);
-            // otherwise just confirm the connection.
+            // The auto-init effect owns library load reporting (success/failure
+            // toast) since it's the path that actually runs the init cell — see
+            // reportLibraryOutcome there. Here we only confirm a clean connect
+            // when no libraries were requested, to avoid a toast race.
             const requestedPkgs = packageListFromInput(options.sparkPackages || '');
-            if (requestedPkgs.length > 0) {
-                const ok = await reportLibraryOutcome(sparkInitReady, requestedPkgs);
-                if (ok) toast.success('Kernel connected');
-            } else if (!sparkInitReady) {
-                toast.error('Spark initialization timed out');
-            } else {
-                toast.success('Kernel connected');
+            if (requestedPkgs.length === 0) {
+                if (sparkInitReady) toast.success('Kernel connected');
+                else toast.error('Spark initialization timed out');
             }
         } catch (error) {
             console.error('Failed to connect:', error);
@@ -1273,6 +1360,15 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
             toast.info('Kernel is still initializing Spark, please wait a few seconds...');
             return;
         }
+        // Spark init failed (bad library) — `spark` doesn't exist, so running a
+        // cell would just throw a confusing NameError. Point the user at the fix.
+        if (sparkFailed) {
+            toast.error('Spark isn\'t ready — a library failed to load.', {
+                description: 'Fix the coordinate and restart the kernel.',
+                action: { label: 'Fix libraries', onClick: () => setLibraryDialogOpen(true) },
+            });
+            return;
+        }
 
         // Flush pending cell update immediately (e.g. code changes)
         if (updateCellTimerRef.current[cellId]) {
@@ -1503,7 +1599,7 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                             <div className="pt-2">
                                 <div className="text-xs">
                                     <p className="mb-2 text-muted-foreground">Kernel Status:</p>
-                                    <ConnectionStatusBadge status={connectionStatus} deadReason={deadReason} sparkInitializing={sparkInitPending || runningCells.has('init-spark-context')} />
+                                    <ConnectionStatusBadge status={connectionStatus} deadReason={deadReason} sparkInitializing={sparkInitPending || runningCells.has('init-spark-context')} sparkFailed={sparkFailed} />
 
                                     {/* Pod spawn / terminate progress (k8s_per_user mode).
                                         Shown for non-ready phases so user knows the pod is doing
@@ -1694,7 +1790,7 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                                 }
                             }}
                         >
-                            <ConnectionStatusBadge status={connectionStatus} deadReason={deadReason} compact={compactToolbar} sparkInitializing={sparkInitPending || runningCells.has('init-spark-context')} />
+                            <ConnectionStatusBadge status={connectionStatus} deadReason={deadReason} compact={compactToolbar} sparkInitializing={sparkInitPending || runningCells.has('init-spark-context')} sparkFailed={sparkFailed} />
                         </div>
                     </div>
 
@@ -1753,6 +1849,17 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                                         if (isExecuting) {
                                             handleInterrupt();
                                         } else {
+                                            if (sparkInitPending || runningCells.has('init-spark-context')) {
+                                                toast.info('Kernel is still initializing Spark, please wait a few seconds...');
+                                                return;
+                                            }
+                                            if (sparkFailed) {
+                                                toast.error('Spark isn\'t ready — a library failed to load.', {
+                                                    description: 'Fix the coordinate and restart the kernel.',
+                                                    action: { label: 'Fix libraries', onClick: () => setLibraryDialogOpen(true) },
+                                                });
+                                                return;
+                                            }
                                             const sortedCells = [...cells]
                                                 .sort((a, b) => a.order - b.order)
                                                 .map(c => ({ id: c.id, code: c.source, type: c.type }));
@@ -2083,20 +2190,23 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                                             setLibraryInput(normalizePackageInput(nextRows.join('\n')));
                                         }}
                                     />
-                                    {pkg.trim() && (
-                                        <Button
-                                            type="button"
-                                            variant="ghost"
-                                            size="icon"
-                                            className="h-8 w-8 shrink-0 text-muted-foreground"
-                                            onClick={() => {
-                                                const nextRows = libraryRows.filter((_, rowIndex) => rowIndex !== index);
-                                                setLibraryInput(normalizePackageInput(nextRows.join('\n')));
-                                            }}
-                                        >
-                                            <X className="h-4 w-4" />
-                                        </Button>
-                                    )}
+                                    {/* Always render the remove-button slot so the
+                                        input width doesn't rescale the moment text is
+                                        pasted (the X used to appear and shrink it). */}
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="icon"
+                                        aria-hidden={!pkg.trim()}
+                                        tabIndex={pkg.trim() ? 0 : -1}
+                                        className={`h-8 w-8 shrink-0 text-muted-foreground ${pkg.trim() ? '' : 'invisible pointer-events-none'}`}
+                                        onClick={() => {
+                                            const nextRows = libraryRows.filter((_, rowIndex) => rowIndex !== index);
+                                            setLibraryInput(normalizePackageInput(nextRows.join('\n')));
+                                        }}
+                                    >
+                                        <X className="h-4 w-4" />
+                                    </Button>
                                 </div>
                             ))}
                             <Button
@@ -2110,11 +2220,12 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                                 Add package
                             </Button>
                         </div>
-                        {packageListFromInput(libraryInput).length > 0 && (
-                            <div className="text-[10px] text-muted-foreground">
-                                {packageListFromInput(libraryInput).length} {packageListFromInput(libraryInput).length === 1 ? 'package' : 'packages'}
-                            </div>
-                        )}
+                        {/* Fixed-height line so the count appearing on paste
+                            doesn't push the footer (no vertical jump). */}
+                        <div className="h-4 text-[10px] text-muted-foreground">
+                            {packageListFromInput(libraryInput).length > 0 &&
+                                `${packageListFromInput(libraryInput).length} ${packageListFromInput(libraryInput).length === 1 ? 'package' : 'packages'}`}
+                        </div>
                     </div>
                     <DialogFooter>
                         <Button variant="outline" onClick={() => setLibraryDialogOpen(false)}>Cancel</Button>
@@ -2133,22 +2244,14 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                                     console.warn('[NotebookPage] Failed to persist package list:', e);
                                 }
                                 // Push into state so the auto-init effect rebuilds init code
-                                // with the new package list once kernel comes back idle.
+                                // with the new package list once the kernel comes back idle.
                                 setSparkPackages(packages);
-                                // In-pod restart — no pod respawn. New SparkSession is built by
-                                // the auto-injected init cell (which reads sparkPackages state)
-                                // when the kernel reports 'connected' again (~1-2s).
-                                clearCellOutput('init-spark-context'); // drop the previous run's output before we scan
+                                clearCellOutput('init-spark-context');
+                                // In-pod restart — no pod respawn. restart() clears the
+                                // "already inited" marker, so when the kernel reports idle
+                                // again the auto-init effect re-runs the init cell with the
+                                // new packages and reports load success/failure itself (#33).
                                 await restart();
-                                // Wait for the fresh init cell to settle, then report whether
-                                // every requested coordinate actually resolved (#33).
-                                const back = await waitForReady(60000);
-                                if (back) {
-                                    const initOk = await waitForSparkInitCompletion();
-                                    await reportLibraryOutcome(initOk, packageListFromInput(packages));
-                                } else {
-                                    toast.error('Kernel did not come back after restart');
-                                }
                             } catch { toast.error('Failed to update libraries'); }
                         }}>
                             Apply & Restart Kernel
