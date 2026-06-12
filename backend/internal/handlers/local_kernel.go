@@ -29,9 +29,9 @@ type LocalKernelHandler struct {
 	gateway  services.KernelGateway
 	upgrader websocket.Upgrader
 
-	// Per-notebook resource presets (k8s_per_user only, issue #41). An empty
-	// preset list means the feature is off: Connect ignores any resources field
-	// and the presets endpoint reports enabled=false.
+	// Per-session resource presets (issue #41, k8s + docker per-user modes).
+	// An empty preset list means the feature is off: Connect ignores any
+	// resources field and the presets endpoint reports enabled=false.
 	resourcePresets       []config.ResourcePreset
 	resourceDefaultPreset string
 	resourceAllowCustom   bool
@@ -434,6 +434,32 @@ func (h *LocalKernelHandler) resolveResources(r *connectResources) (*services.Re
 	return nil, nil
 }
 
+// kernelSizeDiffers reports whether the user's running kernel was created with
+// a different size than spec. Legacy rows with empty resource columns count as
+// "different" — the user explicitly picked a size, so honor it (one extra
+// restart, after which the columns are recorded). Quantities are compared
+// semantically so "4" == "4000m".
+func kernelSizeDiffers(userID string, spec *services.ResourceSpec) bool {
+	var cpu, mem string
+	err := database.GetDB().QueryRow(
+		`SELECT cpu_limit, mem_limit FROM user_kernel_pods WHERE user_id = $1`, userID,
+	).Scan(&cpu, &mem)
+	if err != nil {
+		return false // no row (shared mode / nothing running) — nothing to resize
+	}
+	if cpu == "" || mem == "" {
+		return true
+	}
+	curCPU, err1 := resource.ParseQuantity(cpu)
+	curMem, err2 := resource.ParseQuantity(mem)
+	newCPU, err3 := resource.ParseQuantity(spec.CPU)
+	newMem, err4 := resource.ParseQuantity(spec.Memory)
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
+		return cpu != spec.CPU || mem != spec.Memory
+	}
+	return curCPU.Cmp(newCPU) != 0 || curMem.Cmp(newMem) != 0
+}
+
 // ResourcePresets serves the configured kernel-pod sizes to the frontend so the
 // Connect dialog can render a picker. enabled=false (empty preset list) tells
 // the UI to hide the Resources section entirely.
@@ -505,6 +531,23 @@ func (h *LocalKernelHandler) Connect(c *gin.Context) {
 			"message": st.Message,
 		})
 		return
+	}
+
+	// Resize: a kernel is already running but with a different size than the
+	// user just picked. Container/pod resources are immutable, so honoring the
+	// new size means destroy + respawn (the dialog warns that changing size
+	// restarts the kernel). Only triggers on an explicit size choice AND a real
+	// difference — the FE's connect retry loop re-sends the same preset while
+	// polling, which must NOT loop into restart-on-every-poll.
+	if resourceSpec != nil {
+		if st, _ := h.gateway.Status(userID); st.Phase == services.PhaseReady && kernelSizeDiffers(userID, resourceSpec) {
+			log.Info().Str("user_id", userID).Str("cpu", resourceSpec.CPU).Str("mem", resourceSpec.Memory).
+				Msg("kernel size changed; restarting kernel at new size")
+			if err := h.gateway.Destroy(userID); err != nil {
+				log.Warn().Err(err).Str("user_id", userID).Msg("destroy for resize failed; keeping current kernel")
+			}
+			deleteKernelMap(notebookID, userID)
+		}
 	}
 
 	// Non-blocking spawn trigger. Returns immediately; in k8s_per_user mode

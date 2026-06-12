@@ -41,9 +41,8 @@ services:
       - KERNEL_MODE=${KERNEL_MODE:-shared}
       - KERNEL_POD_IMAGE=${KERNEL_POD_IMAGE:-ghcr.io/sparklabx/kernel:latest}
       - KERNEL_DOCKER_NETWORK=${KERNEL_DOCKER_NETWORK:-sparklabx_default}
-      # Per-notebook resource presets (issue #41). Empty → picker hidden.
-      # Pod sizing only applies in k8s_per_user; docker mode shows the picker
-      # but keeps its single configured limit.
+      # Per-session resource presets (issue #41). Empty → picker hidden.
+      # k8s: request=limit on the pod. docker: container CPU/memory limits.
       - KERNEL_RESOURCE_PRESETS=${KERNEL_RESOURCE_PRESETS:-}
       - KERNEL_RESOURCE_DEFAULT_PRESET=${KERNEL_RESOURCE_DEFAULT_PRESET:-}
       - KERNEL_RESOURCE_ALLOW_CUSTOM=${KERNEL_RESOURCE_ALLOW_CUSTOM:-false}

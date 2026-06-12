@@ -22,7 +22,7 @@ import {
     SelectValue,
 } from '@/components/ui/select';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
-import { Loader2, AlertCircle, CheckCircle2, Server, Plus, X, Cpu, MemoryStick } from 'lucide-react';
+import { Loader2, AlertCircle, CheckCircle2, Server, Plus, X } from 'lucide-react';
 import { fetchKernelSpecs, fetchResourcePresets, type KernelSpec, type ResourcePresetsResponse } from '@/services/notebookService';
 import { toast } from 'sonner';
 
@@ -44,6 +44,15 @@ interface KernelConnectionDialogProps {
     savedIcebergWarehousePath?: string;
     savedResourcePreset?: string;
     savedResourceCustom?: { cpu: string; memory: string };
+}
+
+// "500m" → "0.5", "2" → "2" — humanize a k8s CPU quantity for the pill label.
+function formatCpu(cpu: string): string {
+    if (cpu.endsWith('m')) {
+        const milli = parseInt(cpu.slice(0, -1), 10);
+        if (!Number.isNaN(milli)) return String(milli / 1000);
+    }
+    return cpu;
 }
 
 interface PackagePreset {
@@ -373,74 +382,56 @@ export function KernelConnectionDialog({
                         )}
                     </div>
 
-                    {/* Resources (k8s_per_user only). Hidden unless the admin
-                        configured presets. */}
+                    {/* Resources — kernel container/pod size (issue #41).
+                        Hidden unless the admin configured presets. Rendered as a
+                        Select to match the Kernel picker above (pill buttons
+                        wrapped awkwardly at this dialog width). */}
                     {resourceConfig?.enabled && resourceConfig.presets.length > 0 && (
                         <div className="space-y-2">
                             <Label className="text-sm font-medium">Resources</Label>
-                            <div className="grid grid-cols-2 gap-2">
-                                {resourceConfig.presets.map((preset) => {
-                                    const active = selectedResource === preset.id;
-                                    return (
-                                        <button
-                                            key={preset.id}
-                                            type="button"
-                                            onClick={() => setSelectedResource(preset.id)}
-                                            className={`flex flex-col items-start gap-1 rounded-md border p-2.5 text-left transition-colors ${
-                                                active
-                                                    ? 'border-primary bg-primary/5 ring-1 ring-primary'
-                                                    : 'border-input hover:bg-muted/50'
-                                            }`}
-                                        >
-                                            <span className="text-sm font-medium">{preset.label}</span>
-                                            <span className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                                                <span className="flex items-center gap-1"><Cpu className="h-3 w-3" />{preset.cpu}</span>
-                                                <span className="flex items-center gap-1"><MemoryStick className="h-3 w-3" />{preset.memory}</span>
-                                            </span>
-                                        </button>
-                                    );
-                                })}
-                                {resourceConfig.allow_custom && (
-                                    <button
-                                        type="button"
-                                        onClick={() => setSelectedResource('custom')}
-                                        className={`flex flex-col items-start gap-1 rounded-md border p-2.5 text-left transition-colors ${
-                                            selectedResource === 'custom'
-                                                ? 'border-primary bg-primary/5 ring-1 ring-primary'
-                                                : 'border-input hover:bg-muted/50'
-                                        }`}
-                                    >
-                                        <span className="text-sm font-medium">Custom</span>
-                                        <span className="text-[11px] text-muted-foreground">Set CPU &amp; memory</span>
-                                    </button>
-                                )}
-                            </div>
+                            <Select value={selectedResource} onValueChange={setSelectedResource}>
+                                <SelectTrigger className="h-10">
+                                    <SelectValue placeholder="Select a size..." />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {resourceConfig.presets.map((preset) => (
+                                        <SelectItem key={preset.id} value={preset.id} className="text-sm">
+                                            <div className="flex items-center gap-2">
+                                                <span>{preset.label}</span>
+                                                <span className="text-xs text-muted-foreground">
+                                                    {formatCpu(preset.cpu)} CPU · {preset.memory} RAM
+                                                </span>
+                                            </div>
+                                        </SelectItem>
+                                    ))}
+                                    {resourceConfig.allow_custom && (
+                                        <SelectItem value="custom" className="text-sm">
+                                            <div className="flex items-center gap-2">
+                                                <span>Custom</span>
+                                                <span className="text-xs text-muted-foreground">set CPU &amp; RAM</span>
+                                            </div>
+                                        </SelectItem>
+                                    )}
+                                </SelectContent>
+                            </Select>
                             {selectedResource === 'custom' && (
-                                <div className="flex gap-2">
-                                    <div className="flex-1 space-y-1">
-                                        <Label className="text-[11px] text-muted-foreground">CPU (cores)</Label>
-                                        <input
-                                            className="flex h-9 w-full rounded-md border border-input bg-background px-2 py-1 text-xs font-mono ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                                            placeholder="e.g. 2 or 1500m"
-                                            value={customCpu}
-                                            onChange={(e) => setCustomCpu(e.target.value)}
-                                        />
-                                    </div>
-                                    <div className="flex-1 space-y-1">
-                                        <Label className="text-[11px] text-muted-foreground">Memory</Label>
-                                        <input
-                                            className="flex h-9 w-full rounded-md border border-input bg-background px-2 py-1 text-xs font-mono ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                                            placeholder="e.g. 4Gi"
-                                            value={customMemory}
-                                            onChange={(e) => setCustomMemory(e.target.value)}
-                                        />
-                                    </div>
+                                <div className="flex items-center gap-2">
+                                    <input
+                                        className="flex h-9 w-full rounded-md border border-input bg-background px-2 py-1 text-xs font-mono ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                                        placeholder={`CPU${resourceConfig.max_cpu ? ` (max ${resourceConfig.max_cpu})` : ''} — e.g. 2`}
+                                        value={customCpu}
+                                        onChange={(e) => setCustomCpu(e.target.value)}
+                                    />
+                                    <input
+                                        className="flex h-9 w-full rounded-md border border-input bg-background px-2 py-1 text-xs font-mono ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                                        placeholder={`Memory${resourceConfig.max_memory ? ` (max ${resourceConfig.max_memory})` : ''} — e.g. 4Gi`}
+                                        value={customMemory}
+                                        onChange={(e) => setCustomMemory(e.target.value)}
+                                    />
                                 </div>
                             )}
                             <p className="text-[10px] text-muted-foreground">
-                                {resourceConfig.allow_custom && (resourceConfig.max_cpu || resourceConfig.max_memory)
-                                    ? `Applies to this kernel; changing it restarts the kernel. Custom max: ${resourceConfig.max_cpu || '∞'} CPU / ${resourceConfig.max_memory || '∞'}.`
-                                    : 'Applies to this kernel; changing it restarts the kernel.'}
+                                Changing size restarts the kernel.
                             </p>
                         </div>
                     )}
