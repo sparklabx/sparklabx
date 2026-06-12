@@ -23,6 +23,7 @@ import {
 } from '@/components/ui/select';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { Loader2, AlertCircle, CheckCircle2, Server, Plus, X } from 'lucide-react';
+import axios from 'axios';
 import { fetchKernelSpecs, fetchResourcePresets, type KernelSpec, type ResourcePresetsResponse } from '@/services/notebookService';
 import { toast } from 'sonner';
 
@@ -46,13 +47,37 @@ interface KernelConnectionDialogProps {
     savedResourceCustom?: { cpu: string; memory: string };
 }
 
-// "500m" → "0.5", "2" → "2" — humanize a k8s CPU quantity for the pill label.
+// "500m" → "0.5", "2" → "2" — humanize a k8s CPU quantity for display.
 function formatCpu(cpu: string): string {
     if (cpu.endsWith('m')) {
         const milli = parseInt(cpu.slice(0, -1), 10);
         if (!Number.isNaN(milli)) return String(milli / 1000);
     }
     return cpu;
+}
+
+// "2Gi" → "2 GB", "512Mi" → "512 MB" — k8s memory quantity to a friendly unit.
+function formatMem(mem: string): string {
+    return mem.replace(/Gi?$/, ' GB').replace(/Mi?$/, ' MB');
+}
+
+// Inverse converters for the Custom inputs, which take plain numbers (cores /
+// GB) instead of raw k8s quantities — typing "3" meaning 3 GB must never reach
+// the backend as 3 bytes, and "3gb" must never be a parse error.
+function coresFromQuantity(q: string): string {
+    if (q.endsWith('m')) {
+        const milli = parseInt(q.slice(0, -1), 10);
+        if (!Number.isNaN(milli)) return String(milli / 1000);
+    }
+    return q;
+}
+function gbFromQuantity(q: string): string {
+    if (q.endsWith('Gi')) return q.slice(0, -2);
+    if (q.endsWith('Mi')) {
+        const mi = parseFloat(q);
+        if (!Number.isNaN(mi)) return String(mi / 1024);
+    }
+    return q;
 }
 
 interface PackagePreset {
@@ -125,6 +150,10 @@ export function KernelConnectionDialog({
     const [selectedResource, setSelectedResource] = useState<string>('');
     const [customCpu, setCustomCpu] = useState<string>('');
     const [customMemory, setCustomMemory] = useState<string>('');
+    // Size of the user's kernel that is ALREADY running, if any. Shown as a
+    // warning: the kernel is per-user, so picking a different size restarts it
+    // for every notebook attached to it.
+    const [runningSize, setRunningSize] = useState<{ cores: number; memGB: number } | null>(null);
 
     const [isSubmitting, setIsSubmitting] = useState(false);
     const packageRows = sparkPackages ? sparkPackages.split('\n') : [''];
@@ -141,6 +170,23 @@ export function KernelConnectionDialog({
     useEffect(() => {
         if (!open) return;
         let alive = true;
+        // Best-effort: learn the size of the kernel that's already running so
+        // the dialog can warn that picking a different one restarts it.
+        (async () => {
+            try {
+                const res = await axios.get('/api/v1/kernel/usage', { timeout: 3000 });
+                if (alive && res.data?.available) {
+                    setRunningSize({
+                        cores: res.data.cpu_limit_cores ?? 0,
+                        memGB: (res.data.mem_limit_bytes ?? 0) / 1024 ** 3,
+                    });
+                } else if (alive) {
+                    setRunningSize(null);
+                }
+            } catch {
+                if (alive) setRunningSize(null);
+            }
+        })();
         (async () => {
             const cfg = await fetchResourcePresets();
             if (!alive) return;
@@ -153,8 +199,10 @@ export function KernelConnectionDialog({
                 ids[0];
             setSelectedResource(initial);
             if (savedResourceCustom) {
-                setCustomCpu(savedResourceCustom.cpu);
-                setCustomMemory(savedResourceCustom.memory);
+                // Saved values are k8s quantities ("1500m"/"3Gi") — the inputs
+                // hold plain numbers.
+                setCustomCpu(coresFromQuantity(savedResourceCustom.cpu));
+                setCustomMemory(gbFromQuantity(savedResourceCustom.memory));
             }
         })();
         return () => { alive = false; };
@@ -270,14 +318,32 @@ export function KernelConnectionDialog({
             let resourceCustom: { cpu: string; memory: string } | undefined;
             if (resourceConfig?.enabled) {
                 if (selectedResource === 'custom') {
-                    const cpu = customCpu.trim();
-                    const memory = customMemory.trim();
-                    if (!cpu || !memory) {
-                        toast.error('Enter both CPU and memory for a custom size');
+                    // Inputs are plain numbers: cores and GB. Convert to k8s
+                    // quantities here ("1.5" → "1500m", "3" GB → "3Gi") so users
+                    // never have to know quantity syntax.
+                    const cpuN = parseFloat(customCpu);
+                    const memN = parseFloat(customMemory);
+                    if (!Number.isFinite(cpuN) || cpuN <= 0 || !Number.isFinite(memN) || memN <= 0) {
+                        toast.error('Enter a valid CPU (cores) and memory (GB)');
                         setIsSubmitting(false);
                         return;
                     }
-                    resourceCustom = { cpu, memory };
+                    const maxCpuN = parseFloat(coresFromQuantity(resourceConfig.max_cpu));
+                    if (Number.isFinite(maxCpuN) && maxCpuN > 0 && cpuN > maxCpuN) {
+                        toast.error(`CPU exceeds the allowed max of ${maxCpuN}`);
+                        setIsSubmitting(false);
+                        return;
+                    }
+                    const maxMemN = parseFloat(gbFromQuantity(resourceConfig.max_memory));
+                    if (Number.isFinite(maxMemN) && maxMemN > 0 && memN > maxMemN) {
+                        toast.error(`Memory exceeds the allowed max of ${maxMemN} GB`);
+                        setIsSubmitting(false);
+                        return;
+                    }
+                    resourceCustom = {
+                        cpu: Number.isInteger(cpuN) ? String(cpuN) : `${Math.round(cpuN * 1000)}m`,
+                        memory: `${memN}Gi`,
+                    };
                 } else if (selectedResource) {
                     resourcePreset = selectedResource;
                 }
@@ -383,56 +449,104 @@ export function KernelConnectionDialog({
                     </div>
 
                     {/* Resources — kernel container/pod size (issue #41).
-                        Hidden unless the admin configured presets. Rendered as a
-                        Select to match the Kernel picker above (pill buttons
-                        wrapped awkwardly at this dialog width). */}
+                        Hidden unless the admin configured presets. Vertical
+                        radio list (the pattern Codespaces / Deepnote / JupyterHub
+                        profile lists use): every option and its specs visible at
+                        a glance, selected row highlighted, default badged. */}
                     {resourceConfig?.enabled && resourceConfig.presets.length > 0 && (
                         <div className="space-y-2">
                             <Label className="text-sm font-medium">Resources</Label>
-                            <Select value={selectedResource} onValueChange={setSelectedResource}>
-                                <SelectTrigger className="h-10">
-                                    <SelectValue placeholder="Select a size..." />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    {resourceConfig.presets.map((preset) => (
-                                        <SelectItem key={preset.id} value={preset.id} className="text-sm">
-                                            <div className="flex items-center gap-2">
-                                                <span>{preset.label}</span>
-                                                <span className="text-xs text-muted-foreground">
-                                                    {formatCpu(preset.cpu)} CPU · {preset.memory} RAM
+                            <div className="divide-y divide-border overflow-hidden rounded-md border">
+                                {resourceConfig.presets.map((preset) => {
+                                    const active = selectedResource === preset.id;
+                                    return (
+                                        <button
+                                            key={preset.id}
+                                            type="button"
+                                            onClick={() => setSelectedResource(preset.id)}
+                                            className={`flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors ${
+                                                active ? 'bg-primary/5' : 'hover:bg-muted/40'
+                                            }`}
+                                        >
+                                            <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
+                                                active ? 'border-primary' : 'border-muted-foreground/40'
+                                            }`}>
+                                                {active && <span className="h-2 w-2 rounded-full bg-primary" />}
+                                            </span>
+                                            <span className="w-16 shrink-0 text-sm font-medium">{preset.label}</span>
+                                            <span className="text-xs text-muted-foreground">
+                                                {formatCpu(preset.cpu)} vCPU · {formatMem(preset.memory)} RAM
+                                            </span>
+                                            {preset.id === resourceConfig.default_preset && (
+                                                <span className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                                                    Default
                                                 </span>
+                                            )}
+                                        </button>
+                                    );
+                                })}
+                                {resourceConfig.allow_custom && (
+                                    <div className={selectedResource === 'custom' ? 'bg-primary/5' : ''}>
+                                        <button
+                                            type="button"
+                                            onClick={() => setSelectedResource('custom')}
+                                            className={`flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors ${
+                                                selectedResource === 'custom' ? '' : 'hover:bg-muted/40'
+                                            }`}
+                                        >
+                                            <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
+                                                selectedResource === 'custom' ? 'border-primary' : 'border-muted-foreground/40'
+                                            }`}>
+                                                {selectedResource === 'custom' && <span className="h-2 w-2 rounded-full bg-primary" />}
+                                            </span>
+                                            <span className="w-16 shrink-0 text-sm font-medium">Custom</span>
+                                            <span className="text-xs text-muted-foreground">set CPU &amp; RAM</span>
+                                        </button>
+                                        {selectedResource === 'custom' && (
+                                            <div className="flex items-center gap-4 px-3 pb-2.5 pl-[2.4rem]">
+                                                <div className="flex items-center gap-1.5">
+                                                    <input
+                                                        type="number"
+                                                        min="0.5"
+                                                        step="0.5"
+                                                        className="flex h-8 w-16 rounded-md border border-input bg-background px-2 py-1 text-xs ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                                                        placeholder="2"
+                                                        value={customCpu}
+                                                        onChange={(e) => setCustomCpu(e.target.value)}
+                                                    />
+                                                    <span className="text-xs text-muted-foreground">
+                                                        vCPU{resourceConfig.max_cpu && ` (max ${coresFromQuantity(resourceConfig.max_cpu)})`}
+                                                    </span>
+                                                </div>
+                                                <div className="flex items-center gap-1.5">
+                                                    <input
+                                                        type="number"
+                                                        min="1"
+                                                        step="1"
+                                                        className="flex h-8 w-16 rounded-md border border-input bg-background px-2 py-1 text-xs ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                                                        placeholder="4"
+                                                        value={customMemory}
+                                                        onChange={(e) => setCustomMemory(e.target.value)}
+                                                    />
+                                                    <span className="text-xs text-muted-foreground">
+                                                        GB{resourceConfig.max_memory && ` (max ${gbFromQuantity(resourceConfig.max_memory)})`}
+                                                    </span>
+                                                </div>
                                             </div>
-                                        </SelectItem>
-                                    ))}
-                                    {resourceConfig.allow_custom && (
-                                        <SelectItem value="custom" className="text-sm">
-                                            <div className="flex items-center gap-2">
-                                                <span>Custom</span>
-                                                <span className="text-xs text-muted-foreground">set CPU &amp; RAM</span>
-                                            </div>
-                                        </SelectItem>
-                                    )}
-                                </SelectContent>
-                            </Select>
-                            {selectedResource === 'custom' && (
-                                <div className="flex items-center gap-2">
-                                    <input
-                                        className="flex h-9 w-full rounded-md border border-input bg-background px-2 py-1 text-xs font-mono ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                                        placeholder={`CPU${resourceConfig.max_cpu ? ` (max ${resourceConfig.max_cpu})` : ''} — e.g. 2`}
-                                        value={customCpu}
-                                        onChange={(e) => setCustomCpu(e.target.value)}
-                                    />
-                                    <input
-                                        className="flex h-9 w-full rounded-md border border-input bg-background px-2 py-1 text-xs font-mono ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                                        placeholder={`Memory${resourceConfig.max_memory ? ` (max ${resourceConfig.max_memory})` : ''} — e.g. 4Gi`}
-                                        value={customMemory}
-                                        onChange={(e) => setCustomMemory(e.target.value)}
-                                    />
-                                </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                            {runningSize ? (
+                                <p className="text-[10px] text-amber-600 dark:text-amber-400">
+                                    Your kernel is running at {runningSize.cores} vCPU · {runningSize.memGB.toFixed(1)} GB.
+                                    Picking a different size restarts it — all notebooks using this kernel lose their variables.
+                                </p>
+                            ) : (
+                                <p className="text-[10px] text-muted-foreground">
+                                    Changing size restarts the kernel.
+                                </p>
                             )}
-                            <p className="text-[10px] text-muted-foreground">
-                                Changing size restarts the kernel.
-                            </p>
                         </div>
                     )}
 

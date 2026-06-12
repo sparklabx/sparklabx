@@ -418,6 +418,15 @@ func (h *LocalKernelHandler) resolveResources(r *connectResources) (*services.Re
 		if cpuQ.Sign() <= 0 || memQ.Sign() <= 0 {
 			return nil, fmt.Errorf("cpu and memory must be positive")
 		}
+		// Sanity floors. A bare number like "3" parses as 3 BYTES of memory —
+		// almost certainly someone meaning 3 GB — and Docker/k8s would reject
+		// or OOM-kill such a container anyway. Catch it with a clear message.
+		if cpuQ.MilliValue() < 100 {
+			return nil, fmt.Errorf("cpu %s is below the 0.1-core minimum", cpu)
+		}
+		if memQ.Value() < 128<<20 {
+			return nil, fmt.Errorf("memory %s is below the 128Mi minimum (did you mean %sGi?)", mem, mem)
+		}
 		if h.resourceCustomMaxCPU != "" {
 			if maxQ, err := resource.ParseQuantity(h.resourceCustomMaxCPU); err == nil && cpuQ.Cmp(maxQ) > 0 {
 				return nil, fmt.Errorf("cpu %s exceeds the allowed max of %s", cpu, h.resourceCustomMaxCPU)
