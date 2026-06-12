@@ -305,6 +305,18 @@ export function KernelConnectionDialog({
         setIsSubmitting(true);
         try {
             const packageList = packageListFromInput(sparkPackages);
+            // Reject malformed coordinates before connecting — a typo like "abc"
+            // would otherwise fail the kernel's whole resolve and obscure which
+            // library is wrong. (#92)
+            const badCoords = packageList.filter(c => !/^[^:\s]+:[^:\s]+:[^:\s]+$/.test(c.trim()));
+            if (badCoords.length) {
+                toast.error(`Invalid coordinate${badCoords.length === 1 ? '' : 's'}`, {
+                    description: `${badCoords.join(', ')} — use group:artifact:version (e.g. io.delta:delta-spark_2.12:3.3.2).`,
+                    duration: 10000,
+                });
+                setIsSubmitting(false);
+                return;
+            }
             const normalizedPackages = packageList.join(',');
             const hasIcebergPackage = packageList.some(pkg => pkg.includes('org.apache.iceberg:iceberg-spark-runtime'));
             if (hasIcebergPackage && !icebergWarehousePath.trim()) {
