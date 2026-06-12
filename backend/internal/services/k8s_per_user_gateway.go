@@ -156,6 +156,75 @@ func NewK8sPerUserGateway(cfg K8sPerUserConfig) (*K8sPerUserGateway, error) {
 func (g *K8sPerUserGateway) IdleTimeout() time.Duration { return g.cfg.IdleTimeout }
 func (g *K8sPerUserGateway) Mode() string               { return "k8s_per_user" }
 
+// Usage reports the user's pod CPU/memory. Limits come from the pod spec
+// (always available); live usage comes from metrics-server via the
+// metrics.k8s.io API. If metrics-server isn't installed/ready the metrics
+// call fails and we return ErrUsageUnsupported so the FE hides the widget
+// rather than show a limit with no usage.
+func (g *K8sPerUserGateway) Usage(ctx context.Context, userID string) (ResourceUsage, error) {
+	podName := podNameForUser(userID)
+
+	// Limits from the pod spec.
+	pod, err := g.client.CoreV1().Pods(g.cfg.Namespace).Get(ctx, podName, metav1.GetOptions{})
+	if err != nil {
+		return ResourceUsage{}, ErrUsageUnsupported // no pod → nothing to measure
+	}
+	var cpuLimitCores float64
+	var memLimitBytes int64
+	if len(pod.Spec.Containers) > 0 {
+		lim := pod.Spec.Containers[0].Resources.Limits
+		if q, ok := lim[corev1.ResourceCPU]; ok {
+			cpuLimitCores = q.AsApproximateFloat64()
+		}
+		if q, ok := lim[corev1.ResourceMemory]; ok {
+			memLimitBytes = int64(q.AsApproximateFloat64())
+		}
+	}
+
+	// Live usage from metrics-server. AbsPath bypasses the CoreV1 /api/v1 base
+	// so we can hit the aggregated metrics.k8s.io API with the existing client.
+	raw, err := g.client.CoreV1().RESTClient().Get().
+		AbsPath("/apis/metrics.k8s.io/v1beta1/namespaces/" + g.cfg.Namespace + "/pods/" + podName).
+		DoRaw(ctx)
+	if err != nil {
+		// metrics-server absent or not ready yet.
+		return ResourceUsage{}, ErrUsageUnsupported
+	}
+	var pm struct {
+		Containers []struct {
+			Usage struct {
+				CPU    string `json:"cpu"`
+				Memory string `json:"memory"`
+			} `json:"usage"`
+		} `json:"containers"`
+	}
+	if err := json.Unmarshal(raw, &pm); err != nil {
+		return ResourceUsage{}, fmt.Errorf("decode pod metrics: %w", err)
+	}
+	var usedCores float64
+	var usedBytes int64
+	for _, cm := range pm.Containers {
+		if q, err := resource.ParseQuantity(cm.Usage.CPU); err == nil {
+			usedCores += q.AsApproximateFloat64()
+		}
+		if q, err := resource.ParseQuantity(cm.Usage.Memory); err == nil {
+			usedBytes += int64(q.AsApproximateFloat64())
+		}
+	}
+
+	cpuPct := 0.0
+	if cpuLimitCores > 0 {
+		cpuPct = usedCores / cpuLimitCores * 100.0
+	}
+	return ResourceUsage{
+		CPUPercent:    cpuPct,
+		CPUUsedCores:  usedCores,
+		CPULimitCores: cpuLimitCores,
+		MemUsedBytes:  usedBytes,
+		MemLimitBytes: memLimitBytes,
+	}, nil
+}
+
 // podNameForUser returns a DNS-safe, deterministic pod name for a user ID.
 func podNameForUser(userID string) string {
 	h := sha1.Sum([]byte(userID))

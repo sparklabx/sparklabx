@@ -34,7 +34,20 @@ type DockerPerUserGateway struct {
 	touchMu  sync.Mutex
 	touchBuf map[string]time.Time
 	stopCh   chan struct{}
+
+	// usageCache memoizes the (slow, ~1s) Docker stats call per user so
+	// several notebook tabs polling /kernel/usage don't each hammer the
+	// daemon. Entries are served for usageTTL then refreshed on next read.
+	usageMu    sync.Mutex
+	usageCache map[string]cachedUsage
 }
+
+type cachedUsage struct {
+	usage ResourceUsage
+	at    time.Time
+}
+
+const usageTTL = 2 * time.Second
 
 type DockerPerUserConfig struct {
 	Image         string            // kernel image to run
@@ -95,10 +108,11 @@ func NewDockerPerUserGateway(cfg DockerPerUserConfig) (*DockerPerUserGateway, er
 		},
 	}
 	g := &DockerPerUserGateway{
-		cfg:      cfg,
-		httpc:    &http.Client{Transport: transport, Timeout: 30 * time.Second},
-		touchBuf: make(map[string]time.Time),
-		stopCh:   make(chan struct{}),
+		cfg:        cfg,
+		httpc:      &http.Client{Transport: transport, Timeout: 30 * time.Second},
+		touchBuf:   make(map[string]time.Time),
+		stopCh:     make(chan struct{}),
+		usageCache: make(map[string]cachedUsage),
 	}
 	log.Info().Str("image", cfg.Image).Str("network", cfg.Network).
 		Dur("idle_timeout", cfg.IdleTimeout).Msg("docker_per_user kernel gateway initialized")
@@ -374,6 +388,114 @@ func (g *DockerPerUserGateway) dockerReq(ctx context.Context, method, path strin
 		req.Header.Set("Content-Type", "application/json")
 	}
 	return g.httpc.Do(req)
+}
+
+// dockerStatsJSON is the subset of Docker's /containers/{id}/stats payload we
+// need. Field names match the Engine API exactly.
+type dockerStatsJSON struct {
+	CPUStats struct {
+		CPUUsage struct {
+			TotalUsage  int64   `json:"total_usage"`
+			PercpuUsage []int64 `json:"percpu_usage"`
+		} `json:"cpu_usage"`
+		SystemCPUUsage int64 `json:"system_cpu_usage"`
+		OnlineCPUs     int   `json:"online_cpus"`
+	} `json:"cpu_stats"`
+	PreCPUStats struct {
+		CPUUsage struct {
+			TotalUsage int64 `json:"total_usage"`
+		} `json:"cpu_usage"`
+		SystemCPUUsage int64 `json:"system_cpu_usage"`
+	} `json:"precpu_stats"`
+	MemoryStats struct {
+		Usage int64 `json:"usage"`
+		Limit int64 `json:"limit"`
+		Stats struct {
+			Cache        int64 `json:"cache"`
+			InactiveFile int64 `json:"inactive_file"`
+		} `json:"stats"`
+	} `json:"memory_stats"`
+}
+
+// Usage reports live CPU%/memory for the user's kernel container via Docker's
+// stats endpoint. With stream=false the daemon returns a single snapshot that
+// already includes precpu_stats, so one call yields a valid CPU delta. Results
+// are cached for usageTTL to bound load (the stats call is ~1s).
+func (g *DockerPerUserGateway) Usage(ctx context.Context, userID string) (ResourceUsage, error) {
+	name := dockerContainerName(userID)
+
+	g.usageMu.Lock()
+	if c, ok := g.usageCache[name]; ok && time.Since(c.at) < usageTTL {
+		g.usageMu.Unlock()
+		return c.usage, nil
+	}
+	g.usageMu.Unlock()
+
+	resp, err := g.dockerReq(ctx, "GET", "/containers/"+name+"/stats?stream=false", nil)
+	if err != nil {
+		return ResourceUsage{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 404 {
+		// No container (not connected / reaped) — nothing to measure.
+		return ResourceUsage{}, ErrUsageUnsupported
+	}
+	if resp.StatusCode != 200 {
+		return ResourceUsage{}, fmt.Errorf("docker stats %s: status %d", name, resp.StatusCode)
+	}
+
+	var s dockerStatsJSON
+	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
+		return ResourceUsage{}, fmt.Errorf("decode docker stats: %w", err)
+	}
+
+	// Cores actually consumed in the sample window: (container delta / system
+	// delta) * online CPUs — the numerator `docker stats` builds before
+	// turning it into a percentage.
+	var usedCores float64
+	cpuDelta := float64(s.CPUStats.CPUUsage.TotalUsage - s.PreCPUStats.CPUUsage.TotalUsage)
+	sysDelta := float64(s.CPUStats.SystemCPUUsage - s.PreCPUStats.SystemCPUUsage)
+	cpus := s.CPUStats.OnlineCPUs
+	if cpus == 0 {
+		cpus = len(s.CPUStats.CPUUsage.PercpuUsage)
+	}
+	if cpuDelta > 0 && sysDelta > 0 && cpus > 0 {
+		usedCores = (cpuDelta / sysDelta) * float64(cpus)
+	}
+	// Express as a percentage of the container's OWN quota so 100% = "using
+	// the whole limit" (consistent with how RAM is shown vs its limit). With
+	// a 2-core limit this caps near 100% instead of the confusing 200% a raw
+	// docker-stats percentage would show. Falls back to %-of-host when the
+	// container has no CPU limit.
+	cpuPct := 0.0
+	limitCores := float64(g.cfg.nanoCPUs) / 1e9
+	if limitCores <= 0 {
+		limitCores = float64(cpus)
+	}
+	if limitCores > 0 {
+		cpuPct = usedCores / limitCores * 100.0
+	}
+
+	// Memory: subtract page cache so the figure reflects the working set (what
+	// `docker stats` shows), not cache that the kernel will evict under pressure.
+	memUsed := s.MemoryStats.Usage - s.MemoryStats.Stats.InactiveFile
+	if memUsed < 0 {
+		memUsed = s.MemoryStats.Usage
+	}
+
+	usage := ResourceUsage{
+		CPUPercent:    cpuPct,
+		CPUUsedCores:  usedCores,
+		CPULimitCores: limitCores,
+		MemUsedBytes:  memUsed,
+		MemLimitBytes: s.MemoryStats.Limit,
+	}
+
+	g.usageMu.Lock()
+	g.usageCache[name] = cachedUsage{usage: usage, at: time.Now()}
+	g.usageMu.Unlock()
+
+	return usage, nil
 }
 
 func (g *DockerPerUserGateway) containerExists(ctx context.Context, name string) bool {

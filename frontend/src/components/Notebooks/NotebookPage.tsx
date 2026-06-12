@@ -23,6 +23,7 @@ import {
     Search,
     X,
     Power,
+    PowerOff,
     Pencil,
     Package,
     Cloud,
@@ -76,6 +77,7 @@ import { SidebarFiles } from './SidebarFiles';
 import { ConnectionStatusBadge } from './parts/ConnectionStatusBadge';
 import { LanguageIcon } from './parts/LanguageIcon';
 import { CellEditor } from './parts/CellEditor';
+import { ResourceUsageBadge } from './parts/ResourceUsageBadge';
 import { registerAllStaticProviders } from './monaco/registerStatic';
 import { SidebarIconRail, SidebarTab } from './parts/SidebarIconRail';
 
@@ -1626,7 +1628,10 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                     </div>
 
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 shrink-0">
+                        {/* Live kernel CPU/RAM — hidden unless usage is available */}
+                        <ResourceUsageBadge enabled={connectionStatus === 'connected'} compact={compactToolbar} />
+
                         {/* Libraries button */}
                         {connectionStatus === 'connected' && (
                             <Button
@@ -1696,11 +1701,11 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                             );
                         })()}
 
-                        {/* Clear All Outputs button */}
+                        {/* Clear All Outputs — icon-only to keep the toolbar compact */}
                         <Button
                             variant="outline"
                             size="sm"
-                            className={`${toolbarBtnBase} ${toolbarBtnCompact}`}
+                            className={`${toolbarBtnBase} w-8 p-0`}
                             onClick={async () => {
                                 for (const cell of cells) {
                                     if (cell.type === 'code') {
@@ -1711,7 +1716,6 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                             title="Clear All Outputs"
                         >
                             <Eraser className="size-3" />
-                            {!compactToolbar && <span>Clear Output</span>}
                         </Button>
 
                         {/* Connect/Disconnect button — fixed minWidth so all
@@ -1722,12 +1726,10 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                                 variant="outline"
                                 size="sm"
                                 onClick={handleDisconnect}
-                                style={{ minWidth: compactToolbar ? undefined : 105 }}
-                                className={`${toolbarBtnBase} ${toolbarBtnCompact} border-red-500 text-red-600 hover:bg-red-50 hover:text-red-700`}
+                                className={`${toolbarBtnBase} w-8 p-0 border-red-500 text-red-600 hover:bg-red-50 hover:text-red-700`}
                                 title="Disconnect from kernel"
                             >
-                                <X className="size-3" />
-                                {!compactToolbar && <span>Disconnect</span>}
+                                <PowerOff className="size-3" />
                             </Button>
                         ) : connectionStatus === 'connecting' ? (
                             <Button
@@ -1735,35 +1737,29 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                                 size="sm"
                                 disabled
                                 title="Connecting..."
-                                style={{ minWidth: compactToolbar ? undefined : 105 }}
-                                className={`${toolbarBtnBase} ${toolbarBtnCompact}`}
+                                className={`${toolbarBtnBase} w-8 p-0`}
                             >
                                 <Loader2 className="size-3 animate-spin" />
-                                {!compactToolbar && <span>Connecting...</span>}
                             </Button>
                         ) : podPhase === 'terminating' ? (
                             <Button
                                 variant="outline"
                                 size="sm"
                                 disabled
-                                style={{ minWidth: compactToolbar ? undefined : 105 }}
-                                className={`${toolbarBtnBase} ${toolbarBtnCompact} border-amber-500 text-amber-600`}
+                                className={`${toolbarBtnBase} w-8 p-0 border-amber-500 text-amber-600`}
                                 title={podMessage || 'Waiting for previous pod to shut down…'}
                             >
                                 <Loader2 className="size-3 animate-spin" />
-                                {!compactToolbar && <span>Shutting down…</span>}
                             </Button>
                         ) : (
                             <Button
                                 variant="outline"
                                 size="sm"
                                 onClick={handleConnect}
-                                style={{ minWidth: compactToolbar ? undefined : 105 }}
-                                className={`${toolbarBtnBase} ${toolbarBtnCompact} border-blue-500 text-blue-600 hover:bg-blue-50 hover:text-blue-700`}
+                                className={`${toolbarBtnBase} w-8 p-0 border-blue-500 text-blue-600 hover:bg-blue-50 hover:text-blue-700`}
                                 title="Connect to kernel"
                             >
                                 <Power className="size-3" />
-                                {!compactToolbar && <span>Connect</span>}
                             </Button>
                         )}
 
