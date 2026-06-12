@@ -99,6 +99,13 @@ type K8sPerUserGateway struct {
 	touchMu  sync.Mutex
 	touchBuf map[string]time.Time
 	stopCh   chan struct{}
+
+	// usageCache memoizes Usage() per user so multiple notebook tabs polling
+	// /kernel/usage don't each hit kube-apiserver + metrics-server. metrics-server
+	// itself only refreshes every ~15s, so caching costs no freshness. Shares the
+	// cachedUsage/usageTTL types defined in docker_per_user_gateway.go.
+	usageMu    sync.Mutex
+	usageCache map[string]cachedUsage
 }
 
 func NewK8sPerUserGateway(cfg K8sPerUserConfig) (*K8sPerUserGateway, error) {
@@ -142,10 +149,11 @@ func NewK8sPerUserGateway(cfg K8sPerUserConfig) (*K8sPerUserGateway, error) {
 	}
 
 	gw := &K8sPerUserGateway{
-		cfg:      cfg,
-		client:   client,
-		touchBuf: make(map[string]time.Time),
-		stopCh:   make(chan struct{}),
+		cfg:        cfg,
+		client:     client,
+		touchBuf:   make(map[string]time.Time),
+		stopCh:     make(chan struct{}),
+		usageCache: make(map[string]cachedUsage),
 	}
 
 	go gw.reaperLoop()
@@ -163,6 +171,13 @@ func (g *K8sPerUserGateway) Mode() string               { return "k8s_per_user" 
 // rather than show a limit with no usage.
 func (g *K8sPerUserGateway) Usage(ctx context.Context, userID string) (ResourceUsage, error) {
 	podName := podNameForUser(userID)
+
+	g.usageMu.Lock()
+	if c, ok := g.usageCache[podName]; ok && time.Since(c.at) < usageTTL {
+		g.usageMu.Unlock()
+		return c.usage, nil
+	}
+	g.usageMu.Unlock()
 
 	// Limits from the pod spec.
 	pod, err := g.client.CoreV1().Pods(g.cfg.Namespace).Get(ctx, podName, metav1.GetOptions{})
@@ -216,13 +231,19 @@ func (g *K8sPerUserGateway) Usage(ctx context.Context, userID string) (ResourceU
 	if cpuLimitCores > 0 {
 		cpuPct = usedCores / cpuLimitCores * 100.0
 	}
-	return ResourceUsage{
+	usage := ResourceUsage{
 		CPUPercent:    cpuPct,
 		CPUUsedCores:  usedCores,
 		CPULimitCores: cpuLimitCores,
 		MemUsedBytes:  usedBytes,
 		MemLimitBytes: memLimitBytes,
-	}, nil
+	}
+
+	g.usageMu.Lock()
+	g.usageCache[podName] = cachedUsage{usage: usage, at: time.Now()}
+	g.usageMu.Unlock()
+
+	return usage, nil
 }
 
 // podNameForUser returns a DNS-safe, deterministic pod name for a user ID.
