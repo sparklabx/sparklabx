@@ -266,6 +266,21 @@ func (g *K8sPerUserGateway) Status(userID string) (PodStatus, error) {
 	if err != nil {
 		return PodStatus{}, nil // no row → empty status
 	}
+	// Self-heal a stale row: a settled phase (terminating / ready) whose pod no
+	// longer exists (node reboot, evicted, OOM, terminate that never updated the
+	// row) would otherwise pin the user forever and block reconnect. Clear it so
+	// the next connect spawns fresh. Skip spawning/pulling/starting: those run
+	// before the pod exists, so absence is expected there.
+	if (s.Phase == PhaseTerminating || s.Phase == PhaseReady) && s.PodName != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if _, gerr := g.client.CoreV1().Pods(g.cfg.Namespace).Get(ctx, s.PodName, metav1.GetOptions{}); errors.IsNotFound(gerr) {
+			log.Info().Str("user", userID).Str("pod", s.PodName).Str("phase", s.Phase).
+				Msg("stale kernel row (pod gone); clearing so reconnect can spawn")
+			database.GetDB().Exec(`DELETE FROM user_kernel_pods WHERE user_id = $1`, userID)
+			return PodStatus{}, nil
+		}
+	}
 	return s, nil
 }
 
