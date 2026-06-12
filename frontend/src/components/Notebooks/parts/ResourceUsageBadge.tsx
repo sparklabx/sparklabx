@@ -64,7 +64,10 @@ export const ResourceUsageBadge: React.FC<{ enabled: boolean; compact?: boolean 
     const limitGB = (usage.mem_limit_bytes ?? 0) / 1024 ** 3;
     const memPct = limitGB > 0 ? Math.round((usedGB / limitGB) * 100) : 0;
 
-    const cpuDetail = limitCores > 0 ? `${trim(usedCores)}/${trim(limitCores)} vCPU` : `${trim(usedCores)} vCPU`;
+    // Always one decimal on the "used" figure so its width is constant — "0.0/2"
+    // and "1.4/2" take the same space, so the widget doesn't jump as values
+    // change. The limit is fixed, so trim its trailing ".0".
+    const cpuDetail = limitCores > 0 ? `${usedCores.toFixed(1)}/${trim(limitCores)} vCPU` : `${usedCores.toFixed(1)} vCPU`;
     const memDetail = limitGB > 0 ? `${usedGB.toFixed(1)}/${trim(limitGB)} GB` : `${usedGB.toFixed(1)} GB`;
     const title = `Kernel CPU ${cpuPct}% (${cpuDetail}) · RAM ${memPct}% (${memDetail})`;
 
