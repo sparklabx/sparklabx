@@ -3,7 +3,7 @@
  * Uses useNotebook hooks for persistence and execution
  */
 
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { flushSync } from 'react-dom';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
@@ -124,27 +124,29 @@ export default function NotebookPage() {
     const notebookRef = useRef(notebook);
     notebookRef.current = notebook;
 
-    // Register Page Context (Cells) to AI Assistant
+    // Register Page Context (Cells) to AI Assistant. The getter reads
+    // notebookRef at call time, so registering once per notebook is enough —
+    // no need to re-register (and rebuild the cells payload) on every edit.
     useEffect(() => {
-        // Function to get current notebook content based on LATEST cells
-        const getContext = () => {
-            // Note: We need a way to access the current cells. 
-            // Since this closure might be stale, we should rely on a ref or the latest state.
-            // For now, we will return the cells available in the closure, 
-            // but ideally we should use a ref that is kept in sync.
+        registerPageContext(() => {
+            const nb = notebookRef.current;
             return {
                 type: 'notebook',
                 notebookId,
-                cells: notebookCache.get(notebookId || '')?.cells || [], // Use cache for latest data
+                language: nb?.language,
+                cells: (nb?.cells || []).map(c => ({
+                    id: c.id,
+                    type: c.type,
+                    source: c.source,
+                    outputs: (c.last_output?.output as CellOutput[] | undefined)?.slice(0, 3), // Limit outputs to avoid large payloads
+                })),
             };
-        };
-
-        registerPageContext(getContext);
+        });
 
         return () => {
             unregisterPageContext();
         };
-    }, [notebookId, registerPageContext, unregisterPageContext, notebook]); // Re-register if notebook changes
+    }, [notebookId, registerPageContext, unregisterPageContext]);
 
     const {
         connectionStatus,
@@ -173,14 +175,21 @@ export default function NotebookPage() {
         requestInspection,
     } = useJupyterKernel(notebookId || '');
 
+    // Mirror live kernel state into refs (assigned during render, same
+    // pattern as notebookRef above) so long-lived closures — the autosave
+    // interval, waitForSparkInitCompletion's polling loop, pagehide flush —
+    // always read fresh state without forcing those effects to re-subscribe
+    // on every kernel message.
     const runningCellsRef = useRef(runningCells);
+    runningCellsRef.current = runningCells;
     const cellOutputsRef = useRef(cellOutputs);
-    useEffect(() => {
-        runningCellsRef.current = runningCells;
-    }, [runningCells]);
-    useEffect(() => {
-        cellOutputsRef.current = cellOutputs;
-    }, [cellOutputs]);
+    cellOutputsRef.current = cellOutputs;
+    const executedCellsRef = useRef(executedCells);
+    executedCellsRef.current = executedCells;
+    const executionCountsRef = useRef(executionCounts);
+    executionCountsRef.current = executionCounts;
+    const executionTimesRef = useRef(executionTimes);
+    executionTimesRef.current = executionTimes;
 
     // Local state
     const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'unsaved'>('saved');
@@ -627,27 +636,6 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
 
 
 
-    // AI Context Integration - Register notebook context for AI Assistant
-    useEffect(() => {
-        if (!notebook) return;
-
-        registerPageContext(() => ({
-            type: 'notebook',
-            notebookId: notebookId,
-            language: notebook.language,
-            cells: (notebook.cells || []).map(c => ({
-                id: c.id,
-                type: c.type,
-                source: c.source,
-                outputs: (c.last_output?.output as CellOutput[] | undefined)?.slice(0, 3) // Limit outputs to avoid large payloads
-            }))
-        }));
-
-        return () => {
-            unregisterPageContext();
-        };
-    }, [notebookId, notebook, registerPageContext, unregisterPageContext]);
-
     // Multi-tab detection — warn if same notebook open in another tab
     useEffect(() => {
         if (!notebookId) return;
@@ -1021,6 +1009,14 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
         return saveQueueRef.current;
     }, [updateCell]);
 
+    // Ref-mirror for the autosave interval below. saveDirtyCells validates
+    // cells against notebookRef.current — the save call must bind to the
+    // SAME notebook state. A stale queuedUpdateCell closure (bound to the
+    // previously-open notebook) combined with fresh refs sent cell updates
+    // to the wrong notebook id when switching notebooks.
+    const queuedUpdateCellRef = useRef(queuedUpdateCell);
+    queuedUpdateCellRef.current = queuedUpdateCell;
+
     // Track cells that need saving (memory as source of truth)
     const dirtyCellIdsRef = useRef<Set<string>>(new Set());
     const prevCellOutputs = useRef<Record<string, CellOutput[]>>({});
@@ -1094,7 +1090,9 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
         }
     };
 
-    // Autosave interval (e.g. 30s)
+    // Autosave interval. Reads all live state through refs so the interval
+    // and the pagehide listener are registered once per notebook instead of
+    // being torn down and re-created on every kernel output flush.
     useEffect(() => {
         const AUTOSAVE_INTERVAL = 5000;
 
@@ -1110,22 +1108,22 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
             // Queue updates effectively
             for (const cellId of cellsToSave) {
                 // Skip transient cells (e.g. Spark Connect init cells) that don't exist in DB
-                const cellExists = notebook?.cells?.some(c => c.id === cellId);
+                const cellExists = notebookRef.current?.cells?.some(c => c.id === cellId);
                 if (!cellExists) {
                     devLog(`[Autosave] Skipping transient cell ${cellId}`);
                     continue;
                 }
 
-                const outputs = cellOutputs[cellId] || [];
-                const isExecuted = executedCells.has(cellId);
-                const execCount = executionCounts[cellId];
-                const execTime = executionTimes[cellId];
+                const outputs = cellOutputsRef.current[cellId] || [];
+                const isExecuted = executedCellsRef.current.has(cellId);
+                const execCount = executionCountsRef.current[cellId];
+                const execTime = executionTimesRef.current[cellId];
 
                 // Use existing queue to ensure serialization. Persist
                 // last_execution_time_ms so the badge survives a page
                 // reload — without it the in-session executionTimes map
                 // is lost and the cell goes back to showing no duration.
-                queuedUpdateCell(cellId, {
+                queuedUpdateCellRef.current(cellId, {
                     last_output: {
                         outputs: outputs,
                         executed: isExecuted
@@ -1168,7 +1166,11 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
             window.removeEventListener('pagehide', handlePageHide);
             saveDirtyCells();
         };
-    }, [cellOutputs, executedCells, queuedUpdateCell]);
+        // Mount-once: every piece of state saveDirtyCells touches goes
+        // through a render-assigned ref, all bound to the same notebook
+        // state — consistent even mid-switch between notebooks.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     // Track dirty state when outputs change
     useEffect(() => {
@@ -1482,6 +1484,25 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
         }
     };
 
+    // Convert cells for rendering. Memoized so unrelated state changes
+    // (toolbar, dialogs, kernel status) don't rebuild N cell objects —
+    // CellEditor's memo compares fields, but skipping the map() itself
+    // keeps large-notebook renders cheap. Must live above the early
+    // returns below (hooks are unconditional).
+    const cells: NotebookCell[] = useMemo(() => (notebook?.cells || []).map(c => ({
+        id: c.id,
+        type: (c.type || 'code').toLowerCase() as CellType,
+        source: c.source,
+        order: c.order,
+        output: c.last_output?.output as CellOutput[] | undefined,
+        // Prefer the live in-session duration (captured by useJupyterKernel on
+        // execute_reply) over the persisted last_execution_time_ms, so the
+        // badge updates immediately when the cell finishes — no DB round-trip.
+        executionTime: executionTimes[c.id] ?? c.last_execution_time_ms,
+        last_output: c.last_output as { outputs?: CellOutput[]; executed?: boolean } | undefined,
+        _frontendId: (c as any)._frontendId, // Pass through stable ID
+    })), [notebook?.cells, executionTimes]);
+
     // Loading state - wait for notebook data
     const isInitialLoad = loading && !notebook;
 
@@ -1529,21 +1550,6 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
             </div>
         );
     }
-
-    // Convert cells for rendering
-    const cells: NotebookCell[] = (notebook?.cells || []).map(c => ({
-        id: c.id,
-        type: (c.type || 'code').toLowerCase() as CellType,
-        source: c.source,
-        order: c.order,
-        output: c.last_output?.output as CellOutput[] | undefined,
-        // Prefer the live in-session duration (captured by useJupyterKernel on
-        // execute_reply) over the persisted last_execution_time_ms, so the
-        // badge updates immediately when the cell finishes — no DB round-trip.
-        executionTime: executionTimes[c.id] ?? c.last_execution_time_ms,
-        last_output: c.last_output as { outputs?: CellOutput[]; executed?: boolean } | undefined,
-        _frontendId: (c as any)._frontendId, // Pass through stable ID
-    }));
 
     return (
         <div className="flex h-[calc(100vh-4rem)] w-full overflow-hidden">
@@ -1767,6 +1773,7 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                 {/* Menu Bar Row */}
                 <div className="flex items-center px-2 py-1 border-b border-border bg-muted/50 shrink-0 h-8 gap-1">
                     <MenuBar
+                        onNewNotebook={openCreateDialog}
                         onExportHTML={async () => {
                             try {
                                 await exportNotebookAsHTML(notebook.id, notebook.name);

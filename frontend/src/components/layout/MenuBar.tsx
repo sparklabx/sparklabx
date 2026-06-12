@@ -5,6 +5,9 @@ import {
     DropdownMenuContent,
     DropdownMenuItem,
     DropdownMenuSeparator,
+    DropdownMenuSub,
+    DropdownMenuSubContent,
+    DropdownMenuSubTrigger,
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Button } from '@/components/ui/button';
@@ -18,13 +21,14 @@ import {
 import { useTheme } from '@/components/theme-provider';
 
 interface MenuBarProps {
-    onNewNotebook?: () => void;
+    onNewNotebook?: (language: 'python' | 'scala') => void;
     onExportHTML?: () => void;
     onImportNotebook?: (file: File) => void;
     isNotebookPage?: boolean;
 }
 
 export function MenuBar({
+    onNewNotebook,
     onExportHTML,
     onImportNotebook,
     isNotebookPage = false,
@@ -65,10 +69,27 @@ export function MenuBar({
                     </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start" className="w-48">
-                    <DropdownMenuItem onClick={() => navigate('/notebooks')}>
-                        <Plus className="mr-2 h-4 w-4" />
-                        New Notebook
-                    </DropdownMenuItem>
+                    {onNewNotebook ? (
+                        <DropdownMenuSub>
+                            <DropdownMenuSubTrigger>
+                                <Plus className="mr-2 h-4 w-4" />
+                                New Notebook
+                            </DropdownMenuSubTrigger>
+                            <DropdownMenuSubContent>
+                                <DropdownMenuItem onClick={() => onNewNotebook('python')}>
+                                    Python Notebook
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => onNewNotebook('scala')}>
+                                    Scala Notebook
+                                </DropdownMenuItem>
+                            </DropdownMenuSubContent>
+                        </DropdownMenuSub>
+                    ) : (
+                        <DropdownMenuItem onClick={() => navigate('/notebooks')}>
+                            <Plus className="mr-2 h-4 w-4" />
+                            New Notebook
+                        </DropdownMenuItem>
+                    )}
                     <DropdownMenuSeparator />
                     <DropdownMenuItem onClick={handleImportClick}>
                         <Upload className="mr-2 h-4 w-4" />
