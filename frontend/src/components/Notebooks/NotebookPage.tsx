@@ -23,6 +23,7 @@ import {
     Search,
     X,
     Power,
+    PowerOff,
     Pencil,
     Package,
     Cloud,
@@ -1728,7 +1729,7 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                                 className={`${toolbarBtnBase} w-8 p-0 border-red-500 text-red-600 hover:bg-red-50 hover:text-red-700`}
                                 title="Disconnect from kernel"
                             >
-                                <X className="size-3" />
+                                <PowerOff className="size-3" />
                             </Button>
                         ) : connectionStatus === 'connecting' ? (
                             <Button
