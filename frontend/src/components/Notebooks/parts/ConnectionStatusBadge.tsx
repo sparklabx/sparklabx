@@ -7,7 +7,8 @@ export const ConnectionStatusBadge: React.FC<{
     compact?: boolean;
     deadReason?: string;
     sparkInitializing?: boolean;
-}> = ({ status, compact = false, deadReason, sparkInitializing }) => {
+    sparkFailed?: boolean;
+}> = ({ status, compact = false, deadReason, sparkInitializing, sparkFailed }) => {
     const statusConfig: Record<ConnectionStatus, { color: string; label: string; icon?: 'circle' | 'skull' }> = {
         disconnected: { color: 'text-slate-400', label: 'Disconnected' },
         connecting: { color: 'text-blue-500 animate-pulse', label: 'Connecting...' },
@@ -19,10 +20,14 @@ export const ConnectionStatusBadge: React.FC<{
     };
 
     // When kernel is connected but still booting Spark, show a distinct state
-    // so users know why cells are disabled.
-    const config = status === 'connected' && sparkInitializing
-        ? { color: 'text-amber-500 animate-pulse', label: 'Booting Spark...', icon: 'circle' as const }
-        : statusConfig[status];
+    // so users know why cells are disabled. If Spark init FAILED (bad library),
+    // show a red "Spark not ready" — the kernel is alive but unusable for Spark,
+    // so it must not read as a healthy green "Connected".
+    const config = status === 'connected' && sparkFailed
+        ? { color: 'text-rose-500', label: 'Spark not ready', icon: 'circle' as const }
+        : status === 'connected' && sparkInitializing
+            ? { color: 'text-amber-500 animate-pulse', label: 'Booting Spark...', icon: 'circle' as const }
+            : statusConfig[status];
     const tooltipText = status === 'dead' && deadReason ? `${config.label}: ${deadReason}` : config.label;
 
     return (
