@@ -1099,11 +1099,15 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
             // Tell backend to disconnect. Pair with a min-duration
             // delay so the intermediate state stays visible long
             // enough to register on fast (docker-compose) backends
-            // where DELETE often returns in <50ms.
+            // where DELETE often returns in <50ms. The 10s timeout is
+            // load-bearing: without it an unreachable backend (restart,
+            // network blip) leaves the request hanging forever and the
+            // "Disconnecting…" badge spinning with it — the local
+            // disconnect below must happen regardless.
             const minVisible = new Promise(r => setTimeout(r, 800));
             try {
                 await Promise.all([
-                    axios.delete(`/api/v1/notebooks/${notebookId}/kernel/disconnect`),
+                    axios.delete(`/api/v1/notebooks/${notebookId}/kernel/disconnect`, { timeout: 10_000 }),
                     minVisible,
                 ]);
             } catch (e) {

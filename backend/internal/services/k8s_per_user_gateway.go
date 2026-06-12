@@ -711,6 +711,11 @@ func (g *K8sPerUserGateway) buildPodSpec(userID, podName string, res podSizes) *
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy: corev1.RestartPolicyOnFailure,
+			// Kernels hold no durable state — killing one loses the user's
+			// variables either way, so a long drain buys nothing. The default
+			// 30s grace made every resize/restart sit in "Cleaning up previous
+			// kernel..." for half a minute; 5s keeps that snappy.
+			TerminationGracePeriodSeconds: ptrInt64(5),
 			// imagePullSecrets only attached for private registries (cfg.PullSecret
 			// set via KERNEL_PULL_SECRET env). Public ghcr.io images don't need it.
 			ImagePullSecrets: pullSecretRefs(g.cfg.PullSecret),
@@ -1093,6 +1098,8 @@ func (g *K8sPerUserGateway) sweepOrphanPods() {
 }
 
 // labelSafe sanitizes a string for use as a K8s label value.
+func ptrInt64(v int64) *int64 { return &v }
+
 func labelSafe(s string) string {
 	const max = 63
 	out := make([]byte, 0, len(s))
