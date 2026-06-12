@@ -49,7 +49,29 @@ type KernelGateway interface {
 	// learn when phase reaches "ready". SharedGateway is a pure no-op since
 	// there's nothing to spawn.
 	EnsureSpawning(userID string) error
+
+	// Usage returns live CPU/memory usage of the user's kernel container/pod.
+	// Returns ErrUsageUnsupported when the mode has no per-user container to
+	// measure (shared) or the metric source is unavailable (k8s without
+	// metrics-server) — callers should treat that as "hide the widget", not
+	// a hard error.
+	Usage(ctx context.Context, userID string) (ResourceUsage, error)
 }
+
+// ResourceUsage is a point-in-time snapshot of a kernel container/pod's
+// resource consumption. MemLimitBytes is the cgroup/pod limit (what the user
+// is capped at); 0 means "no limit set" so the UI should fall back to the
+// host total or hide the denominator.
+type ResourceUsage struct {
+	CPUPercent    float64 `json:"cpu_percent"`
+	MemUsedBytes  int64   `json:"mem_used_bytes"`
+	MemLimitBytes int64   `json:"mem_limit_bytes"`
+}
+
+// ErrUsageUnsupported signals that resource usage can't be measured for this
+// gateway mode / user. Handlers map it to an "unavailable" response rather
+// than a 500.
+var ErrUsageUnsupported = fmt.Errorf("resource usage not supported")
 
 // DefaultKernelImage is the canonical public kernel image. Used as the fallback
 // in both Docker and K8s per-user gateways when KERNEL_POD_IMAGE isn't set in
@@ -81,6 +103,10 @@ func (s *SharedGateway) Status(_ string) (PodStatus, error) {
 	return PodStatus{Phase: PhaseReady, Message: "Kernel ready", URL: s.url}, nil
 }
 func (s *SharedGateway) EnsureSpawning(_ string) error { return nil }
+func (s *SharedGateway) Usage(_ context.Context, _ string) (ResourceUsage, error) {
+	// One shared container for everyone — no per-user figure to report.
+	return ResourceUsage{}, ErrUsageUnsupported
+}
 
 // KernelGatewaySettings is the fully-resolved config needed to build a gateway.
 // Populated from *config.Config in main.go so this package doesn't depend on

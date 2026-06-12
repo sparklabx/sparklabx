@@ -156,6 +156,14 @@ func NewK8sPerUserGateway(cfg K8sPerUserConfig) (*K8sPerUserGateway, error) {
 func (g *K8sPerUserGateway) IdleTimeout() time.Duration { return g.cfg.IdleTimeout }
 func (g *K8sPerUserGateway) Mode() string               { return "k8s_per_user" }
 
+// Usage is not yet implemented for k8s. Live pod metrics require metrics-server
+// (metrics.k8s.io), which isn't guaranteed present in a cluster, so this is
+// deferred to a follow-up. Returning ErrUsageUnsupported makes the FE hide the
+// widget rather than error. See the docker_per_user implementation for the model.
+func (g *K8sPerUserGateway) Usage(_ context.Context, _ string) (ResourceUsage, error) {
+	return ResourceUsage{}, ErrUsageUnsupported
+}
+
 // podNameForUser returns a DNS-safe, deterministic pod name for a user ID.
 func podNameForUser(userID string) string {
 	h := sha1.Sum([]byte(userID))

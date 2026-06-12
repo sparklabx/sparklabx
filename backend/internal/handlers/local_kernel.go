@@ -90,6 +90,33 @@ func (h *LocalKernelHandler) SpawnStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, st)
 }
 
+// Usage returns the live CPU/memory usage of the caller's kernel container.
+// available=false means there's nothing to show (shared mode, no container
+// yet, or metrics unavailable) — the FE hides the widget in that case rather
+// than surfacing an error.
+func (h *LocalKernelHandler) Usage(c *gin.Context) {
+	userID := userIDString(c)
+	if userID == "" {
+		c.JSON(http.StatusOK, gin.H{"available": false})
+		return
+	}
+	// Short timeout: the Docker stats call is ~1s; never block the FE poll.
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+	defer cancel()
+	u, err := h.gateway.Usage(ctx, userID)
+	if err != nil {
+		// ErrUsageUnsupported (and any transient failure) → unavailable, not 500.
+		c.JSON(http.StatusOK, gin.H{"available": false})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"available":       true,
+		"cpu_percent":     u.CPUPercent,
+		"mem_used_bytes":  u.MemUsedBytes,
+		"mem_limit_bytes": u.MemLimitBytes,
+	})
+}
+
 func userIDString(c *gin.Context) string {
 	if v, ok := c.Get("admin_id"); ok {
 		if s, ok := v.(string); ok && s != "" {
