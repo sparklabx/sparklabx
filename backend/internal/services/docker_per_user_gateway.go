@@ -448,6 +448,52 @@ func (g *DockerPerUserGateway) Destroy(userID string) error {
 	return nil
 }
 
+// RecentLogs returns the last tailLines of the container's stdout+stderr so the
+// handler can scrape Spark/Coursier dependency-resolution failures (#33). The
+// non-TTY Docker log stream is multiplexed (8-byte frame headers); we demux to
+// recover clean text.
+func (g *DockerPerUserGateway) RecentLogs(ctx context.Context, userID string, tailLines int) (string, error) {
+	name := dockerContainerName(userID)
+	resp, err := g.dockerReq(ctx, "GET",
+		fmt.Sprintf("/containers/%s/logs?stdout=1&stderr=1&tail=%d", name, tailLines), nil)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("docker logs %s: status %d", name, resp.StatusCode)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return demuxDockerStream(raw), nil
+}
+
+// demuxDockerStream strips the 8-byte frame headers Docker prepends to each
+// chunk of a multiplexed (non-TTY) log stream. If the data doesn't look
+// framed (TTY containers), it's returned as-is.
+func demuxDockerStream(b []byte) string {
+	var out []byte
+	for len(b) >= 8 {
+		// header: [stream(1) 0 0 0 size(4 BE)]
+		if b[0] > 2 || b[1] != 0 || b[2] != 0 || b[3] != 0 {
+			// Not a frame header — treat the rest as plain text.
+			out = append(out, b...)
+			break
+		}
+		size := int(b[4])<<24 | int(b[5])<<16 | int(b[6])<<8 | int(b[7])
+		b = b[8:]
+		if size > len(b) {
+			size = len(b)
+		}
+		out = append(out, b[:size]...)
+		b = b[size:]
+	}
+	out = append(out, b...)
+	return string(out)
+}
+
 // ============================================================
 // Docker REST helpers
 // ============================================================

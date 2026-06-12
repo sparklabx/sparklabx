@@ -770,55 +770,45 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
         return false;
     };
 
-    // Scan the spark-init cell output for dependency-resolution failures
-    // (Coursier/Ivy). A bad Maven coordinate makes getOrCreate() (PySpark) or
-    // `import $ivy` (Almond) throw, and the resolver prints "not found" /
-    // "Failed to resolve" into the init cell — but nothing surfaces in the UI.
-    // Returns the failing coordinate(s), or null when resolution looks clean.
-    // Issue #33.
-    const detectLibraryResolutionErrors = (): string[] | null => {
-        const outs = cellOutputsRef.current['init-spark-context'] || [];
-        const text = (outs as any[])
-            .map(o => o?.text ? String(o.text)
-                : o?.ename ? `${o.ename}: ${o.evalue}\n${(o.traceback || []).join('\n')}`
-                : JSON.stringify(o?.data ?? ''))
-            .join('\n');
-        const FAIL_RE = /(failed to resolve|error downloading|not found:|failed to download|resolutionexception|unresolved dependenc|could not find artifact)/i;
-        if (!FAIL_RE.test(text)) return null;
-
-        // Pull group:artifact:version tokens off the lines that mention a failure.
-        const coordRe = /[a-zA-Z0-9_.\-]+:[a-zA-Z0-9_.\-]+:[a-zA-Z0-9_.\-]+/g;
-        const failed = new Set<string>();
-        for (const line of text.split('\n')) {
-            if (FAIL_RE.test(line)) (line.match(coordRe) || []).forEach(c => failed.add(c));
+    // Ask the backend which coordinates failed to resolve. Spark/Coursier print
+    // "unresolved dependency: group#artifact;version: not found" to the JVM
+    // stderr → container log, which never reaches the notebook cell, so the
+    // backend reads the kernel log and parses the offending coords (#33). The
+    // pod log accumulates across in-pod restarts, so we intersect with the
+    // coordinates we just requested — stale failures from earlier attempts (a
+    // version the user already corrected) must not be re-reported.
+    const fetchLibraryErrors = async (requested: string[]): Promise<string[]> => {
+        try {
+            const res = await axios.get<{ failed: string[] }>('/api/v1/kernel/library-errors', { timeout: 5000 });
+            const all = res.data?.failed || [];
+            if (!requested.length) return all;
+            const want = new Set(requested);
+            return all.filter(c => want.has(c));
+        } catch {
+            return [];
         }
-        // Fallback: failure detected but no coordinate parsed → blame the whole
-        // requested set so the user at least knows where to look.
-        if (failed.size === 0) {
-            const requested = (sparkPackages || (notebook as any)?.cluster_config?.['spark.jars.packages'] || '')
-                .split(/[,\n]/).map((p: string) => p.trim()).filter(Boolean);
-            requested.forEach((p: string) => failed.add(p));
-        }
-        return failed.size ? Array.from(failed) : null;
     };
 
     // Surface the outcome of a library load (after the spark-init cell settles).
-    // Shared by the connect flow and Manage Libraries → Apply & Restart.
-    const reportLibraryOutcome = (initOk: boolean, requestedCount: number) => {
-        const failed = detectLibraryResolutionErrors();
-        if (failed && failed.length) {
+    // Shared by the connect flow and Manage Libraries → Apply & Restart. When
+    // init failed, give the JVM a moment to flush the resolver error to its log
+    // before reading it back.
+    const reportLibraryOutcome = async (initOk: boolean, requested: string[]): Promise<boolean> => {
+        if (!initOk) await new Promise(r => setTimeout(r, 600));
+        const failed = await fetchLibraryErrors(requested);
+        if (failed.length) {
             toast.error(`Failed to load ${failed.length} ${failed.length === 1 ? 'library' : 'libraries'}`, {
-                description: `${failed.join(', ')} — check the coordinate exists on Maven Central (repo1.maven.org).`,
-                duration: 12000,
+                description: `${failed.join(', ')} — not found on Maven Central. Check the coordinate and version.`,
+                duration: 14000,
             });
             return false;
         }
         if (!initOk) {
-            toast.error('Spark initialization timed out');
+            toast.error('Spark failed to start — check the library coordinates and try again.');
             return false;
         }
-        if (requestedCount > 0) {
-            toast.success(`Loaded ${requestedCount} ${requestedCount === 1 ? 'library' : 'libraries'}`);
+        if (requested.length > 0) {
+            toast.success(`Loaded ${requested.length} ${requested.length === 1 ? 'library' : 'libraries'}`);
         }
         return true;
     };
@@ -904,9 +894,9 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
             devLog('[NotebookPage] Kernel ready!');
             // If libraries were requested, report load success/failure (#33);
             // otherwise just confirm the connection.
-            const requestedCount = packageListFromInput(options.sparkPackages || '').length;
-            if (requestedCount > 0) {
-                const ok = reportLibraryOutcome(sparkInitReady, requestedCount);
+            const requestedPkgs = packageListFromInput(options.sparkPackages || '');
+            if (requestedPkgs.length > 0) {
+                const ok = await reportLibraryOutcome(sparkInitReady, requestedPkgs);
                 if (ok) toast.success('Kernel connected');
             } else if (!sparkInitReady) {
                 toast.error('Spark initialization timed out');
@@ -2155,7 +2145,7 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                                 const back = await waitForReady(60000);
                                 if (back) {
                                     const initOk = await waitForSparkInitCompletion();
-                                    reportLibraryOutcome(initOk, packageListFromInput(packages).length);
+                                    await reportLibraryOutcome(initOk, packageListFromInput(packages));
                                 } else {
                                     toast.error('Kernel did not come back after restart');
                                 }

@@ -251,6 +251,19 @@ func (g *K8sPerUserGateway) Usage(ctx context.Context, userID string) (ResourceU
 	return usage, nil
 }
 
+// RecentLogs returns the last tailLines of the user's kernel pod log so the
+// handler can scrape Spark/Coursier dependency-resolution failures (#33).
+func (g *K8sPerUserGateway) RecentLogs(ctx context.Context, userID string, tailLines int) (string, error) {
+	podName := podNameForUser(userID)
+	tl := int64(tailLines)
+	req := g.client.CoreV1().Pods(g.cfg.Namespace).GetLogs(podName, &corev1.PodLogOptions{TailLines: &tl})
+	raw, err := req.DoRaw(ctx)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
 // podNameForUser returns a DNS-safe, deterministic pod name for a user ID.
 func podNameForUser(userID string) string {
 	h := sha1.Sum([]byte(userID))
