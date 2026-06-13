@@ -34,6 +34,11 @@ if [ "$MODE" = "minio" ]; then
   <property><name>fs.s3a.aws.credentials.provider</name><value>${PROVIDER}</value></property>
   <property><name>fs.s3a.access.key</name><value>${AWS_ACCESS_KEY_ID:-minioadmin}</value></property>
   <property><name>fs.s3a.secret.key</name><value>${AWS_SECRET_ACCESS_KEY:-minioadmin}</value></property>
+  <!-- Keep directory markers so S3A doesn't try to delete parent-prefix markers
+       (e.g. "users/") on overwrite — those are outside a user's IAM scope
+       (users/<slug>/*) and the delete is denied, producing noisy (harmless)
+       AccessDenied warnings. "keep" also avoids extra delete calls on writes. -->
+  <property><name>fs.s3a.directory.marker.retention</name><value>keep</value></property>
 </configuration>
 XML
   echo "core-site.xml → MinIO (endpoint: $S3_ENDPOINT)"
@@ -50,6 +55,9 @@ SPARK_DEFAULTS="$CONF_DIR/spark-defaults.conf"
     echo "spark.hadoop.fs.s3a.access.key ${AWS_ACCESS_KEY_ID:-minioadmin}"
     echo "spark.hadoop.fs.s3a.secret.key ${AWS_SECRET_ACCESS_KEY:-minioadmin}"
   fi
+  # Don't delete parent-prefix directory markers (e.g. "users/") on overwrite —
+  # outside the user's IAM scope, so the delete is denied (harmless but noisy).
+  echo "spark.hadoop.fs.s3a.directory.marker.retention keep"
 } > "$SPARK_DEFAULTS"
 echo "spark-defaults.conf written"
 
@@ -95,6 +103,10 @@ jvm_props = [
     "-Dspark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem",
     "-Dspark.hadoop.fs.s3a.path.style.access=true",
     f"-Dspark.hadoop.fs.s3a.aws.credentials.provider={provider}",
+    # Keep directory markers — don't delete parent-prefix markers (e.g. "users/")
+    # outside the user's IAM scope on overwrite (harmless but noisy AccessDenied).
+    "-Dfs.s3a.directory.marker.retention=keep",
+    "-Dspark.hadoop.fs.s3a.directory.marker.retention=keep",
 ]
 if mode == "minio":
     jvm_props += [
