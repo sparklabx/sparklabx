@@ -623,19 +623,15 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                     { silent: false, storeHistory: false }
                 );
 
-                const initTimeoutMs = packages ? 300000 : 180000; // allow extra time for first-time jar downloads
-                let ok = await waitForSparkInitCompletion(initTimeoutMs);
-                // Only the genuine "still downloading" case warrants a retry. A
-                // detected failure (resolution error / cell error) is terminal —
-                // retrying it would just re-spin "Booting Spark…" for minutes.
-                if (!ok && !cancelled && !scanInitCellErrors([]).errored) {
-                    const stillRunning = runningCellsRef.current.has('init-spark-context');
-                    if (stillRunning) {
-                        toast.warning('Spark is still initializing…', { description: 'This can take a few minutes the first time.' });
-                        // Give it one more longer window in the background without spamming toasts.
-                        ok = await waitForSparkInitCompletion(300000);
-                    }
-                }
+                // First connect WITH new libraries can be slow (Ivy downloads the
+                // jars from Maven). Give a generous single window — but do NOT
+                // silently re-wait a second long window: a hung resolve (flaky
+                // Maven network, bad coordinate) never completes, so a second
+                // spin just reads as "Booting Spark… forever". On timeout we
+                // surface an actionable failure and the user reconnects to retry
+                // (Ivy then hits its cache, so the retry is fast).
+                const initTimeoutMs = packages ? 240000 : 120000;
+                const ok = await waitForSparkInitCompletion(initTimeoutMs);
 
                 if (!cancelled) {
                     // Terminal: the init attempt is over (succeeded or failed) and
@@ -658,7 +654,9 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                     if (requested.length > 0) {
                         void reportLibraryOutcome(ok, requested);
                     } else if (!ok) {
-                        toast.error('Spark initialization timed out');
+                        toast.error('Spark took too long to start', {
+                            description: 'The kernel is connected but Spark didn’t finish initializing. Reconnect to retry.',
+                        });
                     }
                 }
             }
