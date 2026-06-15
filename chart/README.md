@@ -72,6 +72,28 @@ helm install sparklabx ./chart -n sparklabx --create-namespace -f my-values.yaml
 | `frontend.service.type` | `ClusterIP` | `ClusterIP` / `NodePort` / `LoadBalancer`. Use `NodePort` when there's no ingress controller; `LoadBalancer` on cloud providers. |
 | `frontend.service.nodePort` | `""` | Static port (30000-32767) when `type=NodePort`. Empty → K8s picks a random port. |
 | `frontend.service.loadBalancerIP` | `""` | Pin a specific public IP when `type=LoadBalancer`. |
+| `sso.issuerUrl` / `sso.clientId` / `sso.clientSecret` | `""` | Enterprise OIDC SSO (Keycloak/Okta/Auth0/Azure AD/…). Set all three to enable the "Sign in with SSO" button. |
+| `sso.providerName` | `SSO` | Label on the SSO login button. |
+| `sso.redirectUrl` / `sso.postLoginRedirect` | `""` | Default to the ingress host (`https://<ingress.host>/api/v1/auth/oidc/callback` and `https://<ingress.host>`). Set explicitly if not using the chart ingress. |
+| `trino.url` | `""` | Default Trino JDBC URL for the `trino()` notebook helper + Trino catalog sidebar. With SSO on, the user's token is passed through. |
+
+### Enterprise SSO (OIDC) + Trino
+
+Enable SSO by setting the issuer, client ID, and client secret — register
+`https://<ingress.host>/api/v1/auth/oidc/callback` as the redirect URI at your IdP:
+
+```bash
+helm upgrade --install sparklabx ./chart \
+  --set sso.issuerUrl=https://keycloak.corp/realms/company \
+  --set sso.clientId=sparklabx \
+  --set sso.clientSecret="$OIDC_CLIENT_SECRET" \
+  --set trino.url='jdbc:trino://trino.corp:443?SSL=true'
+```
+
+The SSO button is runtime-driven (no frontend rebuild). With `trino.url` set, every
+kernel gets the `trino()` helper and the notebook shows a Trino catalog browser;
+when SSO is on, queries run as the logged-in user via OIDC token passthrough
+(`KERNEL_CALLBACK_URL` is wired to the in-cluster backend Service automatically).
 
 ### Using an external Postgres or S3
 

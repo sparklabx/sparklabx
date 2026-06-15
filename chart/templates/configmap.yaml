@@ -1,4 +1,8 @@
 {{- $minioEndpoint := ternary "http://minio:9000" .Values.minio.external.endpoint .Values.minio.enabled -}}
+{{- $appURL := "" -}}
+{{- if .Values.ingress.enabled -}}
+{{- $appURL = printf "%s://%s" (ternary "https" "http" .Values.ingress.tls.enabled) .Values.ingress.host -}}
+{{- end -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -21,3 +25,18 @@ data:
   LOG_LEVEL: {{ .Values.backend.logLevel | quote }}
   ENVIRONMENT: "production"
   SERVICE_PORT: "10000"
+  # Generic OIDC SSO (clientSecret lives in the Secret). redirectUrl /
+  # postLoginRedirect default to the ingress host when left blank.
+  OIDC_ISSUER_URL: {{ .Values.sso.issuerUrl | quote }}
+  OIDC_CLIENT_ID: {{ .Values.sso.clientId | quote }}
+  OIDC_SCOPES: {{ .Values.sso.scopes | quote }}
+  OIDC_PROVIDER_NAME: {{ .Values.sso.providerName | quote }}
+  OIDC_REDIRECT_URL: {{ .Values.sso.redirectUrl | default (ternary (printf "%s/api/v1/auth/oidc/callback" $appURL) "" (ne $appURL "")) | quote }}
+  OIDC_POST_LOGIN_REDIRECT: {{ .Values.sso.postLoginRedirect | default $appURL | quote }}
+  OIDC_INTERNAL_ISSUER_URL: {{ .Values.sso.internalIssuerUrl | quote }}
+  # Trino default URL for the trino() helper + catalog browser.
+  TRINO_URL: {{ .Values.trino.url | quote }}
+  # Backend URL reachable FROM kernel pods (in-session OIDC token refresh). The
+  # backend Service is named "backend" in this chart, so the config.go default
+  # (sparklabx-backend) would be wrong — set the in-cluster FQDN explicitly.
+  KERNEL_CALLBACK_URL: {{ printf "http://backend.%s.svc.cluster.local:10000" .Release.Namespace | quote }}

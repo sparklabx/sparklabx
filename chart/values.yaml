@@ -188,6 +188,34 @@ backend:
   logLevel: info
 
 # ─────────────────────────────────────────────────────────────
+# Generic OIDC SSO (optional). Any enterprise IdP via OpenID Connect
+# (Keycloak, Okta, Auth0, Azure AD, Google, ...). Leave issuerUrl + clientId
+# blank to disable — login falls back to the seed admin / Google / Microsoft.
+# The login button is driven at runtime via /api/v1/auth/config (no rebuild).
+# clientSecret is written into the chart-managed Secret; the rest into the
+# ConfigMap. redirectUrl / postLoginRedirect default to the ingress host.
+# ─────────────────────────────────────────────────────────────
+sso:
+  issuerUrl: ""           # e.g. https://keycloak.corp/realms/company
+  clientId: ""
+  clientSecret: ""
+  scopes: "openid email profile"
+  providerName: "SSO"     # label on the "Sign in with …" button
+  redirectUrl: ""         # default: https://<ingress.host>/api/v1/auth/oidc/callback
+  postLoginRedirect: ""   # default: https://<ingress.host>
+  # ONLY for split-horizon setups where the backend can't reach the browser
+  # issuer URL (e.g. internal vs external DNS). Leave blank in production.
+  internalIssuerUrl: ""
+
+# ─────────────────────────────────────────────────────────────
+# Trino (optional). Default Trino JDBC URL injected into kernels for the
+# built-in trino() helper + the notebook's Trino catalog browser. With SSO
+# enabled, the user's OIDC token is passed through (no password).
+# ─────────────────────────────────────────────────────────────
+trino:
+  url: ""                 # e.g. jdbc:trino://trino.corp:443?SSL=true
+
+# ─────────────────────────────────────────────────────────────
 # Frontend
 # ─────────────────────────────────────────────────────────────
 frontend:
