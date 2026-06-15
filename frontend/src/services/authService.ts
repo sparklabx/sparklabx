@@ -167,6 +167,20 @@ class AuthService {
     return { user: { ...user, role: 'admin' } };
   }
 
+  // Generic OIDC SSO: the backend completes the code flow and redirects back
+  // with the app JWT in the URL fragment. Store it and hydrate the user.
+  async loginWithOIDCToken(token: string): Promise<void> {
+    this.token = token;
+    safeSetItem(TOKEN_KEY, token);
+    safeSetItem(ROLE_KEY, 'admin');
+    await this.checkAuthStatus(); // populates the user via /admin/me
+  }
+
+  async getAuthConfig(): Promise<{ oidc: { enabled: boolean; provider_name: string } }> {
+    const response = await axios.get(`${API_BASE}/auth/config`);
+    return response.data;
+  }
+
   private clearAuth() {
     this.token = null;
     safeRemoveItem(TOKEN_KEY);

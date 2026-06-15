@@ -150,6 +150,11 @@ func main() {
 		v1.POST("/admin/login", authLimiter, authHandler.Login)
 		v1.POST("/auth/google", authLimiter, authHandler.GoogleLogin)
 		v1.POST("/auth/microsoft", authLimiter, authHandler.MicrosoftLogin)
+		// Generic OIDC SSO (enterprise IdP via env). /auth/config tells the login
+		// page whether to show the SSO button; /auth/oidc/* is the code flow.
+		v1.GET("/auth/config", authHandler.AuthConfig)
+		v1.GET("/auth/oidc/start", authLimiter, authHandler.OIDCStart)
+		v1.GET("/auth/oidc/callback", authLimiter, authHandler.OIDCCallback)
 
 		admin := v1.Group("")
 		admin.Use(middleware.RequireAdmin(cfg))

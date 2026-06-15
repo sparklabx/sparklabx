@@ -28,6 +28,18 @@ type Config struct {
 	MicrosoftClientID     string
 	MicrosoftClientSecret string
 
+	// Generic OIDC SSO — any enterprise IdP (Keycloak, Okta, Auth0, Azure AD,
+	// Google, ...). Provider-agnostic backend authorization-code flow; endpoints
+	// are discovered from {issuer}/.well-known/openid-configuration.
+	OIDCIssuerURL         string // external, browser-facing issuer
+	OIDCInternalIssuerURL string // back-channel issuer base (token/userinfo) when the backend can't reach the external URL (e.g. local docker). Empty → same as OIDCIssuerURL.
+	OIDCClientID          string
+	OIDCClientSecret      string
+	OIDCScopes            string // space-separated; default "openid email profile"
+	OIDCProviderName      string // login button label, e.g. "Acme SSO"
+	OIDCRedirectURL       string // registered redirect_uri (browser-reachable callback)
+	OIDCPostLoginRedirect string // frontend URL to land on after a successful login
+
 	// AWS
 	AWSProfile     string
 	TFStateBucket  string
@@ -103,6 +115,15 @@ func Load() *Config {
 		MicrosoftClientID:     getEnv("MICROSOFT_CLIENT_ID", ""),
 		MicrosoftClientSecret: getEnv("MICROSOFT_CLIENT_SECRET", ""),
 
+		OIDCIssuerURL:         getEnv("OIDC_ISSUER_URL", ""),
+		OIDCInternalIssuerURL: getEnv("OIDC_INTERNAL_ISSUER_URL", ""),
+		OIDCClientID:          getEnv("OIDC_CLIENT_ID", ""),
+		OIDCClientSecret:      getEnv("OIDC_CLIENT_SECRET", ""),
+		OIDCScopes:            getEnv("OIDC_SCOPES", "openid email profile"),
+		OIDCProviderName:      getEnv("OIDC_PROVIDER_NAME", "SSO"),
+		OIDCRedirectURL:       getEnv("OIDC_REDIRECT_URL", ""),
+		OIDCPostLoginRedirect: getEnv("OIDC_POST_LOGIN_REDIRECT", "/"),
+
 		AWSProfile:    getEnv("AWS_PROFILE", ""),
 		TFStateBucket: getEnv("TF_STATE_BUCKET", ""),
 		TFStateRegion: getEnv("TF_STATE_REGION", ""),
@@ -140,6 +161,12 @@ func Load() *Config {
 
 		CORSOrigins: strings.Split(getEnv("CORS_ORIGINS", "http://localhost:3000"), ","),
 	}
+}
+
+// OIDCEnabled reports whether generic OIDC SSO is configured. The login UI shows
+// the SSO button and the /auth/oidc/* routes are active only when this is true.
+func (c *Config) OIDCEnabled() bool {
+	return c.OIDCIssuerURL != "" && c.OIDCClientID != "" && c.OIDCRedirectURL != ""
 }
 
 func getEnv(key, fallback string) string {
