@@ -69,6 +69,7 @@ type Config struct {
 	KernelDockerNetwork  string
 	KernelPullSecret     string // optional K8s imagePullSecret for private forks
 	KernelTrinoURL       string // optional default Trino JDBC URL injected into kernels for the trino() helper (empty → helper requires an explicit url=)
+	KernelCallbackURL    string // backend base URL reachable FROM kernels; the data helpers call it to fetch a fresh OIDC token per query
 
 	// Per-user kernel pod resource requests/limits. Strings in k8s quantity
 	// format ("500m", "1Gi"). For docker_per_user mode only the *Limit values
@@ -149,6 +150,7 @@ func Load() *Config {
 		KernelDockerNetwork:  getEnv("KERNEL_DOCKER_NETWORK", "sparklabx_default"),
 		KernelPullSecret:     getEnv("KERNEL_PULL_SECRET", ""), // empty → no imagePullSecret
 		KernelTrinoURL:       getEnv("TRINO_URL", ""),
+		KernelCallbackURL:    getEnv("KERNEL_CALLBACK_URL", "http://sparklabx-backend:10000"),
 
 		KernelPodCPURequest:    getEnv("KERNEL_POD_CPU_REQUEST", "500m"),
 		KernelPodMemoryRequest: getEnv("KERNEL_POD_MEMORY_REQUEST", "1Gi"),

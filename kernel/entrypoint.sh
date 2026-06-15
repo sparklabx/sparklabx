@@ -199,6 +199,28 @@ cat > "$IPY_STARTUP/00-sparklabx-trino.py" <<'PYEOF'
 import os as _os
 
 
+def _sparklabx_oidc_token():
+    """Fetch a FRESH OIDC access token from the backend (in-session refresh).
+
+    The backend refreshes it from the server-side refresh token, so a long
+    notebook session never hits an expired token — and the refresh token never
+    enters the kernel. Returns None for non-SSO logins or if unreachable.
+    """
+    import json as _json
+    import urllib.request as _u
+    api = _os.environ.get("SPARKLABX_API_URL")
+    tok = _os.environ.get("SPARKLABX_KERNEL_TOKEN")
+    if not api or not tok:
+        return None
+    req = _u.Request(api.rstrip("/") + "/api/v1/kernel/oidc-token",
+                     headers={"Authorization": "Bearer " + tok})
+    try:
+        with _u.urlopen(req, timeout=10) as resp:
+            return _json.loads(resp.read().decode()).get("access_token") or None
+    except Exception:
+        return None
+
+
 def trino(query, url=None):
     """Query Trino with your SSO identity (no password).
 
@@ -217,7 +239,7 @@ def trino(query, url=None):
     reader = (spark.read.format("jdbc")
               .option("url", u)
               .option("driver", "io.trino.jdbc.TrinoDriver"))
-    token = _os.environ.get("OIDC_ACCESS_TOKEN")
+    token = _sparklabx_oidc_token()   # fresh per call — no stale/expired token
     if token:
         reader = reader.option("accessToken", token)
     q = query.strip()

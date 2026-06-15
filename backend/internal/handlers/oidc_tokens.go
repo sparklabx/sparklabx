@@ -9,10 +9,48 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/rs/zerolog/log"
 
 	"github.com/sparklabx/sparklabx/backend/internal/database"
 )
+
+// MintKernelToken issues a short-lived bearer token the kernel uses to call
+// back to GET /kernel/oidc-token for a freshly-refreshed OIDC access token.
+// It carries admin_id so the standard RequireAdmin middleware authenticates it
+// as the user — scoped to the user's own kernel, same trust as the user's own
+// session token.
+func (h *AuthHandler) MintKernelToken(adminID string) (string, error) {
+	claims := jwt.MapClaims{
+		"admin_id": adminID,
+		"role":     "admin",
+		"typ":      "kernel",
+		"exp":      time.Now().Add(12 * time.Hour).Unix(),
+		"iat":      time.Now().Unix(),
+	}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(h.cfg.JWTSecretKey))
+}
+
+// KernelOIDCToken returns a currently-valid OIDC access token for the calling
+// user, refreshed server-side if needed. The kernel's data helpers (e.g.
+// trino()) call this per query so they never hold an expired token — the
+// refresh token never leaves the backend. Returns an empty token (200) for
+// non-SSO logins; callers then simply skip the Authorization.
+func (h *AuthHandler) KernelOIDCToken(c *gin.Context) {
+	adminID := c.GetString("admin_id")
+	if adminID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	token, err := h.ValidOIDCAccessToken(adminID)
+	if err != nil {
+		log.Warn().Err(err).Str("admin_id", adminID).Msg("kernel oidc-token fetch failed")
+		c.JSON(http.StatusOK, gin.H{"access_token": ""})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"access_token": token})
+}
 
 // OIDC token broker — retains the IdP access/refresh tokens from an SSO login
 // (encrypted at rest, reusing the same AES-GCM key as the MinIO secrets) so the

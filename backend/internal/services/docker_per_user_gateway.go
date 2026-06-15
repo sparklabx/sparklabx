@@ -56,8 +56,9 @@ type DockerPerUserConfig struct {
 	MaxContainers     int                   // hard cap; rejects spawn beyond
 	MinIOEndpoint     string                // injected as S3_ENDPOINT env so kernel reaches MinIO
 	CredsResolver     UserCredsResolver     // nil → fall back to root creds via env passthrough
-	OIDCTokenResolver UserOIDCTokenResolver // nil → no SSO token passthrough
+	OIDCTokenResolver UserOIDCTokenResolver // returns the kernel callback token (SPARKLABX_KERNEL_TOKEN); nil → no SSO passthrough
 	TrinoURL          string                // injected as TRINO_URL for the trino() helper; empty → not set
+	KernelAPIURL      string                // injected as SPARKLABX_API_URL so the kernel can fetch a fresh OIDC token
 
 	// Per-container limits in k8s quantity format ("500m", "1Gi"). Docker
 	// doesn't have a separate "request" concept, so only the limit values
@@ -338,14 +339,17 @@ func (g *DockerPerUserGateway) EnsureSpawning(userID string, spec *ResourceSpec)
 		"S3_ENDPOINT=" + g.cfg.MinIOEndpoint,
 	}
 
-	// SSO token passthrough: inject the user's OIDC access token so notebooks
-	// can authenticate to external services (e.g. Trino) as the logged-in user.
-	// Absent for non-SSO logins — passthrough is then simply unavailable.
+	// SSO token passthrough: inject a short-lived callback token + the backend
+	// URL so the notebook data helpers can fetch a FRESH OIDC token per query
+	// (the refresh token stays server-side). Absent for non-SSO logins.
 	if g.cfg.OIDCTokenResolver != nil {
 		if tok, err := g.cfg.OIDCTokenResolver(userID); err != nil {
 			log.Warn().Err(err).Str("user", userID).Msg("OIDCTokenResolver failed; no SSO passthrough")
 		} else if tok != "" {
-			env = append(env, "OIDC_ACCESS_TOKEN="+tok)
+			env = append(env, "SPARKLABX_KERNEL_TOKEN="+tok)
+			if g.cfg.KernelAPIURL != "" {
+				env = append(env, "SPARKLABX_API_URL="+g.cfg.KernelAPIURL)
+			}
 		}
 	}
 	// Default Trino endpoint for the trino() notebook helper (operator-configured).

@@ -157,8 +157,9 @@ type KernelGatewaySettings struct {
 	MaxKernels        int           // hard cap on concurrent kernels
 	PullSecret        string        // optional K8s imagePullSecret name (empty → none)
 	CredsResolver     UserCredsResolver
-	OIDCTokenResolver UserOIDCTokenResolver // nil → no SSO token passthrough into the kernel
+	OIDCTokenResolver UserOIDCTokenResolver // returns the kernel's callback token (SPARKLABX_KERNEL_TOKEN); nil → no SSO passthrough
 	TrinoURL          string                // optional default Trino JDBC URL injected as TRINO_URL for the trino() helper
+	KernelAPIURL      string                // backend URL injected as SPARKLABX_API_URL so kernels can fetch a fresh OIDC token
 
 	// Resource requests/limits in k8s quantity format ("500m", "1Gi"). For
 	// docker_per_user mode only the *Limit values apply (Docker has no
@@ -209,6 +210,7 @@ func NewKernelGateway(s KernelGatewaySettings) (KernelGateway, error) {
 			CredsResolver:     s.CredsResolver,
 			OIDCTokenResolver: s.OIDCTokenResolver,
 			TrinoURL:          s.TrinoURL,
+			KernelAPIURL:      s.KernelAPIURL,
 			CPULimit:          s.PodCPULimit,
 			MemoryLimit:       s.PodMemoryLimit,
 		})
@@ -226,6 +228,7 @@ func NewKernelGateway(s KernelGatewaySettings) (KernelGateway, error) {
 			CredsResolver:     s.CredsResolver,
 			OIDCTokenResolver: s.OIDCTokenResolver,
 			TrinoURL:          s.TrinoURL,
+			KernelAPIURL:      s.KernelAPIURL,
 			CPURequest:        s.PodCPURequest,
 			MemoryRequest:     s.PodMemoryRequest,
 			CPULimit:          s.PodCPULimit,

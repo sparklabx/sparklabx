@@ -81,7 +81,15 @@ func main() {
 	// services (e.g. Trino) as the logged-in identity. Returns "" for non-SSO
 	// logins, in which case passthrough is simply unavailable.
 	oidcTokenResolver := func(adminID string) (string, error) {
-		return authHandler.ValidOIDCAccessToken(adminID)
+		// Inject a short-lived CALLBACK token, not the OIDC token itself: the
+		// kernel exchanges it for a fresh OIDC token per query via
+		// /kernel/oidc-token, so a long session never holds an expired token and
+		// the refresh token stays server-side. Only mint it for users who
+		// actually have a stored OIDC token (SSO login).
+		if t, _ := authHandler.ValidOIDCAccessToken(adminID); t == "" {
+			return "", nil
+		}
+		return authHandler.MintKernelToken(adminID)
 	}
 
 	// KernelGateway: shared single container OR per-user pod via KERNEL_MODE.
@@ -99,6 +107,7 @@ func main() {
 		CredsResolver:     credsResolver,
 		OIDCTokenResolver: oidcTokenResolver,
 		TrinoURL:          cfg.KernelTrinoURL,
+		KernelAPIURL:      cfg.KernelCallbackURL,
 		PodCPURequest:     cfg.KernelPodCPURequest,
 		PodMemoryRequest:  cfg.KernelPodMemoryRequest,
 		PodCPULimit:       cfg.KernelPodCPULimit,
@@ -240,6 +249,9 @@ func main() {
 			kernelMeta.GET("/usage", localKernelHandler.Usage)
 			kernelMeta.GET("/resource-presets", localKernelHandler.ResourcePresets)
 			kernelMeta.GET("/library-errors", localKernelHandler.LibraryErrors)
+			// Kernel fetches a fresh OIDC token here (in-session refresh for
+			// SSO token passthrough to external services like Trino).
+			kernelMeta.GET("/oidc-token", authHandler.KernelOIDCToken)
 		}
 	}
 

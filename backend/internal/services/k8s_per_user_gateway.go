@@ -69,8 +69,9 @@ type K8sPerUserConfig struct {
 	MaxPods           int                   // hard cap on concurrent pods cluster-wide
 	PullSecret        string                // optional imagePullSecret name; empty → none
 	CredsResolver     UserCredsResolver     // nil → use root creds from sparklabx-secrets (legacy)
-	OIDCTokenResolver UserOIDCTokenResolver // nil → no SSO token passthrough
+	OIDCTokenResolver UserOIDCTokenResolver // returns the kernel callback token (SPARKLABX_KERNEL_TOKEN); nil → no SSO passthrough
 	TrinoURL          string                // injected as TRINO_URL for the trino() helper; empty → not set
+	KernelAPIURL      string                // injected as SPARKLABX_API_URL so the kernel can fetch a fresh OIDC token
 
 	// Per-pod resource quantities ("500m", "1Gi"). Empty → fall back to
 	// defaults (500m/1Gi requests, 2000m/4Gi limits). MustParse'd at spawn,
@@ -725,12 +726,16 @@ func (g *K8sPerUserGateway) buildPodSpec(userID, podName string, res podSizes) *
 		}
 	}
 
-	// SSO token passthrough + Trino default URL for the trino() notebook helper.
+	// SSO token passthrough: callback token + backend URL so the notebook data
+	// helpers fetch a FRESH OIDC token per query (refresh token stays backend-side).
 	if g.cfg.OIDCTokenResolver != nil {
 		if tok, err := g.cfg.OIDCTokenResolver(userID); err != nil {
 			log.Warn().Err(err).Str("user", userID).Msg("OIDCTokenResolver failed; no SSO passthrough")
 		} else if tok != "" {
-			awsEnv = append(awsEnv, corev1.EnvVar{Name: "OIDC_ACCESS_TOKEN", Value: tok})
+			awsEnv = append(awsEnv, corev1.EnvVar{Name: "SPARKLABX_KERNEL_TOKEN", Value: tok})
+			if g.cfg.KernelAPIURL != "" {
+				awsEnv = append(awsEnv, corev1.EnvVar{Name: "SPARKLABX_API_URL", Value: g.cfg.KernelAPIURL})
+			}
 		}
 	}
 	if g.cfg.TrinoURL != "" {
