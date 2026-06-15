@@ -29,6 +29,12 @@ func MigrateAndSeed(cfg *config.Config) error {
 		// the kernel pod can only access their own users/<slug>/* prefix +
 		// public/*. Empty until first login post-IAM-rollout — backfilled lazily.
 		`ALTER TABLE admins ADD COLUMN IF NOT EXISTS minio_secret_enc TEXT NOT NULL DEFAULT ''`,
+		// Encrypted OIDC tokens from SSO login, retained so the kernel can
+		// authenticate to external services (e.g. Trino) as the logged-in user
+		// via token passthrough. Empty unless the user logged in via OIDC SSO.
+		`ALTER TABLE admins ADD COLUMN IF NOT EXISTS oidc_access_token_enc TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE admins ADD COLUMN IF NOT EXISTS oidc_refresh_token_enc TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE admins ADD COLUMN IF NOT EXISTS oidc_token_expires_at TIMESTAMPTZ`,
 
 		`CREATE TABLE IF NOT EXISTS notebooks (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

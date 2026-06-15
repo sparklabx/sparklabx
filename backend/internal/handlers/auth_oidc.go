@@ -196,8 +196,10 @@ func (h *AuthHandler) OIDCCallback(c *gin.Context) {
 		return
 	}
 	var tok struct {
-		AccessToken string `json:"access_token"`
-		IDToken     string `json:"id_token"`
+		AccessToken  string `json:"access_token"`
+		IDToken      string `json:"id_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int    `json:"expires_in"`
 	}
 	if err := json.NewDecoder(tokenResp.Body).Decode(&tok); err != nil || tok.AccessToken == "" {
 		h.oidcRedirectError(c, "invalid token response")
@@ -237,7 +239,7 @@ func (h *AuthHandler) OIDCCallback(c *gin.Context) {
 		name = info.PreferredUsername
 	}
 	// Shared tail with the Google/Microsoft flows (allowlist → upsert → app JWT).
-	appToken, _, _, adminRole, err := h.completeOAuthLogin(info.Email, name)
+	appToken, adminID, _, adminRole, err := h.completeOAuthLogin(info.Email, name)
 	if err != nil {
 		switch {
 		case errors.Is(err, errOAuthNotConfigured):
@@ -250,6 +252,10 @@ func (h *AuthHandler) OIDCCallback(c *gin.Context) {
 		}
 		return
 	}
+
+	// Retain the IdP tokens (encrypted) so the kernel can later authenticate to
+	// external services (e.g. Trino) as this user via token passthrough.
+	h.storeOIDCTokens(adminID, tok.AccessToken, tok.RefreshToken, tok.ExpiresIn)
 
 	log.Info().Str("email", info.Email).Str("admin_role", adminRole).Msg("OIDC login successful")
 	// Hand the app JWT to the SPA via the URL fragment — fragments are never sent

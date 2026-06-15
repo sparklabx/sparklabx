@@ -76,6 +76,14 @@ func main() {
 		return username, secret, nil
 	}
 
+	// SSO token passthrough resolver — kernel spawn calls this to inject the
+	// user's (refreshed) OIDC access token so notebooks can reach external
+	// services (e.g. Trino) as the logged-in identity. Returns "" for non-SSO
+	// logins, in which case passthrough is simply unavailable.
+	oidcTokenResolver := func(adminID string) (string, error) {
+		return authHandler.ValidOIDCAccessToken(adminID)
+	}
+
 	// KernelGateway: shared single container OR per-user pod via KERNEL_MODE.
 	kernelGateway, err := services.NewKernelGateway(services.KernelGatewaySettings{
 		Mode:              cfg.KernelMode,
@@ -89,6 +97,7 @@ func main() {
 		MaxKernels:        cfg.KernelPodMaxTotal,
 		PullSecret:        cfg.KernelPullSecret,
 		CredsResolver:     credsResolver,
+		OIDCTokenResolver: oidcTokenResolver,
 		PodCPURequest:     cfg.KernelPodCPURequest,
 		PodMemoryRequest:  cfg.KernelPodMemoryRequest,
 		PodCPULimit:       cfg.KernelPodCPULimit,

@@ -46,6 +46,12 @@ const spawnTimeout = 5 * time.Minute
 // when IAM is not configured).
 type UserCredsResolver func(userID string) (accessKey, secretKey string, err error)
 
+// UserOIDCTokenResolver returns a valid OIDC access token for the user, for
+// passthrough to external services (e.g. Trino) as the logged-in identity.
+// Returns ("", nil) when there's no token (non-SSO login) — passthrough is
+// then simply skipped. Called once per pod/container spawn.
+type UserOIDCTokenResolver func(userID string) (token string, err error)
+
 // pullSecretRefs returns a single-element ImagePullSecrets slice when name is
 // set, or nil to leave the field empty (skips imagePullSecrets entirely).
 func pullSecretRefs(name string) []corev1.LocalObjectReference {
@@ -57,12 +63,13 @@ func pullSecretRefs(name string) []corev1.LocalObjectReference {
 
 // K8sPerUserConfig configures the dynamic per-user gateway.
 type K8sPerUserConfig struct {
-	Namespace     string            // K8s namespace where kernel pods live
-	PodImage      string            // image to run for each user pod
-	IdleTimeout   time.Duration     // delete pod after this long without activity
-	MaxPods       int               // hard cap on concurrent pods cluster-wide
-	PullSecret    string            // optional imagePullSecret name; empty → none
-	CredsResolver UserCredsResolver // nil → use root creds from sparklabx-secrets (legacy)
+	Namespace         string                // K8s namespace where kernel pods live
+	PodImage          string                // image to run for each user pod
+	IdleTimeout       time.Duration         // delete pod after this long without activity
+	MaxPods           int                   // hard cap on concurrent pods cluster-wide
+	PullSecret        string                // optional imagePullSecret name; empty → none
+	CredsResolver     UserCredsResolver     // nil → use root creds from sparklabx-secrets (legacy)
+	OIDCTokenResolver UserOIDCTokenResolver // nil → no SSO token passthrough
 
 	// Per-pod resource quantities ("500m", "1Gi"). Empty → fall back to
 	// defaults (500m/1Gi requests, 2000m/4Gi limits). MustParse'd at spawn,
@@ -75,21 +82,21 @@ type K8sPerUserConfig struct {
 
 // PodStatus is the spawn progress snapshot returned to FE for live UI updates.
 type PodStatus struct {
-	Phase   string `json:"phase"`             // one of the Phase* constants, or "" if no row
-	Message string `json:"message"`           // human-readable; safe to display verbatim
-	URL     string `json:"url,omitempty"`     // populated only when phase=ready
+	Phase   string `json:"phase"`         // one of the Phase* constants, or "" if no row
+	Message string `json:"message"`       // human-readable; safe to display verbatim
+	URL     string `json:"url,omitempty"` // populated only when phase=ready
 	PodName string `json:"pod_name,omitempty"`
 }
 
 // K8sPerUserGateway spawns one Jupyter pod per user on demand and reaps idle ones.
 //
 // Lifecycle (Silver design):
-//   1. GetGatewayURL → handles terminating handshake, then watches pod events for
-//      phase transitions, updating DB so FE polling sees live progress.
-//   2. Touch → buffered last_used_at update (batched 10s) to avoid DB hammer.
-//   3. Destroy → marks terminating, deletes pod gracefully, background goroutine
-//      removes DB row when pod is fully gone.
-//   4. Reaper → deletes idle pods + reconciles stuck rows (failed spawns, etc).
+//  1. GetGatewayURL → handles terminating handshake, then watches pod events for
+//     phase transitions, updating DB so FE polling sees live progress.
+//  2. Touch → buffered last_used_at update (batched 10s) to avoid DB hammer.
+//  3. Destroy → marks terminating, deletes pod gracefully, background goroutine
+//     removes DB row when pod is fully gone.
+//  4. Reaper → deletes idle pods + reconciles stuck rows (failed spawns, etc).
 //
 // Pod naming: sha1(user_id)[:6] → "kernel-<12 hex>" (DNS-safe, deterministic
 // so backend restarts still find existing pods).
@@ -457,9 +464,9 @@ func (g *K8sPerUserGateway) EnsureSpawning(userID string, spec *ResourceSpec) er
 }
 
 // spawnAndWait: 3 stages —
-//   1. drain any previous pod still terminating (grace ≤60s)
-//   2. K8s Create (idempotent vs AlreadyExists)
-//   3. Watch event stream until Ready or timeout (5min)
+//  1. drain any previous pod still terminating (grace ≤60s)
+//  2. K8s Create (idempotent vs AlreadyExists)
+//  3. Watch event stream until Ready or timeout (5min)
 //
 // Phase is written to DB on every meaningful transition so FE polling shows
 // "Pulling image…" / "Container starting…" / etc. without guessing.
