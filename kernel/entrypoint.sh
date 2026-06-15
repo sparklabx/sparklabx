@@ -187,6 +187,42 @@ print(f"predef.sc patched (mode={mode})")
 PYEOF
 fi
 
+# ── 4c. trino() helper for Scala notebooks (Almond predef) ───────────────────
+# Same idea as the Python helper below, for the Scala kernel: fetch a fresh OIDC
+# token from the backend per call and read Trino over JDBC. Idempotent.
+if [ -f "$PREDEF_FILE" ] && ! grep -q "def trino" "$PREDEF_FILE" 2>/dev/null; then
+cat >> "$PREDEF_FILE" <<'SCALA'
+
+// SparkLabX: trino() — query Trino with your SSO identity (no password).
+// Fetches a fresh OIDC token from the backend per call (in-session refresh).
+// Requires the Trino JDBC driver on the classpath (add the "Trino" preset).
+def trino(query: String, url: String = null): org.apache.spark.sql.DataFrame = {
+  val u = Option(url).getOrElse(sys.env.getOrElse("TRINO_URL",
+    throw new RuntimeException("No Trino URL — pass url=... or set TRINO_URL")))
+  val token: String =
+    (sys.env.get("SPARKLABX_API_URL"), sys.env.get("SPARKLABX_KERNEL_TOKEN")) match {
+      case (Some(api), Some(kt)) =>
+        try {
+          val c = new java.net.URL(api.stripSuffix("/") + "/api/v1/kernel/oidc-token")
+            .openConnection().asInstanceOf[java.net.HttpURLConnection]
+          c.setRequestProperty("Authorization", "Bearer " + kt)
+          c.setConnectTimeout(10000); c.setReadTimeout(10000)
+          val body = scala.io.Source.fromInputStream(c.getInputStream, "UTF-8").mkString
+          val rx = "\"access_token\"\\s*:\\s*\"([^\"]*)\"".r
+          rx.findFirstMatchIn(body).map(_.group(1)).filter(_.nonEmpty).orNull
+        } catch { case _: Throwable => null }
+      case _ => null
+    }
+  var r = spark.read.format("jdbc").option("url", u).option("driver", "io.trino.jdbc.TrinoDriver")
+  if (token != null) r = r.option("accessToken", token)
+  val q = query.trim
+  r = if (q.toLowerCase.startsWith("select")) r.option("query", q) else r.option("dbtable", q)
+  r.load()
+}
+SCALA
+echo "trino() helper installed for Scala (Almond) kernels"
+fi
+
 # ── 4b. trino() helper for Python notebooks (IPython startup) ─────────────────
 # Removes the JDBC boilerplate: trino("SELECT …") / trino("catalog.schema.table").
 # Uses the SSO token injected by the backend (OIDC_ACCESS_TOKEN) so the user
