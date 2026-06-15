@@ -70,6 +70,7 @@ type K8sPerUserConfig struct {
 	PullSecret        string                // optional imagePullSecret name; empty → none
 	CredsResolver     UserCredsResolver     // nil → use root creds from sparklabx-secrets (legacy)
 	OIDCTokenResolver UserOIDCTokenResolver // nil → no SSO token passthrough
+	TrinoURL          string                // injected as TRINO_URL for the trino() helper; empty → not set
 
 	// Per-pod resource quantities ("500m", "1Gi"). Empty → fall back to
 	// defaults (500m/1Gi requests, 2000m/4Gi limits). MustParse'd at spawn,
@@ -722,6 +723,18 @@ func (g *K8sPerUserGateway) buildPodSpec(userID, podName string, res podSizes) *
 				},
 			},
 		}
+	}
+
+	// SSO token passthrough + Trino default URL for the trino() notebook helper.
+	if g.cfg.OIDCTokenResolver != nil {
+		if tok, err := g.cfg.OIDCTokenResolver(userID); err != nil {
+			log.Warn().Err(err).Str("user", userID).Msg("OIDCTokenResolver failed; no SSO passthrough")
+		} else if tok != "" {
+			awsEnv = append(awsEnv, corev1.EnvVar{Name: "OIDC_ACCESS_TOKEN", Value: tok})
+		}
+	}
+	if g.cfg.TrinoURL != "" {
+		awsEnv = append(awsEnv, corev1.EnvVar{Name: "TRINO_URL", Value: g.cfg.TrinoURL})
 	}
 
 	return &corev1.Pod{

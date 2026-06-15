@@ -187,6 +187,48 @@ print(f"predef.sc patched (mode={mode})")
 PYEOF
 fi
 
+# ── 4b. trino() helper for Python notebooks (IPython startup) ─────────────────
+# Removes the JDBC boilerplate: trino("SELECT …") / trino("catalog.schema.table").
+# Uses the SSO token injected by the backend (OIDC_ACCESS_TOKEN) so the user
+# queries Trino as themselves — no password in the notebook. The driver itself
+# is NOT bundled here (orgs pick their own version): add the "Trino" connector
+# preset (io.trino:trino-jdbc:<ver>) when connecting and this helper uses it.
+IPY_STARTUP=/root/.ipython/profile_default/startup
+mkdir -p "$IPY_STARTUP"
+cat > "$IPY_STARTUP/00-sparklabx-trino.py" <<'PYEOF'
+import os as _os
+
+
+def trino(query, url=None):
+    """Query Trino with your SSO identity (no password).
+
+    query : a SQL statement ("SELECT ...") or a fully-qualified table name
+            "catalog.schema.table".
+    url   : jdbc:trino://host:port?SSL=true (defaults to the TRINO_URL env).
+
+    Requires the Trino JDBC driver on the classpath — add the "Trino" connector
+    preset when connecting the kernel.
+    """
+    from pyspark.sql import SparkSession
+    spark = SparkSession.builder.getOrCreate()
+    u = url or _os.environ.get("TRINO_URL")
+    if not u:
+        raise ValueError("No Trino URL — pass url=... or set TRINO_URL")
+    reader = (spark.read.format("jdbc")
+              .option("url", u)
+              .option("driver", "io.trino.jdbc.TrinoDriver"))
+    token = _os.environ.get("OIDC_ACCESS_TOKEN")
+    if token:
+        reader = reader.option("accessToken", token)
+    q = query.strip()
+    if q.lower().startswith("select"):
+        reader = reader.option("query", q)
+    else:
+        reader = reader.option("dbtable", q)
+    return reader.load()
+PYEOF
+echo "trino() helper installed for Python kernels"
+
 # ── 5. Start Jupyter Kernel Gateway ───────────────────────────────────────────
 jupyter kernelgateway \
   --KernelGatewayApp.ip=0.0.0.0 \

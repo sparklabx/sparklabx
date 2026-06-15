@@ -12,7 +12,7 @@ type Config struct {
 	DatabaseURL string
 
 	// JWT
-	JWTSecretKey    string
+	JWTSecretKey     string
 	JWTExpireMinutes int
 
 	// Seed admin
@@ -41,9 +41,9 @@ type Config struct {
 	OIDCPostLoginRedirect string // frontend URL to land on after a successful login
 
 	// AWS
-	AWSProfile     string
-	TFStateBucket  string
-	TFStateRegion  string
+	AWSProfile    string
+	TFStateBucket string
+	TFStateRegion string
 
 	// Service
 	ServiceName string
@@ -61,13 +61,14 @@ type Config struct {
 	JupyterGatewayURL string
 
 	// Kernel deployment (see KERNEL_MODE in .env.example)
-	KernelMode            string
-	KernelPodImage        string
-	KernelPodNamespace    string
-	KernelPodIdleMinutes  int
-	KernelPodMaxTotal     int
-	KernelDockerNetwork   string
-	KernelPullSecret      string // optional K8s imagePullSecret for private forks
+	KernelMode           string
+	KernelPodImage       string
+	KernelPodNamespace   string
+	KernelPodIdleMinutes int
+	KernelPodMaxTotal    int
+	KernelDockerNetwork  string
+	KernelPullSecret     string // optional K8s imagePullSecret for private forks
+	KernelTrinoURL       string // optional default Trino JDBC URL injected into kernels for the trino() helper (empty → helper requires an explicit url=)
 
 	// Per-user kernel pod resource requests/limits. Strings in k8s quantity
 	// format ("500m", "1Gi"). For docker_per_user mode only the *Limit values
@@ -147,6 +148,7 @@ func Load() *Config {
 		KernelPodMaxTotal:    getEnvInt("KERNEL_POD_MAX_TOTAL", 50),
 		KernelDockerNetwork:  getEnv("KERNEL_DOCKER_NETWORK", "sparklabx_default"),
 		KernelPullSecret:     getEnv("KERNEL_PULL_SECRET", ""), // empty → no imagePullSecret
+		KernelTrinoURL:       getEnv("TRINO_URL", ""),
 
 		KernelPodCPURequest:    getEnv("KERNEL_POD_CPU_REQUEST", "500m"),
 		KernelPodMemoryRequest: getEnv("KERNEL_POD_MEMORY_REQUEST", "1Gi"),

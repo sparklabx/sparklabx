@@ -101,6 +101,12 @@ const PACKAGE_PRESETS: PackagePreset[] = [
         packages: ['org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.10.1'],
     },
     {
+        id: 'trino',
+        label: 'Trino',
+        description: 'Trino JDBC driver — query external Trino clusters (edit the version to match yours)',
+        packages: ['io.trino:trino-jdbc:481'],
+    },
+    {
         id: 'delta-iceberg',
         label: 'Delta + Iceberg',
         description: 'Enable both Delta Lake and Iceberg',

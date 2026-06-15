@@ -98,6 +98,7 @@ func main() {
 		PullSecret:        cfg.KernelPullSecret,
 		CredsResolver:     credsResolver,
 		OIDCTokenResolver: oidcTokenResolver,
+		TrinoURL:          cfg.KernelTrinoURL,
 		PodCPURequest:     cfg.KernelPodCPURequest,
 		PodMemoryRequest:  cfg.KernelPodMemoryRequest,
 		PodCPULimit:       cfg.KernelPodCPULimit,

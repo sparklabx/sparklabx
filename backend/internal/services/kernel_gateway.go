@@ -158,6 +158,7 @@ type KernelGatewaySettings struct {
 	PullSecret        string        // optional K8s imagePullSecret name (empty → none)
 	CredsResolver     UserCredsResolver
 	OIDCTokenResolver UserOIDCTokenResolver // nil → no SSO token passthrough into the kernel
+	TrinoURL          string                // optional default Trino JDBC URL injected as TRINO_URL for the trino() helper
 
 	// Resource requests/limits in k8s quantity format ("500m", "1Gi"). For
 	// docker_per_user mode only the *Limit values apply (Docker has no
@@ -207,6 +208,7 @@ func NewKernelGateway(s KernelGatewaySettings) (KernelGateway, error) {
 			MinIOEndpoint:     s.MinIOEndpoint,
 			CredsResolver:     s.CredsResolver,
 			OIDCTokenResolver: s.OIDCTokenResolver,
+			TrinoURL:          s.TrinoURL,
 			CPULimit:          s.PodCPULimit,
 			MemoryLimit:       s.PodMemoryLimit,
 		})
@@ -223,6 +225,7 @@ func NewKernelGateway(s KernelGatewaySettings) (KernelGateway, error) {
 			PullSecret:        s.PullSecret,
 			CredsResolver:     s.CredsResolver,
 			OIDCTokenResolver: s.OIDCTokenResolver,
+			TrinoURL:          s.TrinoURL,
 			CPURequest:        s.PodCPURequest,
 			MemoryRequest:     s.PodMemoryRequest,
 			CPULimit:          s.PodCPULimit,

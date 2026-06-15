@@ -57,6 +57,7 @@ type DockerPerUserConfig struct {
 	MinIOEndpoint     string                // injected as S3_ENDPOINT env so kernel reaches MinIO
 	CredsResolver     UserCredsResolver     // nil → fall back to root creds via env passthrough
 	OIDCTokenResolver UserOIDCTokenResolver // nil → no SSO token passthrough
+	TrinoURL          string                // injected as TRINO_URL for the trino() helper; empty → not set
 
 	// Per-container limits in k8s quantity format ("500m", "1Gi"). Docker
 	// doesn't have a separate "request" concept, so only the limit values
@@ -346,6 +347,10 @@ func (g *DockerPerUserGateway) EnsureSpawning(userID string, spec *ResourceSpec)
 		} else if tok != "" {
 			env = append(env, "OIDC_ACCESS_TOKEN="+tok)
 		}
+	}
+	// Default Trino endpoint for the trino() notebook helper (operator-configured).
+	if g.cfg.TrinoURL != "" {
+		env = append(env, "TRINO_URL="+g.cfg.TrinoURL)
 	}
 
 	// Per-spawn limits: user-picked spec wins over the configured defaults.
