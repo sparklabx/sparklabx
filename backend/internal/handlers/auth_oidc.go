@@ -117,6 +117,9 @@ func (h *AuthHandler) AuthConfig(c *gin.Context) {
 			"enabled":       h.cfg.OIDCEnabled(),
 			"provider_name": h.cfg.OIDCProviderName,
 		},
+		"trino": gin.H{
+			"enabled": h.cfg.TrinoEnabled(),
+		},
 	})
 }
 

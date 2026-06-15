@@ -74,6 +74,7 @@ import { getUserDataPath } from '@/services/notebookStorageService';
 
 import { KernelConnectionDialog } from './KernelConnectionDialog';
 import { SidebarFiles } from './SidebarFiles';
+import { SidebarTrino } from './SidebarTrino';
 import { ConnectionStatusBadge } from './parts/ConnectionStatusBadge';
 import { LanguageIcon } from './parts/LanguageIcon';
 import { CellEditor } from './parts/CellEditor';
@@ -717,6 +718,15 @@ try {
     };
     const [sidebarOpen, setSidebarOpen] = useState(true);
     const [searchQuery, setSearchQuery] = useState('');
+
+    // Whether to show the Trino catalog-browser tab (only when a Trino URL is
+    // configured server-side). Fetched once from the public auth config.
+    const [trinoEnabled, setTrinoEnabled] = useState(false);
+    useEffect(() => {
+        axios.get('/api/v1/auth/config')
+            .then(res => setTrinoEnabled(!!res.data?.trino?.enabled))
+            .catch(() => { /* config unavailable → hide the tab */ });
+    }, []);
 
     // Fetch notebooks list for sidebar
     const { notebooks: allNotebooks, loading: notebooksLoading, loadNotebooks, createNotebook, deleteNotebook } = useNotebookList();
@@ -1685,6 +1695,9 @@ try {
 
             case 'files':
                 return <SidebarFiles />;
+
+            case 'catalog':
+                return <SidebarTrino />;
         }
     };
 
@@ -1762,6 +1775,7 @@ try {
                 sidebarTab={sidebarTab}
                 sidebarOpen={sidebarOpen}
                 onPick={(tab: SidebarTab) => { setSidebarTab(tab); setSidebarOpen(true); }}
+                trinoEnabled={trinoEnabled}
             />
 
 

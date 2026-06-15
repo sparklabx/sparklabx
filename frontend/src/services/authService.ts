@@ -176,9 +176,12 @@ class AuthService {
     await this.checkAuthStatus(); // populates the user via /admin/me
   }
 
-  // `oidc` (and its fields) are optional: older backends or a stripped config may
-  // omit them, so callers must optional-chain — the type reflects that reality.
-  async getAuthConfig(): Promise<{ oidc?: { enabled?: boolean; provider_name?: string } }> {
+  // Fields are optional: older backends or a stripped config may omit them, so
+  // callers must optional-chain — the type reflects that reality.
+  async getAuthConfig(): Promise<{
+    oidc?: { enabled?: boolean; provider_name?: string };
+    trino?: { enabled?: boolean };
+  }> {
     const response = await axios.get(`${API_BASE}/auth/config`);
     return response.data;
   }

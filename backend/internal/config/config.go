@@ -173,6 +173,12 @@ func (c *Config) OIDCEnabled() bool {
 	return c.OIDCIssuerURL != "" && c.OIDCClientID != "" && c.OIDCRedirectURL != ""
 }
 
+// TrinoEnabled reports whether a default Trino URL is configured. Drives the
+// notebook's Trino catalog-browser sidebar tab.
+func (c *Config) TrinoEnabled() bool {
+	return c.KernelTrinoURL != ""
+}
+
 func getEnv(key, fallback string) string {
 	if value, ok := os.LookupEnv(key); ok {
 		return value

@@ -257,6 +257,11 @@ func main() {
 		// short-lived kernel token (typ="kernel"), NOT a full admin session — so
 		// the token living in the kernel pod's env can only reach this endpoint.
 		v1.GET("/kernel/oidc-token", middleware.RequireKernelToken(cfg), authHandler.KernelOIDCToken)
+
+		// Trino catalog browser for the notebook sidebar — lists catalogs/schemas/
+		// tables of the user's connected Trino, queried as the user via their OIDC
+		// token (same passthrough as the trino() helper). Read-only metadata.
+		v1.GET("/trino/metadata", middleware.RequireAdmin(cfg), authHandler.TrinoMetadata)
 	}
 
 	addr := ":" + cfg.ServicePort
