@@ -27,6 +27,7 @@ import (
 // it's a fixed URL (docker-compose), for K8sPerUserGateway it's the per-user
 // pod IP (spawned on demand).
 type LocalKernelHandler struct {
+	cfg      *config.Config
 	gateway  services.KernelGateway
 	upgrader websocket.Upgrader
 
@@ -46,6 +47,7 @@ func NewLocalKernelHandler(cfg *config.Config, gateway services.KernelGateway) *
 		allowedOrigins[o] = true
 	}
 	return &LocalKernelHandler{
+		cfg:                   cfg,
 		gateway:               gateway,
 		resourcePresets:       cfg.KernelResourcePresets,
 		resourceDefaultPreset: cfg.KernelResourceDefaultPreset,

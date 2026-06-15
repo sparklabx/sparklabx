@@ -243,6 +243,12 @@ func main() {
 			nb.Any("/:id/kernel/api/*path", localKernelHandler.ProxyHTTP)
 		}
 
+		// Spark UI proxy — loaded in an iframe, so it authenticates via ?token=
+		// (then a path-scoped cookie for the UI's own asset/XHR requests), NOT the
+		// header-only RequireAdmin guard above. The notebook owner check runs
+		// inside the handler. Registered on v1 (not the nb group) for that reason.
+		v1.GET("/notebooks/:id/kernel/spark-ui/*path", localKernelHandler.ProxySparkUI)
+
 		// Per-user pod spawn progress (polled by FE)
 		kernelMeta := v1.Group("/kernel")
 		kernelMeta.Use(middleware.RequireAdmin(cfg))

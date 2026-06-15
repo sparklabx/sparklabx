@@ -75,6 +75,7 @@ import { getUserDataPath } from '@/services/notebookStorageService';
 import { KernelConnectionDialog } from './KernelConnectionDialog';
 import { SidebarFiles } from './SidebarFiles';
 import { SidebarTrino } from './SidebarTrino';
+import { SparkUIDialog } from './parts/SparkUIDialog';
 import { ConnectionStatusBadge } from './parts/ConnectionStatusBadge';
 import { LanguageIcon } from './parts/LanguageIcon';
 import { CellEditor } from './parts/CellEditor';
@@ -1845,6 +1846,11 @@ try {
 
 
                     <div className="flex items-center gap-2 shrink-0">
+                        {/* Spark UI — only meaningful once the kernel is up */}
+                        {connectionStatus === 'connected' && notebookId && (
+                            <SparkUIDialog notebookId={notebookId} compact={compactToolbar} />
+                        )}
+
                         {/* Live kernel CPU/RAM — hidden unless usage is available */}
                         <ResourceUsageBadge enabled={connectionStatus === 'connected'} compact={compactToolbar} />
 
