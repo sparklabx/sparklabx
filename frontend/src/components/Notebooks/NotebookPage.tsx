@@ -425,11 +425,12 @@ try:
 
     # Pretty HTML rendering for DataFrames. Builds HTML straight from collect()
     # so we don't require pandas in the kernel image (toPandas pulls pandas).
-    #   - df.show()              → HTML table, full data (HTML has horizontal
-    #     scroll so we don't truncate by default like ASCII does). Pass an int
-    #     to truncate explicitly: df.show(truncate=20). Original kept as _show_ascii.
-    #   - df (last cell expr)    → HTML via _repr_html_ (Jupyter hook).
-    #   - df.show(vertical=True) → ASCII fallback (HTML can't render vertically).
+    # Consistent with the Scala kernel: .show() stays the STOCK ASCII table
+    # (Spark default — same in both languages); HTML comes from a bare df or
+    # display(df) instead.
+    #   - df.show()           → stock ASCII table (unchanged Spark behavior).
+    #   - df (last cell expr) → HTML via _repr_html_ (Jupyter hook).
+    #   - display(df, n)      → HTML table.
     from html import escape as _spx_esc
     from IPython.display import display as _spx_display, HTML as _SpxHTML
     def _spx_df_to_html(self, n=20, truncate=False):
@@ -454,15 +455,9 @@ try:
         )
         note = f'<div style="color:#888;font-size:11px;margin-top:4px">showing first {len(rows)} rows</div>'
         return f'<table class="dataframe">{thead}{tbody}</table>{note}'
-    _SparkDF._show_ascii = _SparkDF.show
-    def _spx_show(self, n=20, truncate=False, vertical=False):
-        if vertical:
-            return self._show_ascii(n, truncate if isinstance(truncate, bool) else True, vertical)
-        try:
-            _spx_display(_SpxHTML(_spx_df_to_html(self, n, truncate)))
-        except Exception:
-            self._show_ascii(n, truncate if isinstance(truncate, bool) else True, vertical)
-    _SparkDF.show = _spx_show
+    # Note: we intentionally do NOT override _SparkDF.show — .show() keeps Spark's
+    # native ASCII output so behavior matches Scala (where .show() can't be
+    # overridden at all). Bare df renders HTML via _repr_html_ below.
     _SparkDF._repr_html_ = lambda self: _spx_df_to_html(self, 50, False)
     # Databricks-style global helper: display(df, 5) → 5-row HTML table.
     # Falls through to IPython.display.display for non-DataFrame args so we
@@ -593,10 +588,9 @@ try {
         e.printStackTrace()
 }
 
-// display(df) — pretty HTML table for Scala (.show() stays ASCII because
-// Scala doesn't allow monkey-patching methods on existing classes).
-// .toDF coerces typed Datasets to Row so .isNullAt / .get(i) are valid.
-def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
+// Pretty HTML table for a Spark DataFrame. .toDF coerces typed Datasets to Row
+// so .isNullAt / .get(i) are valid.
+def _spxDfHtml(df: org.apache.spark.sql.Dataset[_], n: Int): String = {
     val asDf = df.toDF
     val rows = asDf.limit(n).collect()
     val cols = asDf.schema.fieldNames
@@ -606,10 +600,35 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
     val tbody = rows.map(r => "<tr>" + cols.indices.map(i =>
         s"<td>\${if (r.isNullAt(i)) "null" else esc(r.get(i))}</td>"
     ).mkString + "</tr>").mkString
-    val html = s"""<table class="dataframe">$thead$tbody</table><div style="color:#888;font-size:11px;margin-top:4px">showing first \${rows.length} rows</div>"""
+    s"""<table class="dataframe">$thead$tbody</table><div style="color:#888;font-size:11px;margin-top:4px">showing first \${rows.length} rows</div>"""
+}
+
+// display(df) — explicit pretty HTML render (matches Python's display()).
+def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
+    val html = _spxDfHtml(df, n)
     try { almond.display.Html(html).display() }
     catch { case _: Throwable => println(html) } // fallback if Almond API differs
 }
+
+// Auto-render a bare \`df\` (a cell's last expression) as an HTML table — Scala's
+// equivalent of Python's _repr_html_. Almond renders the last value through
+// jvm-repr, so registering a Dataset displayer makes \`df\` alone show the pretty
+// table, bringing Scala in line with Python. NOTE: \`df.show()\` itself stays
+// ASCII — Scala can't override an existing method — so use a bare \`df\` (or
+// display(df)) for the HTML table.
+try {
+    jupyter.Displayers.register(
+        classOf[org.apache.spark.sql.Dataset[_]],
+        new jupyter.Displayer[org.apache.spark.sql.Dataset[_]] {
+            override def display(df: org.apache.spark.sql.Dataset[_]): java.util.Map[String, String] = {
+                val m = new java.util.HashMap[String, String]()
+                try { m.put("text/html", _spxDfHtml(df, 20)) }
+                catch { case _: Throwable => m.put("text/plain", df.toString) }
+                m
+            }
+        }
+    )
+} catch { case _: Throwable => } // jvm-repr API may differ; bare df then falls back to toString
 `;
             }
 
@@ -623,17 +642,36 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                     { silent: false, storeHistory: false }
                 );
 
-                // First connect WITH new libraries can be slow (Ivy downloads the
-                // jars from Maven). Give a generous single window — but do NOT
-                // silently re-wait a second long window: a hung resolve (flaky
-                // Maven network, bad coordinate) never completes, so a second
-                // spin just reads as "Booting Spark… forever". On timeout we
-                // surface an actionable failure and the user reconnects to retry
-                // (Ivy then hits its cache, so the retry is fast).
-                const initTimeoutMs = packages ? 240000 : 120000;
-                const ok = await waitForSparkInitCompletion(initTimeoutMs);
+                // First connect WITH new libraries can be slow: Ivy resolves the
+                // jars from Maven, and over a flaky network the RESOLVE step alone
+                // (not the download) has been seen to take ~250s for a single jar.
+                // Give a generous active window so the common slow resolve just
+                // succeeds here. A 'timeout' is NOT proof of failure (see below) —
+                // distinct from 'error' (bad coordinate / init exception), which
+                // is terminal and fails fast without burning the whole window.
+                const initTimeoutMs = packages ? 300000 : 120000;
+                let status = await waitForSparkInitCompletion(initTimeoutMs);
+
+                // A timed-out resolve may still be alive and finish minutes later.
+                // Surface the slow state honestly but keep watching the init cell:
+                // if the ready marker arrives late, recover to ready instead of
+                // leaving a working kernel falsely flagged failed. Reconnecting
+                // still works too (Ivy then hits its cache). Bounded so a truly
+                // dead resolve eventually gives up.
+                const recovered = status === 'timeout';
+                if (status === 'timeout' && !cancelled) {
+                    setSparkInitPending(false);
+                    setSparkFailed(true);
+                    if (packageListFromInput(packages).length > 0) {
+                        toast.message('Still resolving libraries…', {
+                            description: 'Maven is slow right now. We’ll connect automatically when it finishes — or reconnect to retry (cached, fast).',
+                        });
+                    }
+                    status = await waitForSparkInitRecovery(420000, () => cancelled);
+                }
 
                 if (!cancelled) {
+                    const ok = status === 'ready';
                     // Terminal: the init attempt is over (succeeded or failed) and
                     // the kernel process is alive either way, so always clear the
                     // "Booting Spark…" badge — never leave it spinning on a failure.
@@ -646,6 +684,9 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
                         // a tab reload (same pod) skips re-init.
                         const k = localStorage.getItem(`sparklabx_kernel_${notebookId}`);
                         if (k) localStorage.setItem(`sparklabx_spark_inited_${notebookId}`, k);
+                        if (recovered) {
+                            toast.success('Spark ready', { description: 'Libraries finished resolving.' });
+                        }
                     }
                     // Report the library-load outcome from the ONE place that
                     // actually runs the init cell (covers fresh connect AND
@@ -767,60 +808,95 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
         setKernelDialogOpen(true);
     };
 
-    const waitForSparkInitCompletion = async (timeoutMs: number = 180000): Promise<boolean> => {
+    // One scan of the init cell's accumulated output. Returns the terminal
+    // verdict if reached this tick, else null (still in progress).
+    const scanInitOutput = (): 'ready' | 'error' | null => {
+        // A dependency-resolution failure (Scala's `import $ivy` runs BEFORE the
+        // init template's try/catch, so it never prints the ❌ marker) or any
+        // cell error is terminal. Keep this STRICT: these phrases appear only in
+        // the FINAL failure summary. A bare "not found" shows up mid-resolution
+        // while Ivy probes repos for a coordinate it ultimately DOES find, so
+        // matching it here would false-fail a good package.
+        const FAIL_RE = /unresolved dependenc|module not found|resolutionexception|::\s*unresolved/i;
+        const initOutputs = cellOutputsRef.current['init-spark-context'];
+        let hasError = false;
+        const flatText = (initOutputs || [])
+            .map((o: any) => {
+                if (o?.type === 'error' || o?.ename) {
+                    hasError = true;
+                    return `${o.ename || ''} ${o.evalue || ''}\n${(o.traceback || []).join('\n')}`;
+                }
+                return o?.text ? String(o.text) : JSON.stringify(o?.data ?? '');
+            })
+            .join('\n');
+
+        if (flatText.includes('__SPARKLABX_SPARK_READY__') ||
+            flatText.includes('✅ Spark Session Initialized') ||
+            flatText.includes('✅ Spark Session Active')) {
+            return 'ready';
+        }
+        if (flatText.includes('❌ Spark initialization failed:') || hasError || FAIL_RE.test(flatText)) {
+            return 'error';
+        }
+        return null;
+    };
+
+    // Active wait shown as the "Booting Spark…" badge. Returns:
+    //   'ready'   — Spark came up.
+    //   'error'   — a terminal failure (bad coordinate, init exception).
+    //   'timeout' — neither marker seen before the window closed. NOT proof of
+    //               failure: a slow Ivy resolve over flaky Maven can finish
+    //               minutes later (observed: `resolve 250455ms` for one jar).
+    //               The caller can keep watching (waitForSparkInitRecovery) so
+    //               a late completion recovers instead of false-failing.
+    const waitForSparkInitCompletion = async (
+        timeoutMs: number = 180000,
+    ): Promise<'ready' | 'error' | 'timeout'> => {
         const start = Date.now();
         let sawInitRunning = false;
 
-        // A dependency-resolution failure (Scala's `import $ivy` runs BEFORE the
-        // init template's try/catch, so it never prints the ❌ marker) or any
-        // cell error is terminal — bail immediately instead of polling to the
-        // timeout, which left the "Booting Spark…" badge spinning for minutes.
-        // Keep this STRICT: these phrases appear only in the FINAL failure
-        // summary. A bare "not found" shows up mid-resolution while Ivy probes
-        // repos for a coordinate it ultimately DOES find, so matching it here
-        // would false-fail a good package.
-        const FAIL_RE = /unresolved dependenc|module not found|resolutionexception|::\s*unresolved/i;
-
         while (Date.now() - start < timeoutMs) {
-            const running = runningCellsRef.current;
-            const initOutputs = cellOutputsRef.current['init-spark-context'];
-            const isRunning = running.has('init-spark-context');
+            const isRunning = runningCellsRef.current.has('init-spark-context');
+            if (isRunning) sawInitRunning = true;
 
-            if (isRunning) {
-                sawInitRunning = true;
-            }
-
-            let hasError = false;
-            const flatText = (initOutputs || [])
-                .map((o: any) => {
-                    if (o?.type === 'error' || o?.ename) {
-                        hasError = true;
-                        return `${o.ename || ''} ${o.evalue || ''}\n${(o.traceback || []).join('\n')}`;
-                    }
-                    return o?.text ? String(o.text) : JSON.stringify(o?.data ?? '');
-                })
-                .join('\n');
-
-            if (flatText.includes('__SPARKLABX_SPARK_READY__') ||
-                flatText.includes('✅ Spark Session Initialized') ||
-                flatText.includes('✅ Spark Session Active')) {
-                return true;
-            }
-
-            if (flatText.includes('❌ Spark initialization failed:') || hasError || FAIL_RE.test(flatText)) {
-                return false;
-            }
+            const verdict = scanInitOutput();
+            if (verdict) return verdict;
 
             // Fallback: if we saw init running and it finished with outputs, treat as done.
             // (This keeps UX responsive even if kernels change their output format.)
-            if (!isRunning && sawInitRunning && (initOutputs && initOutputs.length > 0)) {
-                return true;
+            const initOutputs = cellOutputsRef.current['init-spark-context'];
+            if (!isRunning && sawInitRunning && initOutputs && initOutputs.length > 0) {
+                return 'ready';
             }
 
             await new Promise(resolve => setTimeout(resolve, 200));
         }
 
-        return false;
+        return 'timeout';
+    };
+
+    // Background continuation after a 'timeout'. The kernel keeps streaming the
+    // init cell output even after the active window closes, so a slow-but-alive
+    // resolve eventually prints the ready marker — flip back to ready then.
+    // `shouldStop` lets the effect cancel this (unmount / reconnect). Bounded so
+    // a genuinely dead resolve gives up instead of polling forever.
+    const waitForSparkInitRecovery = async (
+        budgetMs: number,
+        shouldStop: () => boolean,
+    ): Promise<'ready' | 'error' | 'timeout'> => {
+        const start = Date.now();
+        while (Date.now() - start < budgetMs) {
+            if (shouldStop()) return 'timeout';
+            const verdict = scanInitOutput();
+            if (verdict) return verdict;
+            // The init cell stopped running with no marker either way → terminal.
+            if (!runningCellsRef.current.has('init-spark-context')) {
+                const outs = cellOutputsRef.current['init-spark-context'];
+                if (outs && outs.length > 0) return 'error';
+            }
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        return 'timeout';
     };
 
     // Ask the backend which coordinates failed to resolve. Spark/Coursier print
@@ -1000,7 +1076,7 @@ def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
             }
 
             devLog('[NotebookPage] Waiting for Spark init to complete...');
-            const sparkInitReady = await waitForSparkInitCompletion();
+            const sparkInitReady = (await waitForSparkInitCompletion()) === 'ready';
 
             devLog('[NotebookPage] Kernel ready!');
             // The auto-init effect owns library load reporting (success/failure
