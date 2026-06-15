@@ -107,6 +107,29 @@ function packageListFromInput(value?: string): string[] {
         .filter(Boolean);
 }
 
+// The system cell that runs the Spark bootstrap; referenced from many places.
+const INIT_CELL_ID = 'init-spark-context';
+
+// Machine-readable marker the init template prints on success. This is the
+// authoritative "Spark is ready" signal in BOTH languages — match on this, not
+// on the human-facing ✅ strings (kept only as a legacy fallback).
+const SPARK_READY_MARKER = '__SPARKLABX_SPARK_READY__';
+
+// Spark-init wait budgets (ms). The package window is generous because the first
+// connect resolves JARs via Ivy/Maven, whose RESOLVE step alone can take minutes
+// on a flaky network; a timeout is "slow", not "failed" (see waitForSparkInit*).
+const SPARK_INIT_TIMEOUT_PACKAGES_MS = 300_000;
+const SPARK_INIT_TIMEOUT_BASE_MS = 120_000;
+const SPARK_INIT_RECOVERY_BUDGET_MS = 420_000;
+const SPARK_INIT_POLL_MS = 200;
+const SPARK_INIT_RECOVERY_POLL_MS = 1_000;
+const KERNEL_READY_TIMEOUT_MS = 60_000;
+
+// Per-notebook localStorage keys (read+write in several places — build once so a
+// typo can't desync the read and write sites).
+const kernelIdKey = (notebookId: string) => `sparklabx_kernel_${notebookId}`;
+const sparkInitedKey = (notebookId: string) => `sparklabx_spark_inited_${notebookId}`;
+
 // Main NotebookPage component
 export default function NotebookPage() {
     const params = useParams();
@@ -280,8 +303,8 @@ export default function NotebookPage() {
         // and stores the kernel_id whose init we observed complete;
         // if the kernel restarts (manual restart or pod respawn), the
         // new kernel_id won't match and init runs again as normal.
-        const currentKernelId = localStorage.getItem(`sparklabx_kernel_${notebookId}`);
-        const initedKernelId = localStorage.getItem(`sparklabx_spark_inited_${notebookId}`);
+        const currentKernelId = localStorage.getItem(kernelIdKey(notebookId));
+        const initedKernelId = localStorage.getItem(sparkInitedKey(notebookId));
         if (currentKernelId && currentKernelId === initedKernelId) {
             devLog(`[NotebookPage] Skipping Spark init — kernel ${currentKernelId} already initialized`);
             setSparkInitPending(false);
@@ -297,7 +320,7 @@ export default function NotebookPage() {
             // If a previous kernel session left outputs for init-spark-context around,
             // `waitForSparkInitCompletion()` could incorrectly return "ready" immediately.
             // Clear it so we only observe outputs from THIS init attempt.
-            clearCellOutput('init-spark-context');
+            clearCellOutput(INIT_CELL_ID);
 
             // Fetch optional path/endpoint, but do not block init on it.
             const pathInfo = await Promise.race([
@@ -393,7 +416,7 @@ print('   Use the Files sidebar 📋 Copy Path button to grab exact URLs.')
                 code = `
 import os
 import traceback
-from pyspark.sql import SparkSession, DataFrame as _SparkDF
+from pyspark.sql import SparkSession
 
 ${pathBlock}# Auto-Init Spark Session (Local)
 try:
@@ -423,52 +446,9 @@ try:
         globals()["spark"] = spark
         print("Spark Session already active")
 
-    # Pretty HTML rendering for DataFrames. Builds HTML straight from collect()
-    # so we don't require pandas in the kernel image (toPandas pulls pandas).
-    # Consistent with the Scala kernel: .show() stays the STOCK ASCII table
-    # (Spark default — same in both languages); HTML comes from a bare df or
-    # display(df) instead.
-    #   - df.show()           → stock ASCII table (unchanged Spark behavior).
-    #   - df (last cell expr) → HTML via _repr_html_ (Jupyter hook).
-    #   - display(df, n)      → HTML table.
-    from html import escape as _spx_esc
-    from IPython.display import display as _spx_display, HTML as _SpxHTML
-    def _spx_df_to_html(self, n=20, truncate=False):
-        cols = self.schema.names
-        rows = self.limit(n).collect()
-        # truncate semantics: False/0/True → no cap (HTML scrolls horizontally);
-        # int N → trim each cell to N chars + "...". Matches Spark's signature
-        # for explicit ints, but defaults to "show everything" since the
-        # narrow-terminal motivation behind Spark's default doesn't apply here.
-        limit = int(truncate) if isinstance(truncate, int) and not isinstance(truncate, bool) else 0
-        def _cell(v):
-            if v is None:
-                return "null"
-            s = str(v)
-            if limit > 0 and len(s) > limit:
-                s = s[:max(1, limit - 3)] + "..."
-            return _spx_esc(s)
-        thead = "<tr>" + "".join(f"<th>{_spx_esc(c)}</th>" for c in cols) + "</tr>"
-        tbody = "".join(
-            "<tr>" + "".join(f"<td>{_cell(r[i])}</td>" for i in range(len(cols))) + "</tr>"
-            for r in rows
-        )
-        note = f'<div style="color:#888;font-size:11px;margin-top:4px">showing first {len(rows)} rows</div>'
-        return f'<table class="dataframe">{thead}{tbody}</table>{note}'
-    # Note: we intentionally do NOT override _SparkDF.show — .show() keeps Spark's
-    # native ASCII output so behavior matches Scala (where .show() can't be
-    # overridden at all). Bare df renders HTML via _repr_html_ below.
-    _SparkDF._repr_html_ = lambda self: _spx_df_to_html(self, 50, False)
-    # Databricks-style global helper: display(df, 5) → 5-row HTML table.
-    # Falls through to IPython.display.display for non-DataFrame args so we
-    # don't break code that expects the stock IPython behavior.
-    def display(_obj, n=20, truncate=False):
-        if isinstance(_obj, _SparkDF):
-            _spx_display(_SpxHTML(_spx_df_to_html(_obj, n, truncate)))
-        else:
-            _spx_display(_obj)
-    globals()["display"] = display
-
+    # DataFrame display helpers (bare df / display() → HTML, .show() → ASCII) are
+    # installed from the kernel image (helpers/01-sparklabx-display.py), not from
+    # here — keeps foreign code out of the frontend bundle.
 ${runtimeConfigLinesPy ? `${runtimeConfigLinesPy}
 ` : ''}
     print("__SPARKLABX_SPARK_READY__")
@@ -582,53 +562,15 @@ try {
         case _: Throwable => // log4j API may differ across versions; ignore
     }
     println(s"✅ Spark Session Active: \${s.version}")
+    println("__SPARKLABX_SPARK_READY__")
 } catch {
     case e: Throwable =>
         println(s"❌ Spark initialization failed: \${e.getMessage}")
         e.printStackTrace()
 }
 
-// Pretty HTML table for a Spark DataFrame. .toDF coerces typed Datasets to Row
-// so .isNullAt / .get(i) are valid.
-def _spxDfHtml(df: org.apache.spark.sql.Dataset[_], n: Int): String = {
-    val asDf = df.toDF
-    val rows = asDf.limit(n).collect()
-    val cols = asDf.schema.fieldNames
-    def esc(v: Any): String = Option(v).map(_.toString).getOrElse("null")
-        .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    val thead = "<tr>" + cols.map(c => s"<th>\${esc(c)}</th>").mkString + "</tr>"
-    val tbody = rows.map(r => "<tr>" + cols.indices.map(i =>
-        s"<td>\${if (r.isNullAt(i)) "null" else esc(r.get(i))}</td>"
-    ).mkString + "</tr>").mkString
-    s"""<table class="dataframe">$thead$tbody</table><div style="color:#888;font-size:11px;margin-top:4px">showing first \${rows.length} rows</div>"""
-}
-
-// display(df) — explicit pretty HTML render (matches Python's display()).
-def display(df: org.apache.spark.sql.Dataset[_], n: Int = 20): Unit = {
-    val html = _spxDfHtml(df, n)
-    try { almond.display.Html(html).display() }
-    catch { case _: Throwable => println(html) } // fallback if Almond API differs
-}
-
-// Auto-render a bare \`df\` (a cell's last expression) as an HTML table — Scala's
-// equivalent of Python's _repr_html_. Almond renders the last value through
-// jvm-repr, so registering a Dataset displayer makes \`df\` alone show the pretty
-// table, bringing Scala in line with Python. NOTE: \`df.show()\` itself stays
-// ASCII — Scala can't override an existing method — so use a bare \`df\` (or
-// display(df)) for the HTML table.
-try {
-    jupyter.Displayers.register(
-        classOf[org.apache.spark.sql.Dataset[_]],
-        new jupyter.Displayer[org.apache.spark.sql.Dataset[_]] {
-            override def display(df: org.apache.spark.sql.Dataset[_]): java.util.Map[String, String] = {
-                val m = new java.util.HashMap[String, String]()
-                try { m.put("text/html", _spxDfHtml(df, 20)) }
-                catch { case _: Throwable => m.put("text/plain", df.toString) }
-                m
-            }
-        }
-    )
-} catch { case _: Throwable => } // jvm-repr API may differ; bare df then falls back to toString
+// DataFrame display helpers (display(df) → HTML, .show() → ASCII) are installed
+// from the kernel image (helpers/display.sc), not from here.
 `;
             }
 
@@ -636,7 +578,7 @@ try {
                 devLog(`[NotebookPage] Injecting initialization code for ${notebookLanguage}`);
                 // Prevent running cells before Spark init finishes (avoids NameError: spark is not defined).
                 executeCell(
-                    'init-spark-context',
+                    INIT_CELL_ID,
                     code,
                     undefined,
                     { silent: false, storeHistory: false }
@@ -649,8 +591,12 @@ try {
                 // succeeds here. A 'timeout' is NOT proof of failure (see below) —
                 // distinct from 'error' (bad coordinate / init exception), which
                 // is terminal and fails fast without burning the whole window.
-                const initTimeoutMs = packages ? 300000 : 120000;
-                let status = await waitForSparkInitCompletion(initTimeoutMs);
+                const initTimeoutMs = packages ? SPARK_INIT_TIMEOUT_PACKAGES_MS : SPARK_INIT_TIMEOUT_BASE_MS;
+                let status = await pollSparkInit({
+                    budgetMs: initTimeoutMs,
+                    intervalMs: SPARK_INIT_POLL_MS,
+                    onStopped: 'ready',
+                });
 
                 // A timed-out resolve may still be alive and finish minutes later.
                 // Surface the slow state honestly but keep watching the init cell:
@@ -667,7 +613,12 @@ try {
                             description: 'Maven is slow right now. We’ll connect automatically when it finishes — or reconnect to retry (cached, fast).',
                         });
                     }
-                    status = await waitForSparkInitRecovery(420000, () => cancelled);
+                    status = await pollSparkInit({
+                        budgetMs: SPARK_INIT_RECOVERY_BUDGET_MS,
+                        intervalMs: SPARK_INIT_RECOVERY_POLL_MS,
+                        onStopped: 'error',
+                        shouldStop: () => cancelled,
+                    });
                 }
 
                 if (!cancelled) {
@@ -682,8 +633,8 @@ try {
                     if (ok) {
                         // Remember which kernel pod we successfully initialized so
                         // a tab reload (same pod) skips re-init.
-                        const k = localStorage.getItem(`sparklabx_kernel_${notebookId}`);
-                        if (k) localStorage.setItem(`sparklabx_spark_inited_${notebookId}`, k);
+                        const k = localStorage.getItem(kernelIdKey(notebookId));
+                        if (k) localStorage.setItem(sparkInitedKey(notebookId), k);
                         if (recovered) {
                             toast.success('Spark ready', { description: 'Libraries finished resolving.' });
                         }
@@ -818,7 +769,7 @@ try {
         // while Ivy probes repos for a coordinate it ultimately DOES find, so
         // matching it here would false-fail a good package.
         const FAIL_RE = /unresolved dependenc|module not found|resolutionexception|::\s*unresolved/i;
-        const initOutputs = cellOutputsRef.current['init-spark-context'];
+        const initOutputs = cellOutputsRef.current[INIT_CELL_ID];
         let hasError = false;
         const flatText = (initOutputs || [])
             .map((o: any) => {
@@ -830,7 +781,9 @@ try {
             })
             .join('\n');
 
-        if (flatText.includes('__SPARKLABX_SPARK_READY__') ||
+        // The sentinel is the canonical "ready" signal in both languages; the ✅
+        // strings are only a legacy fallback for older kernel images.
+        if (flatText.includes(SPARK_READY_MARKER) ||
             flatText.includes('✅ Spark Session Initialized') ||
             flatText.includes('✅ Spark Session Active')) {
             return 'ready';
@@ -841,60 +794,40 @@ try {
         return null;
     };
 
-    // Active wait shown as the "Booting Spark…" badge. Returns:
-    //   'ready'   — Spark came up.
-    //   'error'   — a terminal failure (bad coordinate, init exception).
-    //   'timeout' — neither marker seen before the window closed. NOT proof of
-    //               failure: a slow Ivy resolve over flaky Maven can finish
-    //               minutes later (observed: `resolve 250455ms` for one jar).
-    //               The caller can keep watching (waitForSparkInitRecovery) so
-    //               a late completion recovers instead of false-failing.
-    const waitForSparkInitCompletion = async (
-        timeoutMs: number = 180000,
-    ): Promise<'ready' | 'error' | 'timeout'> => {
+    // Poll the init cell until it reaches a terminal verdict or the budget runs
+    // out. ONE loop serves both the active "Booting Spark…" wait and the slower
+    // background recovery — they differ only in budget, poll interval, and how a
+    // stopped-but-markerless cell is read (optimistically 'ready' during the
+    // active wait; 'error' during recovery, since the markers already had their
+    // chance). A 'timeout' is NOT proof of failure: a slow Ivy/Maven resolve can
+    // finish minutes later (observed: `resolve 250455ms` for one jar), so the
+    // caller can re-poll (recovery) to flip a late completion back to ready.
+    const pollSparkInit = async (opts: {
+        budgetMs: number;
+        intervalMs: number;
+        onStopped: 'ready' | 'error';
+        shouldStop?: () => boolean;
+    }): Promise<'ready' | 'error' | 'timeout'> => {
         const start = Date.now();
         let sawInitRunning = false;
-
-        while (Date.now() - start < timeoutMs) {
-            const isRunning = runningCellsRef.current.has('init-spark-context');
+        while (Date.now() - start < opts.budgetMs) {
+            if (opts.shouldStop?.()) return 'timeout';
+            const isRunning = runningCellsRef.current.has(INIT_CELL_ID);
             if (isRunning) sawInitRunning = true;
 
             const verdict = scanInitOutput();
             if (verdict) return verdict;
 
-            // Fallback: if we saw init running and it finished with outputs, treat as done.
-            // (This keeps UX responsive even if kernels change their output format.)
-            const initOutputs = cellOutputsRef.current['init-spark-context'];
-            if (!isRunning && sawInitRunning && initOutputs && initOutputs.length > 0) {
-                return 'ready';
+            // Cell stopped with outputs but no marker. Active wait: treat as ready
+            // only if we actually observed it run (kernels may change output
+            // format). Recovery: a markerless finish is a failure.
+            const outs = cellOutputsRef.current[INIT_CELL_ID];
+            const stoppedWithOutput = !isRunning && !!outs && outs.length > 0;
+            if (stoppedWithOutput && (opts.onStopped === 'error' || sawInitRunning)) {
+                return opts.onStopped;
             }
 
-            await new Promise(resolve => setTimeout(resolve, 200));
-        }
-
-        return 'timeout';
-    };
-
-    // Background continuation after a 'timeout'. The kernel keeps streaming the
-    // init cell output even after the active window closes, so a slow-but-alive
-    // resolve eventually prints the ready marker — flip back to ready then.
-    // `shouldStop` lets the effect cancel this (unmount / reconnect). Bounded so
-    // a genuinely dead resolve gives up instead of polling forever.
-    const waitForSparkInitRecovery = async (
-        budgetMs: number,
-        shouldStop: () => boolean,
-    ): Promise<'ready' | 'error' | 'timeout'> => {
-        const start = Date.now();
-        while (Date.now() - start < budgetMs) {
-            if (shouldStop()) return 'timeout';
-            const verdict = scanInitOutput();
-            if (verdict) return verdict;
-            // The init cell stopped running with no marker either way → terminal.
-            if (!runningCellsRef.current.has('init-spark-context')) {
-                const outs = cellOutputsRef.current['init-spark-context'];
-                if (outs && outs.length > 0) return 'error';
-            }
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            await new Promise(resolve => setTimeout(resolve, opts.intervalMs));
         }
         return 'timeout';
     };
@@ -924,7 +857,7 @@ try {
     // template's ✅/❌ markers, so waitForSparkInitCompletion can't see it.
     // Returns whether the cell errored and any coordinate(s) parsed from it.
     const scanInitCellErrors = (requested: string[]): { errored: boolean; coords: string[] } => {
-        const outs = (cellOutputsRef.current['init-spark-context'] || []) as any[];
+        const outs = (cellOutputsRef.current[INIT_CELL_ID] || []) as any[];
         let errored = false;
         const parts: string[] = [];
         for (const o of outs) {
@@ -1068,7 +1001,7 @@ try {
             // Wait for kernel to be fully ready (max 60s). The auto-init effect
             // handles init code injection once the kernel reports connected.
             devLog('[NotebookPage] Waiting for kernel to be ready...');
-            const isReady = await waitForReady(60000);
+            const isReady = await waitForReady(KERNEL_READY_TIMEOUT_MS);
 
             if (!isReady) {
                 toast.error('Kernel failed to connect or timed out');
@@ -1076,7 +1009,11 @@ try {
             }
 
             devLog('[NotebookPage] Waiting for Spark init to complete...');
-            const sparkInitReady = (await waitForSparkInitCompletion()) === 'ready';
+            const sparkInitReady = (await pollSparkInit({
+                budgetMs: SPARK_INIT_TIMEOUT_BASE_MS,
+                intervalMs: SPARK_INIT_POLL_MS,
+                onStopped: 'ready',
+            })) === 'ready';
 
             devLog('[NotebookPage] Kernel ready!');
             // The auto-init effect owns library load reporting (success/failure
@@ -1454,7 +1391,7 @@ try {
     const handleRunCell = async (cellId: string, source: string) => {
         // Kernel is running the Spark init cell — queuing user cells during this
         // window can produce confusing "success with no output" results.
-        if (sparkInitPending || runningCells.has('init-spark-context')) {
+        if (sparkInitPending || runningCells.has(INIT_CELL_ID)) {
             toast.info('Kernel is still initializing Spark, please wait a few seconds...');
             return;
         }
@@ -1482,7 +1419,7 @@ try {
         executeCell(cellId, source);
     };
 
-    const sparkInitOutputs = cellOutputs['init-spark-context'] || [];
+    const sparkInitOutputs = cellOutputs[INIT_CELL_ID] || [];
     const sparkInitLogText = sparkInitOutputs.map((o: any) => {
         if (o?.type === 'stream' && typeof o?.text === 'string') return o.text;
         if (o?.type === 'error') {
@@ -1697,7 +1634,7 @@ try {
                             <div className="pt-2">
                                 <div className="text-xs">
                                     <p className="mb-2 text-muted-foreground">Kernel Status:</p>
-                                    <ConnectionStatusBadge status={connectionStatus} deadReason={deadReason} sparkInitializing={sparkInitPending || runningCells.has('init-spark-context')} sparkFailed={sparkFailed} />
+                                    <ConnectionStatusBadge status={connectionStatus} deadReason={deadReason} sparkInitializing={sparkInitPending || runningCells.has(INIT_CELL_ID)} sparkFailed={sparkFailed} />
 
                                     {/* Pod spawn / terminate progress (k8s_per_user mode).
                                         Shown for non-ready phases so user knows the pod is doing
@@ -1888,7 +1825,7 @@ try {
                                 }
                             }}
                         >
-                            <ConnectionStatusBadge status={connectionStatus} deadReason={deadReason} compact={compactToolbar} sparkInitializing={sparkInitPending || runningCells.has('init-spark-context')} sparkFailed={sparkFailed} />
+                            <ConnectionStatusBadge status={connectionStatus} deadReason={deadReason} compact={compactToolbar} sparkInitializing={sparkInitPending || runningCells.has(INIT_CELL_ID)} sparkFailed={sparkFailed} />
                         </div>
                     </div>
 
@@ -1947,7 +1884,7 @@ try {
                                         if (isExecuting) {
                                             handleInterrupt();
                                         } else {
-                                            if (sparkInitPending || runningCells.has('init-spark-context')) {
+                                            if (sparkInitPending || runningCells.has(INIT_CELL_ID)) {
                                                 toast.info('Kernel is still initializing Spark, please wait a few seconds...');
                                                 return;
                                             }
@@ -2110,7 +2047,7 @@ try {
                                                 isRunning={runningCells.has(cell.id)}
                                                 executionStartedAtMs={runningCellStarts[cell.id]}
                                                 isPending={pendingCells.has(cell.id)}
-                                                kernelBusy={sparkInitPending || runningCells.has('init-spark-context')}
+                                                kernelBusy={sparkInitPending || runningCells.has(INIT_CELL_ID)}
                                                 // Raw kernel exec_count — same as standard Jupyter. May start at
                                                 // a number > 1 because hidden init cells consumed earlier counters.
                                                 // Monotonic, never negative, matches kernel state exactly.
@@ -2356,7 +2293,7 @@ try {
                                 // Push into state so the auto-init effect rebuilds init code
                                 // with the new package list once the kernel comes back idle.
                                 setSparkPackages(packages);
-                                clearCellOutput('init-spark-context');
+                                clearCellOutput(INIT_CELL_ID);
                                 // In-pod restart — no pod respawn. restart() clears the
                                 // "already inited" marker, so when the kernel reports idle
                                 // again the auto-init effect re-runs the init cell with the
