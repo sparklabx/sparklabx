@@ -176,9 +176,50 @@ class AuthService {
     await this.checkAuthStatus(); // populates the user via /admin/me
   }
 
-  async getAuthConfig(): Promise<{ oidc: { enabled: boolean; provider_name: string } }> {
+  // `oidc` (and its fields) are optional: older backends or a stripped config may
+  // omit them, so callers must optional-chain — the type reflects that reality.
+  async getAuthConfig(): Promise<{ oidc?: { enabled?: boolean; provider_name?: string } }> {
     const response = await axios.get(`${API_BASE}/auth/config`);
     return response.data;
+  }
+
+  // Full URL to kick off the backend OIDC flow. Goes through API_BASE so it works
+  // wherever the app/API is mounted (not a hardcoded root path).
+  oidcStartUrl(): string {
+    return `${API_BASE}/auth/oidc/start`;
+  }
+
+  // Silently refresh the backend's stored OIDC passthrough tokens via a hidden
+  // iframe (prompt=none). Resolves true if the IdP renewed without interaction,
+  // false otherwise (IdP session ended, or third-party cookies blocked). Callers
+  // treat false as "leave it" — the user re-logs in only when they actually need
+  // to. Keeps the per-kernel Trino/SSO passthrough alive without any user action.
+  silentRenewOIDC(timeoutMs = 12000): Promise<boolean> {
+    return new Promise((resolve) => {
+      if (typeof window === 'undefined' || typeof document === 'undefined') {
+        resolve(false);
+        return;
+      }
+      const iframe = document.createElement('iframe');
+      iframe.style.display = 'none';
+      let done = false;
+      const finish = (result: boolean) => {
+        if (done) return;
+        done = true;
+        window.removeEventListener('message', onMsg);
+        clearTimeout(timer);
+        iframe.remove();
+        resolve(result);
+      };
+      const onMsg = (e: MessageEvent) => {
+        if (e.origin !== window.location.origin) return;
+        if (e.data && e.data.type === 'sparklabx-oidc') finish(!!e.data.ok);
+      };
+      const timer = window.setTimeout(() => finish(false), timeoutMs);
+      window.addEventListener('message', onMsg);
+      iframe.src = `${this.oidcStartUrl()}?silent=1`;
+      document.body.appendChild(iframe);
+    });
   }
 
   private clearAuth() {

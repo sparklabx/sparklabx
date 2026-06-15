@@ -16,15 +16,14 @@ import (
 	"github.com/sparklabx/sparklabx/backend/internal/database"
 )
 
-// MintKernelToken issues a short-lived bearer token the kernel uses to call
-// back to GET /kernel/oidc-token for a freshly-refreshed OIDC access token.
-// It carries admin_id so the standard RequireAdmin middleware authenticates it
-// as the user — scoped to the user's own kernel, same trust as the user's own
-// session token.
+// MintKernelToken issues a short-lived bearer token the kernel uses to call back
+// to GET /kernel/oidc-token for a freshly-refreshed OIDC access token. The
+// typ="kernel" claim restricts it to the RequireKernelToken guard only — it is
+// NOT a session token and cannot reach the admin API, so a token extracted from
+// the kernel pod's env can do nothing but fetch that user's own OIDC token.
 func (h *AuthHandler) MintKernelToken(adminID string) (string, error) {
 	claims := jwt.MapClaims{
 		"admin_id": adminID,
-		"role":     "admin",
 		"typ":      "kernel",
 		"exp":      time.Now().Add(12 * time.Hour).Unix(),
 		"iat":      time.Now().Unix(),
@@ -34,22 +33,43 @@ func (h *AuthHandler) MintKernelToken(adminID string) (string, error) {
 
 // KernelOIDCToken returns a currently-valid OIDC access token for the calling
 // user, refreshed server-side if needed. The kernel's data helpers (e.g.
-// trino()) call this per query so they never hold an expired token — the
-// refresh token never leaves the backend. Returns an empty token (200) for
-// non-SSO logins; callers then simply skip the Authorization.
+// trino()) call this only when their cached access token is stale, so the
+// refresh token never leaves the backend. The response carries:
+//   - access_token: the token (empty if none available)
+//   - expires_in:   seconds until it expires, so the kernel can cache it
+//   - sso_expired:  true when the user IS an SSO user but their IdP session
+//     ended (refresh failed) — lets the helper say "re-login"
+//     instead of surfacing a cryptic downstream auth error.
 func (h *AuthHandler) KernelOIDCToken(c *gin.Context) {
 	adminID := c.GetString("admin_id")
 	if adminID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	token, err := h.ValidOIDCAccessToken(adminID)
+	token, expiresIn, ssoExpired, err := h.ValidOIDCAccessToken(adminID)
 	if err != nil {
 		log.Warn().Err(err).Str("admin_id", adminID).Msg("kernel oidc-token fetch failed")
-		c.JSON(http.StatusOK, gin.H{"access_token": ""})
-		return
 	}
-	c.JSON(http.StatusOK, gin.H{"access_token": token})
+	c.JSON(http.StatusOK, gin.H{
+		"access_token": token,
+		"expires_in":   expiresIn,
+		"sso_expired":  ssoExpired,
+	})
+}
+
+// IsOIDCUser reports whether the admin has ever stored OIDC tokens (i.e. logged
+// in via SSO). Used to decide whether to wire SSO passthrough into their kernel
+// — true even when the stored token is currently expired, so the kernel can
+// reach the backend and report an expired session clearly.
+func (h *AuthHandler) IsOIDCUser(adminID string) bool {
+	if h.iam == nil {
+		return false
+	}
+	var present bool
+	err := database.GetDB().QueryRow(
+		`SELECT oidc_access_token_enc <> '' FROM admins WHERE id = $1`, adminID,
+	).Scan(&present)
+	return err == nil && present
 }
 
 // OIDC token broker — retains the IdP access/refresh tokens from an SSO login
@@ -87,46 +107,56 @@ func (h *AuthHandler) storeOIDCTokens(adminID, accessToken, refreshToken string,
 
 // ValidOIDCAccessToken returns a currently-valid OIDC access token for the
 // admin, refreshing via the stored refresh token if it has (nearly) expired.
-// Returns ("", nil) when there's no usable stored token (logged in via
-// password/Google/Microsoft, or refresh failed) — callers treat that as
-// "no token, skip passthrough" rather than a hard error.
-func (h *AuthHandler) ValidOIDCAccessToken(adminID string) (string, error) {
+// Returns:
+//   - token:      the access token ("" when unavailable)
+//   - expiresIn:  seconds until it expires (so the kernel can cache it)
+//   - ssoExpired: true when the user HAS an OIDC login but it can no longer be
+//     refreshed (IdP session ended) — distinct from a non-SSO user,
+//     so the kernel can prompt a re-login instead of a vague error
+//
+// A non-SSO user (password/Google/Microsoft) returns ("", 0, false, nil).
+func (h *AuthHandler) ValidOIDCAccessToken(adminID string) (token string, expiresIn int, ssoExpired bool, err error) {
 	if h.iam == nil {
-		return "", nil
+		return "", 0, false, nil
 	}
 	var accEnc, refEnc string
 	var expiresAt sql.NullTime
-	err := database.GetDB().QueryRow(
+	err = database.GetDB().QueryRow(
 		`SELECT oidc_access_token_enc, oidc_refresh_token_enc, oidc_token_expires_at FROM admins WHERE id = $1`,
 		adminID,
 	).Scan(&accEnc, &refEnc, &expiresAt)
 	if err != nil || accEnc == "" {
-		return "", nil // no stored token
+		return "", 0, false, nil // non-SSO user / no stored token
 	}
 
 	// Still valid (30s safety margin)? Use it as-is.
 	if expiresAt.Valid && time.Now().Add(30*time.Second).Before(expiresAt.Time) {
-		return h.iam.DecryptSecret(accEnc)
+		tok, derr := h.iam.DecryptSecret(accEnc)
+		if derr != nil {
+			return "", 0, true, derr // SSO user but token unusable
+		}
+		return tok, int(time.Until(expiresAt.Time).Seconds()), false, nil
 	}
 
-	// Expired/expiring — refresh if we can.
+	// Expired/expiring — refresh if we can. From here on the user IS an SSO user,
+	// so any failure is an expired SSO session (ssoExpired=true), not "no token".
 	if refEnc == "" {
-		return "", nil
+		return "", 0, true, nil
 	}
-	refreshToken, err := h.iam.DecryptSecret(refEnc)
-	if err != nil {
-		return "", err
+	refreshToken, derr := h.iam.DecryptSecret(refEnc)
+	if derr != nil {
+		return "", 0, true, derr
 	}
-	access, newRefresh, expiresIn, err := h.refreshOIDCToken(refreshToken)
-	if err != nil {
-		log.Warn().Err(err).Str("admin_id", adminID).Msg("OIDC token refresh failed")
-		return "", nil // don't fail the kernel spawn over a refresh miss
+	access, newRefresh, exp, rerr := h.refreshOIDCToken(refreshToken)
+	if rerr != nil {
+		log.Warn().Err(rerr).Str("admin_id", adminID).Msg("OIDC token refresh failed")
+		return "", 0, true, nil // IdP session ended — caller prompts re-login
 	}
 	if newRefresh == "" {
 		newRefresh = refreshToken // some IdPs don't rotate the refresh token
 	}
-	h.storeOIDCTokens(adminID, access, newRefresh, expiresIn)
-	return access, nil
+	h.storeOIDCTokens(adminID, access, newRefresh, exp)
+	return access, exp, false, nil
 }
 
 // refreshOIDCToken exchanges a refresh token for a fresh access token at the IdP.

@@ -82,11 +82,13 @@ func main() {
 	// logins, in which case passthrough is simply unavailable.
 	oidcTokenResolver := func(adminID string) (string, error) {
 		// Inject a short-lived CALLBACK token, not the OIDC token itself: the
-		// kernel exchanges it for a fresh OIDC token per query via
+		// kernel exchanges it for a fresh OIDC token (caching it until expiry) via
 		// /kernel/oidc-token, so a long session never holds an expired token and
-		// the refresh token stays server-side. Only mint it for users who
-		// actually have a stored OIDC token (SSO login).
-		if t, _ := authHandler.ValidOIDCAccessToken(adminID); t == "" {
+		// the refresh token stays server-side. Mint it for any SSO user — even if
+		// their token is currently expired — so the kernel can reach the backend
+		// and surface an "SSO session expired, re-login" message instead of a
+		// cryptic downstream auth error. Non-SSO logins get no passthrough.
+		if !authHandler.IsOIDCUser(adminID) {
 			return "", nil
 		}
 		return authHandler.MintKernelToken(adminID)
@@ -249,10 +251,12 @@ func main() {
 			kernelMeta.GET("/usage", localKernelHandler.Usage)
 			kernelMeta.GET("/resource-presets", localKernelHandler.ResourcePresets)
 			kernelMeta.GET("/library-errors", localKernelHandler.LibraryErrors)
-			// Kernel fetches a fresh OIDC token here (in-session refresh for
-			// SSO token passthrough to external services like Trino).
-			kernelMeta.GET("/oidc-token", authHandler.KernelOIDCToken)
 		}
+		// Kernel fetches a fresh OIDC token here (in-session refresh for SSO token
+		// passthrough to external services like Trino). Authenticated by the
+		// short-lived kernel token (typ="kernel"), NOT a full admin session — so
+		// the token living in the kernel pod's env can only reach this endpoint.
+		v1.GET("/kernel/oidc-token", middleware.RequireKernelToken(cfg), authHandler.KernelOIDCToken)
 	}
 
 	addr := ":" + cfg.ServicePort

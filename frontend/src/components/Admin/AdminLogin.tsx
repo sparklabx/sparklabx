@@ -219,7 +219,7 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
           {/* Generic enterprise SSO — shown only when the backend reports OIDC
               is configured (env-driven, no rebuild to toggle). */}
           {oidcEnabled && (
-            <button onClick={() => { window.location.href = '/api/v1/auth/oidc/start'; }} disabled={loading} className={btnClass}>
+            <button onClick={() => { window.location.href = authService.oidcStartUrl(); }} disabled={loading} className={btnClass}>
               <SSOIcon />
               <span className={btnTextClass}>Sign in with {oidcName}</span>
             </button>
