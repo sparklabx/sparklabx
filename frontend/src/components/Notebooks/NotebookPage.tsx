@@ -1846,13 +1846,19 @@ try {
 
 
                     <div className="flex items-center gap-2 shrink-0">
-                        {/* Spark UI — only meaningful once the kernel is up */}
-                        {connectionStatus === 'connected' && notebookId && (
+                        {/* Live kernel CPU/RAM — hidden unless usage is available.
+                            Kept LEFTMOST in this right-anchored group so that when
+                            it appears/disappears it only changes the group's left
+                            edge — the buttons to its right (Spark UI, Libraries…)
+                            stay put instead of jumping. */}
+                        <ResourceUsageBadge enabled={connectionStatus === 'connected'} compact={compactToolbar} />
+
+                        {/* Spark UI — only once Spark is actually up (its :4040 UI
+                            doesn't exist yet while booting, and showing it then
+                            collides with the wide "Booting Spark…" status). */}
+                        {connectionStatus === 'connected' && notebookId && !sparkInitPending && !sparkFailed && !runningCells.has(INIT_CELL_ID) && (
                             <SparkUIDialog notebookId={notebookId} compact={compactToolbar} />
                         )}
-
-                        {/* Live kernel CPU/RAM — hidden unless usage is available */}
-                        <ResourceUsageBadge enabled={connectionStatus === 'connected'} compact={compactToolbar} />
 
                         {/* Libraries button */}
                         {connectionStatus === 'connected' && (
