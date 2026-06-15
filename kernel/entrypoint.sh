@@ -133,6 +133,48 @@ print(f"kernel.json patched: {len(jvm_props)} JVM -D props (mode={mode})")
 PYEOF
 fi
 
+# ── 3b. Ensure the Spark-on-Java-17 --add-opens on the Scala (Almond) kernel ──
+# PySpark gets these automatically via spark-class; Almond launches its own JVM,
+# so without the full set, date/time ops fail with "cannot access
+# sun.util.calendar.ZoneInfo". Idempotent — only adds what's missing.
+if [ -f "$SCALA_KERNEL_JSON" ]; then
+  python3 - "$SCALA_KERNEL_JSON" <<'PYEOF'
+import json, sys
+p = sys.argv[1]
+needed = [
+    "--add-opens=java.base/java.lang=ALL-UNNAMED",
+    "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+    "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+    "--add-opens=java.base/java.io=ALL-UNNAMED",
+    "--add-opens=java.base/java.net=ALL-UNNAMED",
+    "--add-opens=java.base/java.nio=ALL-UNNAMED",
+    "--add-opens=java.base/java.util=ALL-UNNAMED",
+    "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+    "--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED",
+    "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+    "--add-opens=java.base/sun.nio.cs=ALL-UNNAMED",
+    "--add-opens=java.base/sun.security.action=ALL-UNNAMED",
+    "--add-opens=java.base/sun.util.calendar=ALL-UNNAMED",
+    "--add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED",
+]
+try:
+    with open(p) as f:
+        k = json.load(f)
+except Exception as e:
+    print(f"scala kernel.json add-opens skipped: {e}")
+    raise SystemExit(0)
+argv = k.get("argv", [])
+have = set(argv)
+missing = [o for o in needed if o not in have]
+if missing:
+    argv[1:1] = missing  # insert right after the java binary
+    k["argv"] = argv
+    with open(p, "w") as f:
+        json.dump(k, f, indent=2)
+print(f"scala kernel.json: +{len(missing)} add-opens (Java 17 Spark)")
+PYEOF
+fi
+
 # ── 4. Patch predef.sc for lazy val spark (Almond Scala kernel) ───────────────
 PREDEF_FILE="/root/predef.sc"
 if [ -f "$PREDEF_FILE" ] && [ -n "$AWS_ACCESS_KEY_ID" ]; then
