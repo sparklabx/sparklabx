@@ -4,6 +4,7 @@ import (
 	cryptorand "crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,8 +15,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/rs/zerolog/log"
-
-	"github.com/sparklabx/sparklabx/backend/internal/database"
 )
 
 // Generic OIDC SSO — provider-agnostic backend authorization-code flow.
@@ -233,41 +232,22 @@ func (h *AuthHandler) OIDCCallback(c *gin.Context) {
 		return
 	}
 
-	db := database.GetDB()
-	// Same allowlist gate as the Google/Microsoft flows.
-	if allowed, anyRule := IsEmailAllowed(db, info.Email); !allowed {
-		if !anyRule {
-			h.oidcRedirectError(c, "SSO login is not configured. Contact an administrator.")
-		} else {
-			h.oidcRedirectError(c, "this email is not permitted to login")
-		}
-		return
-	}
-
 	name := info.Name
 	if name == "" {
 		name = info.PreferredUsername
 	}
-	adminID, adminUsername, adminRole, err := upsertOAuthAdmin(db, info.Email, name)
+	// Shared tail with the Google/Microsoft flows (allowlist → upsert → app JWT).
+	appToken, _, _, adminRole, err := h.completeOAuthLogin(info.Email, name)
 	if err != nil {
-		log.Error().Err(err).Str("email", info.Email).Msg("OIDC admin upsert failed")
-		h.oidcRedirectError(c, "failed to create account")
-		return
-	}
-
-	claims := jwt.MapClaims{
-		"admin_id":       adminID,
-		"admin_username": adminUsername,
-		"admin_role":     adminRole,
-		"email":          info.Email,
-		"name":           name,
-		"role":           "admin",
-		"exp":            time.Now().Add(time.Duration(h.cfg.JWTExpireMinutes) * time.Minute).Unix(),
-		"iat":            time.Now().Unix(),
-	}
-	appToken, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(h.cfg.JWTSecretKey))
-	if err != nil {
-		h.oidcRedirectError(c, "failed to issue token")
+		switch {
+		case errors.Is(err, errOAuthNotConfigured):
+			h.oidcRedirectError(c, "SSO login is not configured. Contact an administrator.")
+		case errors.Is(err, errOAuthNotPermitted):
+			h.oidcRedirectError(c, "this email is not permitted to login")
+		default:
+			log.Error().Err(err).Str("email", info.Email).Msg("OIDC login failed")
+			h.oidcRedirectError(c, "login failed")
+		}
 		return
 	}
 
