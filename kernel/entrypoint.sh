@@ -187,105 +187,36 @@ print(f"predef.sc patched (mode={mode})")
 PYEOF
 fi
 
-# ── 4c. trino() helper for Scala notebooks (Almond predef) ───────────────────
-# Same idea as the Python helper below, for the Scala kernel: fetch a fresh OIDC
-# token from the backend per call and read Trino over JDBC. Idempotent.
-if [ -f "$PREDEF_FILE" ] && ! grep -q "def trino" "$PREDEF_FILE" 2>/dev/null; then
-cat >> "$PREDEF_FILE" <<'SCALA'
+# ── 4b. Notebook helpers (trino(), DataFrame display) for Python + Scala ─────
+# Helpers are committed source files (kernel/helpers/) COPY'd into the image and
+# installed here — see those files for the per-helper docs. Python files (*.py)
+# become IPython startup scripts; Scala files (*.sc) are appended to the Almond
+# predef. Drop a new file in kernel/helpers/ to add another helper — no edits
+# here. The Trino driver is NOT bundled (orgs pick their own version): add the
+# "Trino" connector preset (io.trino:trino-jdbc:<ver>) when connecting.
+HELPERS_DIR="${HELPERS_DIR:-/home/exam/helpers}"
 
-// SparkLabX: trino() — query Trino with your SSO identity (no password).
-// Fetches a fresh OIDC token from the backend per call (in-session refresh).
-// Requires the Trino JDBC driver on the classpath (add the "Trino" preset).
-def trino(query: String, url: String = null): org.apache.spark.sql.DataFrame = {
-  val u = Option(url).getOrElse(sys.env.getOrElse("TRINO_URL",
-    throw new RuntimeException("No Trino URL — pass url=... or set TRINO_URL")))
-  val token: String =
-    (sys.env.get("SPARKLABX_API_URL"), sys.env.get("SPARKLABX_KERNEL_TOKEN")) match {
-      case (Some(api), Some(kt)) =>
-        try {
-          val c = new java.net.URL(api.stripSuffix("/") + "/api/v1/kernel/oidc-token")
-            .openConnection().asInstanceOf[java.net.HttpURLConnection]
-          c.setRequestProperty("Authorization", "Bearer " + kt)
-          c.setConnectTimeout(10000); c.setReadTimeout(10000)
-          val body = scala.io.Source.fromInputStream(c.getInputStream, "UTF-8").mkString
-          val rx = "\"access_token\"\\s*:\\s*\"([^\"]*)\"".r
-          rx.findFirstMatchIn(body).map(_.group(1)).filter(_.nonEmpty).orNull
-        } catch { case _: Throwable => null }
-      case _ => null
-    }
-  var r = spark.read.format("jdbc").option("url", u).option("driver", "io.trino.jdbc.TrinoDriver")
-  if (token != null) r = r.option("accessToken", token)
-  val q = query.trim
-  r = if (q.toLowerCase.startsWith("select")) r.option("query", q) else r.option("dbtable", q)
-  r.load()
-}
-SCALA
-echo "trino() helper installed for Scala (Almond) kernels"
+# Python: copy every helper into this user's IPython startup dir (HOME-derived so
+# it works whatever user the kernel runs as). Overwrite each start = no drift.
+IPY_STARTUP="${HOME:-/root}/.ipython/profile_default/startup"
+if ls "$HELPERS_DIR"/*.py >/dev/null 2>&1; then
+  mkdir -p "$IPY_STARTUP"
+  cp "$HELPERS_DIR"/*.py "$IPY_STARTUP/"
+  echo "Python notebook helpers installed: $(ls "$HELPERS_DIR"/*.py | wc -l | tr -d ' ') file(s)"
 fi
 
-# ── 4b. trino() helper for Python notebooks (IPython startup) ─────────────────
-# Removes the JDBC boilerplate: trino("SELECT …") / trino("catalog.schema.table").
-# Uses the SSO token injected by the backend (OIDC_ACCESS_TOKEN) so the user
-# queries Trino as themselves — no password in the notebook. The driver itself
-# is NOT bundled here (orgs pick their own version): add the "Trino" connector
-# preset (io.trino:trino-jdbc:<ver>) when connecting and this helper uses it.
-IPY_STARTUP=/root/.ipython/profile_default/startup
-mkdir -p "$IPY_STARTUP"
-cat > "$IPY_STARTUP/00-sparklabx-trino.py" <<'PYEOF'
-import os as _os
-
-
-def _sparklabx_oidc_token():
-    """Fetch a FRESH OIDC access token from the backend (in-session refresh).
-
-    The backend refreshes it from the server-side refresh token, so a long
-    notebook session never hits an expired token — and the refresh token never
-    enters the kernel. Returns None for non-SSO logins or if unreachable.
-    """
-    import json as _json
-    import urllib.request as _u
-    api = _os.environ.get("SPARKLABX_API_URL")
-    tok = _os.environ.get("SPARKLABX_KERNEL_TOKEN")
-    if not api or not tok:
-        return None
-    req = _u.Request(api.rstrip("/") + "/api/v1/kernel/oidc-token",
-                     headers={"Authorization": "Bearer " + tok})
-    try:
-        with _u.urlopen(req, timeout=10) as resp:
-            return _json.loads(resp.read().decode()).get("access_token") or None
-    except Exception:
-        return None
-
-
-def trino(query, url=None):
-    """Query Trino with your SSO identity (no password).
-
-    query : a SQL statement ("SELECT ...") or a fully-qualified table name
-            "catalog.schema.table".
-    url   : jdbc:trino://host:port?SSL=true (defaults to the TRINO_URL env).
-
-    Requires the Trino JDBC driver on the classpath — add the "Trino" connector
-    preset when connecting the kernel.
-    """
-    from pyspark.sql import SparkSession
-    spark = SparkSession.builder.getOrCreate()
-    u = url or _os.environ.get("TRINO_URL")
-    if not u:
-        raise ValueError("No Trino URL — pass url=... or set TRINO_URL")
-    reader = (spark.read.format("jdbc")
-              .option("url", u)
-              .option("driver", "io.trino.jdbc.TrinoDriver"))
-    token = _sparklabx_oidc_token()   # fresh per call — no stale/expired token
-    if token:
-        reader = reader.option("accessToken", token)
-    q = query.strip()
-    if q.lower().startswith("select"):
-        reader = reader.option("query", q)
-    else:
-        reader = reader.option("dbtable", q)
-    return reader.load()
-PYEOF
-echo "trino() helper installed for Python kernels"
+# Scala: concatenate every *.sc into ONE managed block on the Almond predef.
+# Strip the previous block first so a rebuilt image refreshes the helpers even
+# on a persisted predef.sc (update-safe, unlike an append-once guard).
+if [ -f "$PREDEF_FILE" ] && ls "$HELPERS_DIR"/*.sc >/dev/null 2>&1; then
+  sed -i '/SPARKLABX-HELPERS-START/,/SPARKLABX-HELPERS-END/d' "$PREDEF_FILE"
+  {
+    echo "// SPARKLABX-HELPERS-START (auto — managed by entrypoint.sh, do not edit)"
+    cat "$HELPERS_DIR"/*.sc
+    echo "// SPARKLABX-HELPERS-END"
+  } >> "$PREDEF_FILE"
+  echo "Scala notebook helpers installed: $(ls "$HELPERS_DIR"/*.sc | wc -l | tr -d ' ') file(s)"
+fi
 
 # ── 5. Start Jupyter Kernel Gateway ───────────────────────────────────────────
 jupyter kernelgateway \
