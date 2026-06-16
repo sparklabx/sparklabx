@@ -44,10 +44,9 @@ services:
       - TRINO_URL=${TRINO_URL}
       - TRINO_AUTH=${TRINO_AUTH:-idp-passthrough}
       - CONNECTOR_ISSUER=${CONNECTOR_ISSUER:-sparklabx}
-      # Connector signing key. Leave blank: the backend generates one on first
-      # boot and persists it in Postgres (app_secrets), so the JWKS kid is stable
-      # across restarts with no extra volume. Set to pin your own PEM.
-      - CONNECTOR_JWT_PRIVATE_KEY=${CONNECTOR_JWT_PRIVATE_KEY:-}
+      # Connector signing key is generated on first boot and persisted in Postgres
+      # (app_secrets) — stable across restarts, no volume. Set CONNECTOR_JWT_PRIVATE_KEY
+      # only to pin your own PEM.
       - KERNEL_CALLBACK_URL=${KERNEL_CALLBACK_URL:-http://sparklabx-backend:10000}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}

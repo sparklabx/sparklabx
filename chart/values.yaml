@@ -229,8 +229,9 @@ trino:
 # ─────────────────────────────────────────────────────────────
 connector:
   issuer: "sparklabx"     # token `iss`; must equal the connector's required-issuer
-  # RSA signing key (PEM). Leave blank to auto-generate a stable key into the
-  # chart-managed Secret (reused across upgrades). Set only to pin your own key.
+  # RSA signing key (PEM). Leave blank — the backend generates one on first boot
+  # and persists it in Postgres (stable across restarts, shared by all replicas).
+  # Set only to pin your own key.
   jwtPrivateKey: ""
 
 # ─────────────────────────────────────────────────────────────
