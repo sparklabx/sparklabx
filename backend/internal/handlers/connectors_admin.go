@@ -44,9 +44,11 @@ type createConnectorReq struct {
 	Auth     string `json:"auth"`
 	Username string `json:"username"`
 	Password string `json:"password"`
+	Scope    string `json:"scope"` // "shared" (org-wide, superadmin only) | "personal" (default)
 }
 
-// CreateConnector adds a connector. RequireSuperAdmin.
+// CreateConnector adds a connector. Any admin may add a personal source; only a
+// superadmin may add a shared (org-wide) one.
 func (h *AuthHandler) CreateConnector(c *gin.Context) {
 	var req createConnectorReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -103,10 +105,22 @@ func (h *AuthHandler) CreateConnector(c *gin.Context) {
 		}
 	}
 
+	// Scope: personal (default) is owned by the creator; shared is org-wide and
+	// superadmin-only.
+	adminID := c.GetString("admin_id")
+	ownerID := adminID
+	if req.Scope == "shared" {
+		if c.GetString("admin_role") != "superadmin" {
+			c.JSON(http.StatusForbidden, gin.H{"error": "only a superadmin can create a shared data source"})
+			return
+		}
+		ownerID = ""
+	}
+
 	_, err := database.GetDB().Exec(
-		`INSERT INTO connectors (id, type, label, url, auth, username, password_enc, added_by)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		req.ID, req.Type, req.Label, req.URL, req.Auth, username, passwordEnc, c.GetString("admin_id"),
+		`INSERT INTO connectors (id, type, label, url, auth, username, password_enc, added_by, owner_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		req.ID, req.Type, req.Label, req.URL, req.Auth, username, passwordEnc, adminID, ownerID,
 	)
 	if err != nil {
 		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
@@ -121,21 +135,29 @@ func (h *AuthHandler) CreateConnector(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"id": req.ID})
 }
 
-// DeleteConnector removes a connector. RequireSuperAdmin. The env seed is refused.
+// DeleteConnector removes a connector. The owner may delete their personal
+// source; a superadmin may delete a shared one. The env seed is refused.
 func (h *AuthHandler) DeleteConnector(c *gin.Context) {
 	id := c.Param("id")
 	if id == envSeedID {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "the TRINO_URL connector is configured via env and cannot be deleted here"})
 		return
 	}
-	res, err := database.GetDB().Exec(`DELETE FROM connectors WHERE id = $1`, id)
-	if err != nil {
-		log.Error().Err(err).Str("id", id).Msg("delete connector failed")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete connector"})
+	var owner string
+	if err := database.GetDB().QueryRow(`SELECT owner_id FROM connectors WHERE id = $1`, id).Scan(&owner); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "connector not found"})
 		return
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "connector not found"})
+	adminID := c.GetString("admin_id")
+	isSuper := c.GetString("admin_role") == "superadmin"
+	allowed := (owner != "" && owner == adminID) || (owner == "" && isSuper)
+	if !allowed {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you can only remove your own data sources"})
+		return
+	}
+	if _, err := database.GetDB().Exec(`DELETE FROM connectors WHERE id = $1`, id); err != nil {
+		log.Error().Err(err).Str("id", id).Msg("delete connector failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete connector"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"deleted": id})

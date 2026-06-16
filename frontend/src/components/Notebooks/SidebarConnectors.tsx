@@ -1,12 +1,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { Database, ChevronRight, ChevronDown, Table2, Loader2, RefreshCw, ShieldAlert, Plus, Trash2, Terminal } from 'lucide-react';
+import { Database, ChevronRight, ChevronDown, Table2, Loader2, RefreshCw, ShieldAlert, Plus, Trash2, Terminal, Globe, Lock } from 'lucide-react';
 import { TrinoIcon } from './parts/TrinoIcon';
 import { PostgresIcon } from './parts/PostgresIcon';
 import { MysqlIcon } from './parts/MysqlIcon';
 import { AddConnectorDialog } from './AddConnectorDialog';
-import { useCurrentUser } from '@/hooks/useCurrentUser';
 
 // Data-source manager. Lists the configured connectors (Trino, Postgres, …) and,
 // for browsable ones, a lazy catalog tree of whatever depth the backend reports
@@ -22,15 +21,16 @@ export type Connector = {
     auth: string;
     browsable?: boolean;
     deletable?: boolean;
+    scope?: 'shared' | 'personal';
 };
 
 type MetaResp = { enabled: boolean; level?: string; items?: string[]; needs_sso?: boolean; sso_expired?: boolean };
 
-// Fetch one level of the tree. The path's first two segments map to the backend's
-// ?catalog=&schema= params (enough for the deepest 3-level case, Trino).
+// Fetch the children at a path. The segments map to the backend's
+// ?catalog=&schema=&table= params (deepest case: Trino catalog→schema→table→column).
 async function fetchMeta(id: string, path: string[]): Promise<MetaResp> {
     const res = await axios.get<MetaResp>(`/api/v1/connectors/${id}/metadata`, {
-        params: { catalog: path[0], schema: path[1] },
+        params: { catalog: path[0], schema: path[1], table: path[2] },
     });
     return res.data;
 }
@@ -44,44 +44,56 @@ const ConnectorIcon: React.FC<{ kind: string }> = ({ kind }) => {
     return <Database className="size-3.5 shrink-0" />;
 };
 
-// One node in the lazy tree. A "table"-level node is a leaf (click → copy a
-// helper snippet); anything else is a branch that loads its children on expand.
+// One node in the lazy tree. catalog/schema/table nodes expand (load children);
+// a table node ALSO copies a helper snippet on click (chevron expands it to
+// columns). column nodes are leaves rendered as "name (type)" and copy the bare
+// column name.
 const MetaNode: React.FC<{ connectorId: string; alias: string; path: string[]; level: string }> = ({ connectorId, alias, path, level }) => {
-    const isLeaf = level === 'table';
+    const expandable = level !== 'column';
+    const copyable = level === 'table';
     const [open, setOpen] = useState(false);
     const [children, setChildren] = useState<{ items: string[]; level: string } | null>(null);
     const [busy, setBusy] = useState(false);
-    const name = path[path.length - 1];
+    const raw = path[path.length - 1];
+    const colName = raw.split(' (')[0]; // strip the " (type)" suffix for columns
     const indent = { paddingLeft: `${(path.length - 1) * 0.75 + 0.25}rem` };
 
-    const onClick = async () => {
-        if (isLeaf) {
-            const snippet = `${alias}("${path.join('.')}")`;
-            navigator.clipboard.writeText(snippet);
-            toast.success(`Copied: ${snippet}`);
-            return;
-        }
+    const expand = async () => {
         const next = !open;
         setOpen(next);
         if (next && children === null) {
             setBusy(true);
-            try { const d = await fetchMeta(connectorId, path); setChildren({ items: d.items || [], level: d.level || 'table' }); }
+            try { const d = await fetchMeta(connectorId, path); setChildren({ items: d.items || [], level: d.level || 'column' }); }
             catch { toast.error('Failed to load'); }
             finally { setBusy(false); }
         }
     };
+    const copySnippet = () => {
+        const snippet = `${alias}("${path.join('.')}")`;
+        navigator.clipboard.writeText(snippet);
+        toast.success(`Copied: ${snippet}`);
+    };
+    const onRow = () => {
+        if (copyable) copySnippet();
+        else if (level === 'column') { navigator.clipboard.writeText(colName); toast.success(`Copied: ${colName}`); }
+        else void expand();
+    };
 
     return (
         <div>
-            <div className="flex items-center gap-1 py-1 pr-1 rounded hover:bg-muted cursor-pointer"
+            <div className="group/row flex items-center gap-1 py-1 pr-1 rounded hover:bg-muted cursor-pointer"
                 style={indent}
-                title={isLeaf ? `Copy ${alias}("${path.join('.')}")` : undefined}
-                onClick={onClick}>
-                {isLeaf
+                title={copyable ? `Copy ${alias}("${path.join('.')}")` : (level === 'column' ? `Copy ${colName}` : undefined)}
+                onClick={onRow}>
+                {expandable
+                    ? <span onClick={(e) => { e.stopPropagation(); void expand(); }} className="shrink-0">
+                        {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+                      </span>
+                    : <span className="w-3 shrink-0" />}
+                {level === 'table'
                     ? <Table2 className="size-3 shrink-0 text-emerald-500" />
-                    : (open ? <ChevronDown className="size-3 shrink-0" /> : <ChevronRight className="size-3 shrink-0" />)}
-                {!isLeaf && path.length === 1 && <Database className="size-3 shrink-0 text-blue-500" />}
-                <span className={`truncate ${path.length > 1 && !isLeaf ? 'text-muted-foreground' : ''}`}>{name}</span>
+                    : (path.length === 1 ? <Database className="size-3 shrink-0 text-blue-500" /> : null)}
+                <span className={`truncate ${level === 'schema' || level === 'column' ? 'text-muted-foreground' : ''}`}>{raw}</span>
                 {busy && <Loader2 className="size-3 animate-spin ml-auto" />}
             </div>
             {open && children && children.items.map(child => (
@@ -144,7 +156,6 @@ const MetaTree: React.FC<{ connectorId: string; alias: string; label: string; on
 };
 
 export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: () => void }> = ({ connectors, onChanged }) => {
-    const { isSuperAdmin } = useCurrentUser();
     const [activeId, setActiveId] = useState<string>(connectors[0]?.id ?? '');
     const [addOpen, setAddOpen] = useState(false);
     const [reloadKey, setReloadKey] = useState(0); // bump to remount the tree (refresh)
@@ -173,16 +184,14 @@ export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: (
         <div className="p-2 text-xs">
             <div className="flex items-center justify-between px-1 mb-2">
                 <span className="font-semibold text-muted-foreground uppercase">Data Sources</span>
-                {isSuperAdmin && (
-                    <button className="p-1 rounded hover:bg-muted text-muted-foreground" title="Add data source" onClick={() => setAddOpen(true)}>
-                        <Plus className="size-3.5" />
-                    </button>
-                )}
+                <button className="p-1 rounded hover:bg-muted text-muted-foreground" title="Add data source" onClick={() => setAddOpen(true)}>
+                    <Plus className="size-3.5" />
+                </button>
             </div>
 
             {connectors.length === 0 && (
                 <Hint icon={Database} title="No data sources yet"
-                    sub={isSuperAdmin ? 'Click + to connect Trino, PostgreSQL or MySQL.' : 'Ask a superadmin to add a data source.'} />
+                    sub="Click + to connect Trino, PostgreSQL or MySQL." />
             )}
 
             {connectors.map(c => (
@@ -191,13 +200,16 @@ export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: (
                         onClick={() => setActiveId(c.id)}>
                         <ConnectorIcon kind={c.kind} />
                         <span className="truncate flex-1">{c.label}</span>
+                        {c.scope === 'shared'
+                            ? <Globe className="size-3 shrink-0 text-muted-foreground/70" />
+                            : <Lock className="size-3 shrink-0 text-muted-foreground/70" />}
                         {c.id === activeId && c.browsable && (
                             <button className="p-0.5 rounded hover:bg-muted-foreground/10" title="Refresh"
                                 onClick={(e) => { e.stopPropagation(); setReloadKey(k => k + 1); }}>
                                 <RefreshCw className="size-3" />
                             </button>
                         )}
-                        {isSuperAdmin && c.deletable && (
+                        {c.deletable && (
                             <button className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive"
                                 title="Remove" onClick={(e) => { e.stopPropagation(); void deleteConnector(c); }}>
                                 <Trash2 className="size-3" />

@@ -20,8 +20,9 @@ import (
 
 const jdbcBrowseTimeout = 8 * time.Second
 
-// jdbcMetadata returns schemas (schemaSel == "") or the tables of schemaSel.
-func (h *AuthHandler) jdbcMetadata(inst ConnectorInstance, schemaSel string) (items []string, level string, err error) {
+// jdbcMetadata drills down by path: [] → schemas, [schema] → tables,
+// [schema, table] → columns ("name (type)").
+func (h *AuthHandler) jdbcMetadata(inst ConnectorInstance, path []string) (items []string, level string, err error) {
 	driver, dsn, err := h.jdbcDriverDSN(inst)
 	if err != nil {
 		return nil, "", err
@@ -36,9 +37,19 @@ func (h *AuthHandler) jdbcMetadata(inst ConnectorInstance, schemaSel string) (it
 	ctx, cancel := context.WithTimeout(context.Background(), jdbcBrowseTimeout)
 	defer cancel()
 
+	// $1.. (lib/pq) vs ? (go-sql-driver) placeholders differ by driver.
+	ph := func(n int) string {
+		if inst.Type == "postgres" {
+			return fmt.Sprintf("$%d", n)
+		}
+		return "?"
+	}
+
 	var query string
 	var args []any
-	if schemaSel == "" {
+	var withType bool
+	switch len(path) {
+	case 0:
 		level = "schema"
 		switch inst.Type {
 		case "postgres":
@@ -51,15 +62,15 @@ func (h *AuthHandler) jdbcMetadata(inst ConnectorInstance, schemaSel string) (it
 			         WHERE schema_name NOT IN ('information_schema','performance_schema','mysql','sys')
 			         ORDER BY 1`
 		}
-	} else {
+	case 1:
 		level = "table"
-		// $1 (lib/pq) vs ? (go-sql-driver) placeholder differs by driver.
-		ph := "?"
-		if inst.Type == "postgres" {
-			ph = "$1"
-		}
-		query = `SELECT table_name FROM information_schema.tables WHERE table_schema = ` + ph + ` ORDER BY 1`
-		args = []any{schemaSel}
+		query = `SELECT table_name FROM information_schema.tables WHERE table_schema = ` + ph(1) + ` ORDER BY 1`
+		args = []any{path[0]}
+	default:
+		level, withType = "column", true
+		query = `SELECT column_name, data_type FROM information_schema.columns
+		         WHERE table_schema = ` + ph(1) + ` AND table_name = ` + ph(2) + ` ORDER BY ordinal_position`
+		args = []any{path[0], path[1]}
 	}
 
 	rows, err := db.QueryContext(ctx, query, args...)
@@ -68,11 +79,19 @@ func (h *AuthHandler) jdbcMetadata(inst ConnectorInstance, schemaSel string) (it
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, "", err
+		if withType {
+			var name, typ string
+			if err := rows.Scan(&name, &typ); err != nil {
+				return nil, "", err
+			}
+			items = append(items, name+" ("+typ+")")
+		} else {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				return nil, "", err
+			}
+			items = append(items, name)
 		}
-		items = append(items, name)
 	}
 	return items, level, rows.Err()
 }

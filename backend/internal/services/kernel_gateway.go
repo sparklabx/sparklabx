@@ -161,10 +161,11 @@ type KernelGatewaySettings struct {
 	TrinoURL           string                // optional default Trino JDBC URL injected as TRINO_URL for the trino() helper
 	KernelAPIURL       string                // backend URL injected as SPARKLABX_API_URL so kernels can fetch a fresh OIDC token
 	ConnectorsManifest string                // JSON [{id,driver,url}] injected as SPARKLABX_CONNECTORS for the generic data helpers (static fallback)
-	// ConnectorsManifestProvider, when set, is called at each kernel spawn to get
-	// the current manifest — so connectors added/removed at runtime reach new
-	// kernels without a restart. Falls back to the static ConnectorsManifest.
-	ConnectorsManifestProvider func() string
+	// ConnectorsManifestProvider, when set, is called at each kernel spawn with the
+	// spawning user's id to get the manifest of connectors VISIBLE to that user
+	// (shared + their personal) — so runtime adds/removes reach new kernels without
+	// a restart. Falls back to the static ConnectorsManifest.
+	ConnectorsManifestProvider func(userID string) string
 
 	// Resource requests/limits in k8s quantity format ("500m", "1Gi"). For
 	// docker_per_user mode only the *Limit values apply (Docker has no
@@ -178,9 +179,9 @@ type KernelGatewaySettings struct {
 // resolveConnectorsManifest returns the SPARKLABX_CONNECTORS JSON to inject at
 // spawn — the live provider when set (reflects runtime adds/deletes), else the
 // static boot-time value.
-func resolveConnectorsManifest(static string, provider func() string) string {
+func resolveConnectorsManifest(static string, provider func(string) string, userID string) string {
 	if provider != nil {
-		return provider()
+		return provider(userID)
 	}
 	return static
 }

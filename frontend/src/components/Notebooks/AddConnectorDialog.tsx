@@ -7,7 +7,8 @@ import {
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Loader2, Database } from 'lucide-react';
+import { Loader2, Database, AlertTriangle, Lock, Globe } from 'lucide-react';
+import { useCurrentUser } from '@/hooks/useCurrentUser';
 
 // Dialog for adding a data connector (superadmin). Driven by /connector-types so
 // new backend types appear here with no frontend change.
@@ -56,6 +57,7 @@ export const AddConnectorDialog: React.FC<{
     onCreated: () => void;
     existingIds: string[];
 }> = ({ open, onClose, onCreated, existingIds }) => {
+    const { isSuperAdmin } = useCurrentUser();
     const [types, setTypes] = useState<ConnectorTypeInfo[]>([]);
     const [typeId, setTypeId] = useState('');
     const [label, setLabel] = useState('');
@@ -65,6 +67,7 @@ export const AddConnectorDialog: React.FC<{
     const [auth, setAuth] = useState('');
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
+    const [scope, setScope] = useState<'personal' | 'shared'>('personal');
     const [submitting, setSubmitting] = useState(false);
 
     const type = types.find(t => t.id === typeId);
@@ -72,7 +75,7 @@ export const AddConnectorDialog: React.FC<{
     useEffect(() => {
         if (!open) return;
         // Reset on open.
-        setLabel(''); setId(''); setIdEdited(false); setUrl(''); setUsername(''); setPassword('');
+        setLabel(''); setId(''); setIdEdited(false); setUrl(''); setUsername(''); setPassword(''); setScope('personal');
         axios.get<{ types?: ConnectorTypeInfo[] }>('/api/v1/connector-types')
             .then(r => {
                 const ts = r.data?.types || [];
@@ -100,7 +103,7 @@ export const AddConnectorDialog: React.FC<{
         try {
             await axios.post('/api/v1/connectors', {
                 id: id.trim(), type: typeId, label: label.trim(), url: url.trim(),
-                auth, username, password,
+                auth, username, password, scope,
             });
             toast.success(`Added data source "${label.trim()}"`);
             onCreated();
@@ -132,6 +135,32 @@ export const AddConnectorDialog: React.FC<{
                                 {types.map(t => <SelectItem key={t.id} value={t.id}>{t.label}</SelectItem>)}
                             </SelectContent>
                         </Select>
+                    </div>
+
+                    <div className="space-y-1.5">
+                        <Label className="text-xs">Visibility</Label>
+                        <div className="grid grid-cols-2 gap-2">
+                            <button type="button" onClick={() => setScope('personal')}
+                                className={`flex items-center gap-2 rounded-md border px-2.5 py-2 text-left ${scope === 'personal' ? 'border-primary bg-primary/5' : 'border-input hover:bg-muted/40'}`}>
+                                <Lock className="size-3.5 shrink-0 text-muted-foreground" />
+                                <span><span className="font-medium">Personal</span><br /><span className="text-[10px] text-muted-foreground">Only you</span></span>
+                            </button>
+                            <button type="button" disabled={!isSuperAdmin} onClick={() => setScope('shared')}
+                                title={isSuperAdmin ? undefined : 'Only a superadmin can create shared sources'}
+                                className={`flex items-center gap-2 rounded-md border px-2.5 py-2 text-left disabled:opacity-50 disabled:cursor-not-allowed ${scope === 'shared' ? 'border-primary bg-primary/5' : 'border-input hover:bg-muted/40'}`}>
+                                <Globe className="size-3.5 shrink-0 text-muted-foreground" />
+                                <span><span className="font-medium">Shared</span><br /><span className="text-[10px] text-muted-foreground">Everyone</span></span>
+                            </button>
+                        </div>
+                        {scope === 'shared' && (
+                            <div className="flex items-start gap-2 rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-2.5 py-2">
+                                <AlertTriangle className="size-3.5 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
+                                <p className="text-[11px] text-amber-700 dark:text-amber-300">
+                                    Visible to <strong>everyone</strong> in this workspace.
+                                    {type?.needs_credentials && ' The username/password below will be usable by all users.'}
+                                </p>
+                            </div>
+                        )}
                     </div>
 
                     <div className="space-y-1.5">

@@ -99,21 +99,16 @@ func main() {
 		return username, secret, nil
 	}
 
-	// SSO token passthrough resolver — kernel spawn calls this to inject the
-	// user's (refreshed) OIDC access token so notebooks can reach external
-	// services (e.g. Trino) as the logged-in identity. Returns "" for non-SSO
-	// logins, in which case passthrough is simply unavailable.
+	// Kernel callback-token resolver — kernel spawn calls this to inject a
+	// short-lived, narrowly-scoped CALLBACK token (typ=kernel; only reaches
+	// /kernel/oidc-token + /connectors/:id/credentials). The kernel uses it to:
+	//   - fetch a fresh OIDC access token for SSO passthrough (SSO users), and
+	//   - fetch connector credentials (app-jwt minted as the user, or a
+	//     broker-mapped username/password) for ANY login method.
+	// Minted for every user — connectors must work regardless of how the user
+	// logged in (the whole point of app-as-issuer). For non-SSO users
+	// /kernel/oidc-token simply returns empty; connector credentials still work.
 	oidcTokenResolver := func(adminID string) (string, error) {
-		// Inject a short-lived CALLBACK token, not the OIDC token itself: the
-		// kernel exchanges it for a fresh OIDC token (caching it until expiry) via
-		// /kernel/oidc-token, so a long session never holds an expired token and
-		// the refresh token stays server-side. Mint it for any SSO user — even if
-		// their token is currently expired — so the kernel can reach the backend
-		// and surface an "SSO session expired, re-login" message instead of a
-		// cryptic downstream auth error. Non-SSO logins get no passthrough.
-		if !authHandler.IsOIDCUser(adminID) {
-			return "", nil
-		}
 		return authHandler.MintKernelToken(adminID)
 	}
 
@@ -133,7 +128,7 @@ func main() {
 		OIDCTokenResolver:          oidcTokenResolver,
 		TrinoURL:                   cfg.KernelTrinoURL,
 		KernelAPIURL:               cfg.KernelCallbackURL,
-		ConnectorsManifest:         authHandler.ConnectorsKernelManifest(),
+		ConnectorsManifest:         authHandler.ConnectorsKernelManifest(""),
 		ConnectorsManifestProvider: authHandler.ConnectorsKernelManifest,
 		PodCPURequest:              cfg.KernelPodCPURequest,
 		PodMemoryRequest:           cfg.KernelPodMemoryRequest,
@@ -305,9 +300,10 @@ func main() {
 		v1.GET("/connector-types", middleware.RequireAdmin(cfg), authHandler.ConnectorTypes)
 		v1.GET("/connectors/:id/metadata", middleware.RequireAdmin(cfg), authHandler.ConnectorMetadata)
 		v1.GET("/connectors/:id/credentials", middleware.RequireKernelToken(cfg), authHandler.ConnectorCredentials)
-		// Add/remove connectors — superadmin only (global, shared data sources).
-		v1.POST("/connectors", middleware.RequireAdmin(cfg), middleware.RequireSuperAdmin(), authHandler.CreateConnector)
-		v1.DELETE("/connectors/:id", middleware.RequireAdmin(cfg), middleware.RequireSuperAdmin(), authHandler.DeleteConnector)
+		// Add/remove connectors. Any admin manages their own personal sources;
+		// shared (org-wide) ones are superadmin-only — enforced in the handlers.
+		v1.POST("/connectors", middleware.RequireAdmin(cfg), authHandler.CreateConnector)
+		v1.DELETE("/connectors/:id", middleware.RequireAdmin(cfg), authHandler.DeleteConnector)
 	}
 
 	addr := ":" + cfg.ServicePort

@@ -145,7 +145,7 @@ func (h *AuthHandler) TrinoMetadata(c *gin.Context) {
 	// /trino/metadata honours the trino instance's auth strategy (app-jwt or
 	// idp-passthrough) — resolving the bearer via ValidOIDCAccessToken directly
 	// would forward an IdP token that an app-jwt Trino rejects.
-	inst, ok := h.connectorByID("trino")
+	inst, ok := h.connectorByID(c.GetString("admin_id"), "trino")
 	if !ok {
 		c.JSON(http.StatusOK, gin.H{"enabled": false, "items": []string{}})
 		return
@@ -166,7 +166,7 @@ func (h *AuthHandler) TrinoMetadata(c *gin.Context) {
 		principal = c.GetString("admin_username")
 	}
 
-	items, level, err := h.connectorMetadata(inst, token, principal, c.Query("catalog"), c.Query("schema"))
+	items, level, err := h.connectorMetadata(inst, token, principal, metaPath(c))
 	if err != nil {
 		log.Warn().Err(err).Msg("trino metadata query failed")
 		c.JSON(http.StatusBadGateway, gin.H{"error": "trino query failed"})

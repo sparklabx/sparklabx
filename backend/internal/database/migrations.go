@@ -92,6 +92,10 @@ func MigrateAndSeed(cfg *config.Config) error {
 			added_by VARCHAR(255) NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ DEFAULT NOW()
 		)`,
+		// Connector scope: owner_id = '' is a shared (org-wide) source; a non-empty
+		// admin id makes it personal (visible only to that user). Existing rows
+		// default to shared.
+		`ALTER TABLE connectors ADD COLUMN IF NOT EXISTS owner_id VARCHAR(64) NOT NULL DEFAULT ''`,
 
 		// K8s per-user pod tracking
 		`CREATE TABLE IF NOT EXISTS user_kernel_pods (
