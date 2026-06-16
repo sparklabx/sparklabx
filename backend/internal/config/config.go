@@ -71,6 +71,16 @@ type Config struct {
 	KernelTrinoURL       string // optional default Trino JDBC URL injected into kernels for the trino() helper (empty → helper requires an explicit url=)
 	KernelCallbackURL    string // backend base URL reachable FROM kernels; the data helpers call it to fetch a fresh OIDC token per query
 
+	// Connector auth (see docs/connectors-design.md). The app mints RS256 JWTs
+	// for connectors; ConnectorJWTPrivateKey is the signing key (PEM) — empty →
+	// an ephemeral key is generated at boot (dev). ConnectorIssuer is the token
+	// `iss` (and what a connector's required-issuer must match). TrinoAuth picks
+	// how the Trino instance authenticates: "idp-passthrough" (forward the IdP
+	// token — current/back-compat) or "app-jwt" (app-minted token).
+	ConnectorJWTPrivateKey string
+	ConnectorIssuer        string
+	TrinoAuth              string
+
 	// Per-user kernel pod resource requests/limits. Strings in k8s quantity
 	// format ("500m", "1Gi"). For docker_per_user mode only the *Limit values
 	// apply — Docker has no separate "request" concept.
@@ -151,6 +161,10 @@ func Load() *Config {
 		KernelPullSecret:     getEnv("KERNEL_PULL_SECRET", ""), // empty → no imagePullSecret
 		KernelTrinoURL:       getEnv("TRINO_URL", ""),
 		KernelCallbackURL:    getEnv("KERNEL_CALLBACK_URL", "http://sparklabx-backend:10000"),
+
+		ConnectorJWTPrivateKey: getEnv("CONNECTOR_JWT_PRIVATE_KEY", ""),
+		ConnectorIssuer:        getEnv("CONNECTOR_ISSUER", "sparklabx"),
+		TrinoAuth:              getEnv("TRINO_AUTH", "idp-passthrough"),
 
 		KernelPodCPURequest:    getEnv("KERNEL_POD_CPU_REQUEST", "500m"),
 		KernelPodMemoryRequest: getEnv("KERNEL_POD_MEMORY_REQUEST", "1Gi"),

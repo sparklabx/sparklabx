@@ -21,6 +21,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/sparklabx/sparklabx/backend/internal/config"
+	"github.com/sparklabx/sparklabx/backend/internal/connectorauth"
 	"github.com/sparklabx/sparklabx/backend/internal/database"
 	"github.com/sparklabx/sparklabx/backend/internal/models"
 	"github.com/sparklabx/sparklabx/backend/internal/services"
@@ -45,13 +46,17 @@ func checkEmailVerified(val interface{}) error {
 }
 
 type AuthHandler struct {
-	cfg *config.Config
-	iam *services.MinIOIAM // nil if MinIO not configured — provisioning skipped
+	cfg  *config.Config
+	iam  *services.MinIOIAM  // nil if MinIO not configured — provisioning skipped
+	keys *connectorauth.Keys // signs app-minted connector tokens; nil → app-jwt disabled
 }
 
 func NewAuthHandler(cfg *config.Config, iam *services.MinIOIAM) *AuthHandler {
 	return &AuthHandler{cfg: cfg, iam: iam}
 }
+
+// SetConnectorKeys wires the connector-token signing key (set once at startup).
+func (h *AuthHandler) SetConnectorKeys(k *connectorauth.Keys) { h.keys = k }
 
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req models.LoginRequest
@@ -523,4 +528,3 @@ type MicrosoftUserInfo struct {
 	Email             string `json:"mail"`
 	UserPrincipalName string `json:"userPrincipalName"`
 }
-

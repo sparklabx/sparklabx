@@ -10,6 +10,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/sparklabx/sparklabx/backend/internal/config"
+	"github.com/sparklabx/sparklabx/backend/internal/connectorauth"
 	"github.com/sparklabx/sparklabx/backend/internal/database"
 	"github.com/sparklabx/sparklabx/backend/internal/handlers"
 	"github.com/sparklabx/sparklabx/backend/internal/middleware"
@@ -56,6 +57,17 @@ func main() {
 		log.Warn().Err(err).Msg("MinIO IAM init failed — per-user provisioning disabled")
 	}
 	authHandler := handlers.NewAuthHandler(cfg, minioIAM)
+
+	// Connector token signing key (app mints RS256 JWTs that connectors validate
+	// via /api/v1/.well-known/jwks.json). Ephemeral if no key is configured.
+	connectorKeys, err := connectorauth.New(cfg.ConnectorJWTPrivateKey, cfg.ConnectorIssuer)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to init connector signing key")
+	}
+	if cfg.ConnectorJWTPrivateKey == "" {
+		log.Warn().Msg("CONNECTOR_JWT_PRIVATE_KEY not set — using an ephemeral connector signing key (set one for stable prod JWKS)")
+	}
+	authHandler.SetConnectorKeys(connectorKeys)
 
 	// Per-user MinIO creds resolver — kernel pod gateway calls this at spawn time.
 	// Returns ("", "", nil) when IAM is not configured, signaling fall-back to
@@ -267,7 +279,18 @@ func main() {
 		// Trino catalog browser for the notebook sidebar — lists catalogs/schemas/
 		// tables of the user's connected Trino, queried as the user via their OIDC
 		// token (same passthrough as the trino() helper). Read-only metadata.
+		// (Back-compat alias; the generic /connectors/:id/metadata supersedes it.)
 		v1.GET("/trino/metadata", middleware.RequireAdmin(cfg), authHandler.TrinoMetadata)
+
+		// Generic data-connector layer (docs/connectors-design.md):
+		//   - JWKS so connectors can validate app-minted (app-jwt) tokens (public)
+		//   - list configured connectors for the notebook UI (admin)
+		//   - browse catalogs/schemas/tables, as the user (admin)
+		//   - mint/resolve a per-query credential, called by the kernel (kernel token)
+		v1.GET("/.well-known/jwks.json", authHandler.ConnectorJWKS)
+		v1.GET("/connectors", middleware.RequireAdmin(cfg), authHandler.ListConnectors)
+		v1.GET("/connectors/:id/metadata", middleware.RequireAdmin(cfg), authHandler.ConnectorMetadata)
+		v1.GET("/connectors/:id/credentials", middleware.RequireKernelToken(cfg), authHandler.ConnectorCredentials)
 	}
 
 	addr := ":" + cfg.ServicePort

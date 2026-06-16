@@ -23,7 +23,11 @@ import (
 // (jdbc:trino://host:port?SSL=true&SSLVerification=NONE → https://host:port) and
 // whether to skip TLS verification (self-signed dev certs).
 func (h *AuthHandler) trinoHTTPBase() (base string, insecure bool, ok bool) {
-	raw := h.cfg.KernelTrinoURL
+	return trinoHTTPBaseFrom(h.cfg.KernelTrinoURL)
+}
+
+// trinoHTTPBaseFrom derives the Trino HTTP base + TLS-skip flag from a JDBC URL.
+func trinoHTTPBaseFrom(raw string) (base string, insecure bool, ok bool) {
 	if raw == "" {
 		return "", false, false
 	}
