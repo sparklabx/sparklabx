@@ -100,6 +100,9 @@ func MigrateAndSeed(cfg *config.Config) error {
 		// connectors table once, so it's editable/deletable and won't re-appear
 		// after a user removes it).
 		`CREATE TABLE IF NOT EXISTS connector_bootstrap (key VARCHAR(64) PRIMARY KEY)`,
+		// Generic app-managed secrets (e.g. the connector signing key) — persisted
+		// in the DB so they survive restarts without a dedicated volume.
+		`CREATE TABLE IF NOT EXISTS app_secrets (key VARCHAR(64) PRIMARY KEY, value TEXT NOT NULL)`,
 
 		// K8s per-user pod tracking
 		`CREATE TABLE IF NOT EXISTS user_kernel_pods (

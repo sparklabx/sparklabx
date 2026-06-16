@@ -83,6 +83,19 @@ func LoadOrCreatePEM(path string) (string, error) {
 	return string(pemBytes), nil
 }
 
+// GeneratePEM returns a fresh PKCS#8 PEM-encoded 2048-bit RSA private key.
+func GeneratePEM() (string, error) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return "", fmt.Errorf("generate connector signing key: %w", err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		return "", fmt.Errorf("marshal connector signing key: %w", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})), nil
+}
+
 func parsePEMPrivateKey(s string) (*rsa.PrivateKey, error) {
 	block, _ := pem.Decode([]byte(s))
 	if block == nil {

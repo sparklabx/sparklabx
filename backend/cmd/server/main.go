@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -59,25 +61,34 @@ func main() {
 	authHandler := handlers.NewAuthHandler(cfg, minioIAM)
 
 	// Connector token signing key (app mints RS256 JWTs that connectors validate
-	// via /api/v1/.well-known/jwks.json). Precedence: inline PEM, else a key file
-	// (created+persisted on first boot for a stable JWKS), else an ephemeral key.
+	// via /api/v1/.well-known/jwks.json). Precedence: inline PEM (CONNECTOR_JWT_
+	// PRIVATE_KEY, used by the Helm Secret), else a key file (CONNECTOR_JWT_
+	// PRIVATE_KEY_FILE, optional), else generated once and persisted in the DB.
+	// The DB default keeps the JWKS kid stable across restarts with no extra
+	// volume/mount.
 	connectorKeyPEM := cfg.ConnectorJWTPrivateKey
-	if connectorKeyPEM == "" && cfg.ConnectorJWTKeyFile != "" {
+	keySource := "inline env"
+	switch {
+	case connectorKeyPEM != "":
+		// inline
+	case cfg.ConnectorJWTKeyFile != "":
 		connectorKeyPEM, err = connectorauth.LoadOrCreatePEM(cfg.ConnectorJWTKeyFile)
 		if err != nil {
 			log.Fatal().Err(err).Str("file", cfg.ConnectorJWTKeyFile).Msg("failed to load/create connector signing key file")
 		}
+		keySource = "key file"
+	default:
+		connectorKeyPEM, err = connectorSigningKeyFromDB(minioIAM)
+		if err != nil {
+			log.Fatal().Err(err).Msg("failed to load/create connector signing key in DB")
+		}
+		keySource = "database"
 	}
 	connectorKeys, err := connectorauth.New(connectorKeyPEM, cfg.ConnectorIssuer)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to init connector signing key")
 	}
-	switch {
-	case connectorKeyPEM == "":
-		log.Warn().Msg("connector signing key is ephemeral — set CONNECTOR_JWT_PRIVATE_KEY_FILE (or _KEY) so the JWKS kid survives restarts")
-	case cfg.ConnectorJWTKeyFile != "" && cfg.ConnectorJWTPrivateKey == "":
-		log.Info().Str("file", cfg.ConnectorJWTKeyFile).Msg("connector signing key loaded from file (stable JWKS)")
-	}
+	log.Info().Str("source", keySource).Msg("connector signing key ready (stable JWKS)")
 	authHandler.SetConnectorKeys(connectorKeys)
 
 	// Per-user MinIO creds resolver — kernel pod gateway calls this at spawn time.
@@ -314,6 +325,46 @@ func main() {
 	if err := router.Run(addr); err != nil {
 		log.Fatal().Err(err).Msg("server failed")
 	}
+}
+
+// connectorSigningKeyFromDB loads the connector signing key from app_secrets,
+// generating and persisting one on first boot. Encrypted at rest when IAM
+// encryption is available ("enc:" prefix), else stored as plain PEM. Stable
+// across restarts with no dedicated volume.
+func connectorSigningKeyFromDB(iam *services.MinIOIAM) (string, error) {
+	const key = "connector_jwt_private_key"
+	db := database.GetDB()
+	decode := func(stored string) (string, error) {
+		if strings.HasPrefix(stored, "enc:") {
+			if iam == nil {
+				return "", fmt.Errorf("connector signing key is encrypted but encryption is unavailable")
+			}
+			return iam.DecryptSecret(strings.TrimPrefix(stored, "enc:"))
+		}
+		return stored, nil
+	}
+	var stored string
+	if err := db.QueryRow(`SELECT value FROM app_secrets WHERE key = $1`, key).Scan(&stored); err == nil && stored != "" {
+		return decode(stored)
+	}
+	pem, err := connectorauth.GeneratePEM()
+	if err != nil {
+		return "", err
+	}
+	toStore := pem
+	if iam != nil {
+		if enc, e := iam.EncryptSecret(pem); e == nil {
+			toStore = "enc:" + enc
+		}
+	}
+	// ON CONFLICT keeps the first writer's key if two instances race at boot.
+	if _, err := db.Exec(`INSERT INTO app_secrets (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING`, key, toStore); err != nil {
+		return "", err
+	}
+	if err := db.QueryRow(`SELECT value FROM app_secrets WHERE key = $1`, key).Scan(&stored); err == nil && stored != "" {
+		return decode(stored)
+	}
+	return pem, nil
 }
 
 func setupLogging(cfg *config.Config) {
