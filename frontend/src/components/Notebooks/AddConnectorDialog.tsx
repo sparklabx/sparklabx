@@ -238,9 +238,14 @@ export const AddConnectorDialog: React.FC<{
                                     value={username} onChange={e => setUsername(e.target.value)} />
                             </div>
                             <div className="space-y-1.5">
-                                <Label className="text-xs">Password</Label>
+                                <Label className="text-xs flex items-center gap-1.5">
+                                    Password
+                                    {editing && (hasPassword
+                                        ? <span className="text-[10px] font-normal text-emerald-600 dark:text-emerald-400">• set</span>
+                                        : <span className="text-[10px] font-normal text-muted-foreground">• none</span>)}
+                                </Label>
                                 <input type="password" className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
-                                    placeholder={hasPassword ? 'leave blank to keep' : ''}
+                                    placeholder={hasPassword ? '••••••••  (leave blank to keep)' : (editing ? 'no password set' : '')}
                                     value={password} onChange={e => setPassword(e.target.value)} />
                             </div>
                         </div>
@@ -257,8 +262,8 @@ export const AddConnectorDialog: React.FC<{
                     </p>
                 )}
                 <DialogFooter className="gap-2 sm:justify-between">
-                    <Button variant="outline" onClick={testConnection} disabled={testing} className="sm:mr-auto">
-                        {testing ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Plug className="mr-2 size-4" />}
+                    <Button variant="outline" size="sm" onClick={testConnection} disabled={testing} className="h-8 px-2.5 text-xs sm:mr-auto">
+                        {testing ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : <Plug className="mr-1.5 size-3.5" />}
                         Test connection
                     </Button>
                     <div className="flex gap-2">
