@@ -56,8 +56,10 @@ export const AddConnectorDialog: React.FC<{
     onClose: () => void;
     onCreated: () => void;
     existingIds: string[];
-}> = ({ open, onClose, onCreated, existingIds }) => {
+    editId?: string | null;
+}> = ({ open, onClose, onCreated, existingIds, editId }) => {
     const { isSuperAdmin } = useCurrentUser();
+    const editing = !!editId;
     const [types, setTypes] = useState<ConnectorTypeInfo[]>([]);
     const [typeId, setTypeId] = useState('');
     const [label, setLabel] = useState('');
@@ -67,6 +69,7 @@ export const AddConnectorDialog: React.FC<{
     const [auth, setAuth] = useState('');
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
+    const [hasPassword, setHasPassword] = useState(false);
     const [scope, setScope] = useState<'personal' | 'shared'>('personal');
     const [submitting, setSubmitting] = useState(false);
 
@@ -75,16 +78,26 @@ export const AddConnectorDialog: React.FC<{
     useEffect(() => {
         if (!open) return;
         // Reset on open.
-        setLabel(''); setId(''); setIdEdited(false); setUrl(''); setUsername(''); setPassword(''); setScope('personal');
+        setLabel(''); setId(''); setIdEdited(false); setUrl(''); setUsername(''); setPassword(''); setHasPassword(false); setScope('personal');
         axios.get<{ types?: ConnectorTypeInfo[] }>('/api/v1/connector-types')
             .then(r => {
                 const ts = r.data?.types || [];
                 setTypes(ts);
+                if (editId) {
+                    // Edit: prefill from the connector's config (no password).
+                    axios.get(`/api/v1/connectors/${editId}`).then(res => {
+                        const d = res.data;
+                        setTypeId(d.type); setLabel(d.label); setId(d.id); setIdEdited(true);
+                        setUrl(d.url); setAuth(d.auth); setUsername(d.username || '');
+                        setHasPassword(!!d.has_password); setScope(d.scope === 'shared' ? 'shared' : 'personal');
+                    }).catch(() => toast.error('Failed to load connector'));
+                    return;
+                }
                 const first = ts[0];
                 if (first) { setTypeId(first.id); setAuth(first.default_auth); setId(defaultIdFor(first.id, existingIds)); }
             })
             .catch(() => toast.error('Failed to load connector types'));
-    }, [open]);
+    }, [open, editId]);
 
     const onPickType = (t: string) => {
         setTypeId(t);
@@ -101,16 +114,19 @@ export const AddConnectorDialog: React.FC<{
         }
         setSubmitting(true);
         try {
-            await axios.post('/api/v1/connectors', {
-                id: id.trim(), type: typeId, label: label.trim(), url: url.trim(),
-                auth, username, password, scope,
-            });
-            toast.success(`Added data source "${label.trim()}"`);
+            const body = { type: typeId, label: label.trim(), url: url.trim(), auth, username, password, scope };
+            if (editing) {
+                await axios.put(`/api/v1/connectors/${editId}`, body);
+                toast.success(`Saved "${label.trim()}"`);
+            } else {
+                await axios.post('/api/v1/connectors', { id: id.trim(), ...body });
+                toast.success(`Added data source "${label.trim()}"`);
+            }
             onCreated();
             onClose();
         } catch (e) {
             const err = e as { response?: { data?: { error?: string } } };
-            toast.error(err.response?.data?.error || 'Failed to add data source');
+            toast.error(err.response?.data?.error || (editing ? 'Failed to save' : 'Failed to add data source'));
         } finally {
             setSubmitting(false);
         }
@@ -121,7 +137,7 @@ export const AddConnectorDialog: React.FC<{
             <DialogContent className="max-w-md">
                 <DialogHeader>
                     <DialogTitle className="flex items-center gap-2">
-                        <Database className="size-4 text-muted-foreground" /> Add data source
+                        <Database className="size-4 text-muted-foreground" /> {editing ? 'Edit data source' : 'Add data source'}
                     </DialogTitle>
                     <DialogDescription>Connect a Trino, PostgreSQL or MySQL source for notebooks.</DialogDescription>
                 </DialogHeader>
@@ -129,7 +145,7 @@ export const AddConnectorDialog: React.FC<{
                 <div className="space-y-3 text-sm">
                     <div className="space-y-1.5">
                         <Label className="text-xs">Type</Label>
-                        <Select value={typeId} onValueChange={onPickType}>
+                        <Select value={typeId} onValueChange={onPickType} disabled={editing}>
                             <SelectTrigger className="h-9"><SelectValue placeholder="Select a type…" /></SelectTrigger>
                             <SelectContent>
                                 {types.map(t => <SelectItem key={t.id} value={t.id}>{t.label}</SelectItem>)}
@@ -170,9 +186,9 @@ export const AddConnectorDialog: React.FC<{
                     </div>
 
                     <div className="space-y-1.5">
-                        <Label className="text-xs">Id <span className="text-muted-foreground">(used in <code>query("id", …)</code>)</span></Label>
-                        <input className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm font-mono"
-                            placeholder="analytics_trino" value={id}
+                        <Label className="text-xs">Id <span className="text-muted-foreground">{editing ? '(fixed — used as the helper name)' : '(used in query("id", …))'}</span></Label>
+                        <input className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm font-mono disabled:opacity-60"
+                            placeholder="analytics_trino" value={id} disabled={editing}
                             onChange={e => { setIdEdited(true); setId(slugify(e.target.value)); }} />
                     </div>
 
@@ -204,6 +220,7 @@ export const AddConnectorDialog: React.FC<{
                             <div className="space-y-1.5">
                                 <Label className="text-xs">Password</Label>
                                 <input type="password" className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                                    placeholder={hasPassword ? 'leave blank to keep' : ''}
                                     value={password} onChange={e => setPassword(e.target.value)} />
                             </div>
                         </div>
@@ -217,7 +234,7 @@ export const AddConnectorDialog: React.FC<{
                     <Button variant="outline" onClick={onClose}>Cancel</Button>
                     <Button onClick={submit} disabled={submitting}>
                         {submitting && <Loader2 className="mr-2 size-4 animate-spin" />}
-                        Add source
+                        {editing ? 'Save' : 'Add source'}
                     </Button>
                 </DialogFooter>
             </DialogContent>

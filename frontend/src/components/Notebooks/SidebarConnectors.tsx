@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { Database, ChevronRight, ChevronDown, Table2, Loader2, RefreshCw, ShieldAlert, Plus, Trash2, Terminal, Globe, Lock } from 'lucide-react';
+import { Database, ChevronRight, ChevronDown, Table2, Loader2, RefreshCw, ShieldAlert, Plus, Trash2, Pencil, Terminal, Globe, Lock } from 'lucide-react';
 import { TrinoIcon } from './parts/TrinoIcon';
 import { PostgresIcon } from './parts/PostgresIcon';
 import { MysqlIcon } from './parts/MysqlIcon';
@@ -158,6 +158,7 @@ const MetaTree: React.FC<{ connectorId: string; alias: string; label: string; on
 export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: () => void }> = ({ connectors, onChanged }) => {
     const [activeId, setActiveId] = useState<string>(connectors[0]?.id ?? '');
     const [addOpen, setAddOpen] = useState(false);
+    const [editId, setEditId] = useState<string | null>(null);
     const [reloadKey, setReloadKey] = useState(0); // bump to remount the tree (refresh)
 
     // The notebook helper name: the connector's kind when it's the sole one of
@@ -184,7 +185,7 @@ export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: (
         <div className="p-2 text-xs">
             <div className="flex items-center justify-between px-1 mb-2">
                 <span className="font-semibold text-muted-foreground uppercase">Data Sources</span>
-                <button className="p-1 rounded hover:bg-muted text-muted-foreground" title="Add data source" onClick={() => setAddOpen(true)}>
+                <button className="p-1 rounded hover:bg-muted text-muted-foreground" title="Add data source" onClick={() => { setEditId(null); setAddOpen(true); }}>
                     <Plus className="size-3.5" />
                 </button>
             </div>
@@ -210,6 +211,12 @@ export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: (
                             </button>
                         )}
                         {c.deletable && (
+                            <button className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-muted-foreground/10"
+                                title="Edit" onClick={(e) => { e.stopPropagation(); setEditId(c.id); setAddOpen(true); }}>
+                                <Pencil className="size-3" />
+                            </button>
+                        )}
+                        {c.deletable && (
                             <button className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive"
                                 title="Remove" onClick={(e) => { e.stopPropagation(); void deleteConnector(c); }}>
                                 <Trash2 className="size-3" />
@@ -232,7 +239,7 @@ export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: (
                 </div>
             ))}
 
-            <AddConnectorDialog open={addOpen} onClose={() => setAddOpen(false)} onCreated={onChanged} existingIds={connectors.map(c => c.id)} />
+            <AddConnectorDialog open={addOpen} onClose={() => { setAddOpen(false); setEditId(null); }} onCreated={onChanged} existingIds={connectors.map(c => c.id)} editId={editId} />
         </div>
     );
 };

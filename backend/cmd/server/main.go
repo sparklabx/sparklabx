@@ -303,6 +303,8 @@ func main() {
 		// Add/remove connectors. Any admin manages their own personal sources;
 		// shared (org-wide) ones are superadmin-only — enforced in the handlers.
 		v1.POST("/connectors", middleware.RequireAdmin(cfg), authHandler.CreateConnector)
+		v1.GET("/connectors/:id", middleware.RequireAdmin(cfg), authHandler.GetConnector)
+		v1.PUT("/connectors/:id", middleware.RequireAdmin(cfg), authHandler.UpdateConnector)
 		v1.DELETE("/connectors/:id", middleware.RequireAdmin(cfg), authHandler.DeleteConnector)
 	}
 

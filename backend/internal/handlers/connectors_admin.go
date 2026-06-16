@@ -135,6 +135,119 @@ func (h *AuthHandler) CreateConnector(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"id": req.ID})
 }
 
+// GetConnector returns one connector's editable config (no password) if it is
+// visible to the caller. RequireAdmin.
+func (h *AuthHandler) GetConnector(c *gin.Context) {
+	inst, ok := h.connectorByID(c.GetString("admin_id"), c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "unknown connector"})
+		return
+	}
+	scope := "personal"
+	if inst.Shared() {
+		scope = "shared"
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"id": inst.ID, "type": inst.Type, "label": inst.Label, "url": inst.URL,
+		"auth": inst.Auth, "username": inst.Username, "scope": scope,
+		"has_password": inst.PasswordEnc != "", "editable": !inst.FromEnv,
+	})
+}
+
+// UpdateConnector edits a connector's config. Owner-or-superadmin-for-shared.
+// id and type are immutable; a blank password keeps the stored one.
+func (h *AuthHandler) UpdateConnector(c *gin.Context) {
+	id := c.Param("id")
+	if id == envSeedID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "the TRINO_URL connector is configured via env and cannot be edited here"})
+		return
+	}
+	var owner, typ string
+	if err := database.GetDB().QueryRow(`SELECT owner_id, type FROM connectors WHERE id = $1`, id).Scan(&owner, &typ); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "connector not found"})
+		return
+	}
+	adminID := c.GetString("admin_id")
+	isSuper := c.GetString("admin_role") == "superadmin"
+	if !((owner != "" && owner == adminID) || (owner == "" && isSuper)) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you can only edit your own data sources"})
+		return
+	}
+
+	var req createConnectorReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	req.Label = strings.TrimSpace(req.Label)
+	req.URL = strings.TrimSpace(req.URL)
+	if req.Label == "" || req.URL == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "label and url are required"})
+		return
+	}
+	tdef := connectorTypes[typ]
+	if req.Auth == "" {
+		req.Auth = tdef.DefaultAuth
+	}
+	if !contains(tdef.AuthOptions, req.Auth) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported auth for this connector type"})
+		return
+	}
+
+	// Scope change (optional): keep current unless specified; shared needs super.
+	newOwner := owner
+	switch req.Scope {
+	case "shared":
+		if !isSuper {
+			c.JSON(http.StatusForbidden, gin.H{"error": "only a superadmin can make a source shared"})
+			return
+		}
+		newOwner = ""
+	case "personal":
+		newOwner = adminID
+	}
+
+	username := ""
+	if req.Auth == "broker-mapped" {
+		if strings.TrimSpace(req.Username) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "username is required for this connector type"})
+			return
+		}
+		username = req.Username
+	}
+
+	// Password: only overwrite when a new one is supplied.
+	if req.Password != "" && req.Auth == "broker-mapped" {
+		if h.iam == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "credential storage is unavailable (encryption not configured)"})
+			return
+		}
+		enc, err := h.iam.EncryptSecret(req.Password)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt credential"})
+			return
+		}
+		_, err = database.GetDB().Exec(
+			`UPDATE connectors SET label=$1, url=$2, auth=$3, username=$4, password_enc=$5, owner_id=$6 WHERE id=$7`,
+			req.Label, req.URL, req.Auth, username, enc, newOwner, id)
+		if err != nil {
+			log.Error().Err(err).Str("id", id).Msg("update connector failed")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update connector"})
+			return
+		}
+	} else {
+		_, err := database.GetDB().Exec(
+			`UPDATE connectors SET label=$1, url=$2, auth=$3, username=$4, owner_id=$5 WHERE id=$6`,
+			req.Label, req.URL, req.Auth, username, newOwner, id)
+		if err != nil {
+			log.Error().Err(err).Str("id", id).Msg("update connector failed")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update connector"})
+			return
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"id": id})
+}
+
 // DeleteConnector removes a connector. The owner may delete their personal
 // source; a superadmin may delete a shared one. The env seed is refused.
 func (h *AuthHandler) DeleteConnector(c *gin.Context) {
