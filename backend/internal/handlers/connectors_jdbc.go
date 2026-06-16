@@ -4,11 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	_ "github.com/go-sql-driver/mysql"
+
+	"github.com/sparklabx/sparklabx/backend/internal/database"
 )
 
 // JDBC catalog browser for SQL databases (Postgres, MySQL). The backend connects
@@ -23,7 +27,15 @@ const jdbcBrowseTimeout = 8 * time.Second
 // jdbcMetadata drills down by path: [] → schemas, [schema] → tables,
 // [schema, table] → columns ("name (type)").
 func (h *AuthHandler) jdbcMetadata(inst ConnectorInstance, path []string) (items []string, level string, err error) {
-	driver, dsn, err := h.jdbcDriverDSN(inst)
+	password := ""
+	if inst.PasswordEnc != "" && h.iam != nil {
+		if pw, derr := h.iam.DecryptSecret(inst.PasswordEnc); derr == nil {
+			password = pw
+		} else {
+			return nil, "", fmt.Errorf("decrypt connector credential: %w", derr)
+		}
+	}
+	driver, dsn, err := jdbcDriverDSN(inst, password)
 	if err != nil {
 		return nil, "", err
 	}
@@ -96,17 +108,84 @@ func (h *AuthHandler) jdbcMetadata(inst ConnectorInstance, path []string) (items
 	return items, level, rows.Err()
 }
 
-// jdbcDriverDSN converts the connector's JDBC URL + stored creds into a Go
-// database/sql driver name and DSN.
-func (h *AuthHandler) jdbcDriverDSN(inst ConnectorInstance) (driver, dsn string, err error) {
-	password := ""
-	if inst.PasswordEnc != "" && h.iam != nil {
-		if pw, derr := h.iam.DecryptSecret(inst.PasswordEnc); derr == nil {
-			password = pw
-		} else {
-			return "", "", fmt.Errorf("decrypt connector credential: %w", derr)
-		}
+// TestConnector tries a connection with the supplied (unsaved) config and
+// reports ok/error, so the Add/Edit dialog can verify before saving. On edit
+// with a blank password the stored one is used. RequireAdmin.
+func (h *AuthHandler) TestConnector(c *gin.Context) {
+	var req createConnectorReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
 	}
+	typ, ok := connectorTypes[req.Type]
+	if !ok {
+		c.JSON(http.StatusOK, gin.H{"ok": false, "error": "unknown connector type"})
+		return
+	}
+	if req.Auth == "" {
+		req.Auth = typ.DefaultAuth
+	}
+	inst := ConnectorInstance{ID: req.ID, Type: req.Type, URL: strings.TrimSpace(req.URL), Auth: req.Auth, Username: req.Username}
+
+	switch typ.MetaStrategy {
+	case "jdbc-information-schema":
+		pw := req.Password
+		if pw == "" && req.ID != "" && h.iam != nil {
+			// Edit with blank password → test with the stored credential.
+			var enc string
+			_ = database.GetDB().QueryRow(
+				`SELECT password_enc FROM connectors WHERE id = $1 AND (owner_id = '' OR owner_id = $2)`,
+				req.ID, c.GetString("admin_id")).Scan(&enc)
+			if enc != "" {
+				if p, err := h.iam.DecryptSecret(enc); err == nil {
+					pw = p
+				}
+			}
+		}
+		driver, dsn, err := jdbcDriverDSN(inst, pw)
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
+			return
+		}
+		db, err := sql.Open(driver, dsn)
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
+			return
+		}
+		defer db.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), jdbcBrowseTimeout)
+		defer cancel()
+		if err := db.PingContext(ctx); err != nil {
+			c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true, "message": "Connected"})
+
+	case "trino-show":
+		token, _, ssoExpired, principal := h.resolveConnectorBearer(inst, c.GetString("admin_id"))
+		if token == "" {
+			c.JSON(http.StatusOK, gin.H{"ok": false, "error": "sign in with SSO to test this connector", "sso_expired": ssoExpired})
+			return
+		}
+		base, insecure, ok := trinoHTTPBaseFrom(inst.URL)
+		if !ok {
+			c.JSON(http.StatusOK, gin.H{"ok": false, "error": "invalid trino url"})
+			return
+		}
+		if _, err := trinoShow(base, insecure, token, principal, "SHOW CATALOGS"); err != nil {
+			c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true, "message": "Connected"})
+
+	default:
+		c.JSON(http.StatusOK, gin.H{"ok": false, "error": "no connection test for this connector type"})
+	}
+}
+
+// jdbcDriverDSN converts the connector's JDBC URL + the given plaintext password
+// into a Go database/sql driver name and DSN.
+func jdbcDriverDSN(inst ConnectorInstance, password string) (driver, dsn string, err error) {
 	// jdbc:postgresql://host:port/db?params → parse host/db (scheme after "jdbc:").
 	u, perr := url.Parse(strings.TrimPrefix(inst.URL, "jdbc:"))
 	if perr != nil {

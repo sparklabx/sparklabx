@@ -7,7 +7,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Loader2, Database, AlertTriangle, Lock, Globe } from 'lucide-react';
+import { Loader2, Database, AlertTriangle, Lock, Globe, Plug, CheckCircle2, XCircle } from 'lucide-react';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 
 // Dialog for adding a data connector (superadmin). Driven by /connector-types so
@@ -72,13 +72,15 @@ export const AddConnectorDialog: React.FC<{
     const [hasPassword, setHasPassword] = useState(false);
     const [scope, setScope] = useState<'personal' | 'shared'>('personal');
     const [submitting, setSubmitting] = useState(false);
+    const [testing, setTesting] = useState(false);
+    const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
     const type = types.find(t => t.id === typeId);
 
     useEffect(() => {
         if (!open) return;
         // Reset on open.
-        setLabel(''); setId(''); setIdEdited(false); setUrl(''); setUsername(''); setPassword(''); setHasPassword(false); setScope('personal');
+        setLabel(''); setId(''); setIdEdited(false); setUrl(''); setUsername(''); setPassword(''); setHasPassword(false); setScope('personal'); setTestResult(null);
         axios.get<{ types?: ConnectorTypeInfo[] }>('/api/v1/connector-types')
             .then(r => {
                 const ts = r.data?.types || [];
@@ -105,6 +107,24 @@ export const AddConnectorDialog: React.FC<{
         setAuth(info?.default_auth || '');
         // Re-default the id to the new type unless the user typed their own.
         if (!idEdited) setId(defaultIdFor(t, existingIds));
+    };
+
+    const testConnection = async () => {
+        if (!typeId || !url.trim()) { toast.error('Pick a type and enter a URL first'); return; }
+        setTesting(true); setTestResult(null);
+        try {
+            const r = await axios.post<{ ok?: boolean; message?: string; error?: string }>('/api/v1/connectors/test', {
+                id: editId || undefined, type: typeId, url: url.trim(), auth, username, password,
+            });
+            setTestResult(r.data?.ok
+                ? { ok: true, msg: r.data.message || 'Connected' }
+                : { ok: false, msg: r.data?.error || 'Connection failed' });
+        } catch (e) {
+            const err = e as { response?: { data?: { error?: string } } };
+            setTestResult({ ok: false, msg: err.response?.data?.error || 'Connection failed' });
+        } finally {
+            setTesting(false);
+        }
     };
 
     const submit = async () => {
@@ -230,12 +250,24 @@ export const AddConnectorDialog: React.FC<{
                     )}
                 </div>
 
-                <DialogFooter>
-                    <Button variant="outline" onClick={onClose}>Cancel</Button>
-                    <Button onClick={submit} disabled={submitting}>
-                        {submitting && <Loader2 className="mr-2 size-4 animate-spin" />}
-                        {editing ? 'Save' : 'Add source'}
+                {testResult && (
+                    <p className={`flex items-center gap-1.5 text-xs ${testResult.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-destructive'}`}>
+                        {testResult.ok ? <CheckCircle2 className="size-3.5 shrink-0" /> : <XCircle className="size-3.5 shrink-0" />}
+                        <span className="break-all">{testResult.msg}</span>
+                    </p>
+                )}
+                <DialogFooter className="gap-2 sm:justify-between">
+                    <Button variant="outline" onClick={testConnection} disabled={testing} className="sm:mr-auto">
+                        {testing ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Plug className="mr-2 size-4" />}
+                        Test connection
                     </Button>
+                    <div className="flex gap-2">
+                        <Button variant="outline" onClick={onClose}>Cancel</Button>
+                        <Button onClick={submit} disabled={submitting}>
+                            {submitting && <Loader2 className="mr-2 size-4 animate-spin" />}
+                            {editing ? 'Save' : 'Add source'}
+                        </Button>
+                    </div>
                 </DialogFooter>
             </DialogContent>
         </Dialog>
