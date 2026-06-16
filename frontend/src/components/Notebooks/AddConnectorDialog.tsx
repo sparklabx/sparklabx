@@ -206,10 +206,14 @@ export const AddConnectorDialog: React.FC<{
                     </div>
 
                     <div className="space-y-1.5">
-                        <Label className="text-xs">Id <span className="text-muted-foreground">{editing ? '(fixed — used as the helper name)' : '(used in query("id", …))'}</span></Label>
-                        <input className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm font-mono disabled:opacity-60"
-                            placeholder="analytics_trino" value={id} disabled={editing}
-                            onChange={e => { setIdEdited(true); setId(slugify(e.target.value)); }} />
+                        <Label className="text-xs">Id <span className="text-muted-foreground">(used as the helper name)</span></Label>
+                        {editing ? (
+                            <p className="px-2 py-1 text-sm font-mono text-muted-foreground">{id}<span className="opacity-60">(…)</span></p>
+                        ) : (
+                            <input className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm font-mono"
+                                placeholder="analytics_trino" value={id}
+                                onChange={e => { setIdEdited(true); setId(slugify(e.target.value)); }} />
+                        )}
                     </div>
 
                     <div className="space-y-1.5">
@@ -245,7 +249,7 @@ export const AddConnectorDialog: React.FC<{
                                         : <span className="text-[10px] font-normal text-muted-foreground">• none</span>)}
                                 </Label>
                                 <input type="password" className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
-                                    placeholder={hasPassword ? '••••••••  (leave blank to keep)' : (editing ? 'no password set' : '')}
+                                    placeholder={hasPassword ? '••••••••' : ''}
                                     value={password} onChange={e => setPassword(e.target.value)} />
                             </div>
                         </div>
