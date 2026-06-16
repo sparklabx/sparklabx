@@ -1609,31 +1609,54 @@ try {
                     </div >
                 );
 
-            case 'toc':
+            case 'toc': {
+                // Databricks-style outline: built from markdown headings only
+                // (#, ##, ### …). Code cells don't appear; headings nest by level
+                // and clicking one scrolls its cell to the top.
+                const headings: { level: number; text: string; cellId: string; key: string }[] = [];
+                [...cells].sort((a, b) => a.order - b.order).forEach(cell => {
+                    if (cell.type !== 'markdown') return;
+                    let inFence = false;
+                    cell.source.split('\n').forEach((line, li) => {
+                        const t = line.trim();
+                        if (t.startsWith('```')) { inFence = !inFence; return; }
+                        if (inFence) return;
+                        const m = /^(#{1,6})\s+(\S.*?)\s*#*$/.exec(t);
+                        if (!m) return;
+                        const text = m[2]
+                            .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1') // links → label
+                            .replace(/[*_`~]/g, '')                   // strip emphasis/code marks
+                            .trim();
+                        headings.push({ level: m[1].length, text, cellId: cell.id, key: `${cell.id}-${li}` });
+                    });
+                });
+                const minLevel = headings.reduce((mn, h) => Math.min(mn, h.level), 6);
                 return (
                     <div className="p-3">
                         <h3 className="text-xs font-semibold mb-3 text-muted-foreground uppercase">Table of Contents</h3>
-                        {notebook?.cells.map((cell, index) => {
-                            const isCode = cell.type.toLowerCase() === 'code';
-                            const firstLine = cell.source.split('\n').find(l => l.trim()) || '';
-                            const title = isCode ? firstLine.trim() : firstLine.replace(/^#+/, '').trim();
-                            return (
-                                <div key={cell.id}
-                                    onClick={() => {
-                                        const el = document.querySelector(`[data-cell-id="${cell.id}"]`);
-                                        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                    }}
-                                    className="flex items-center gap-2 py-1 px-2 rounded hover:bg-muted cursor-pointer text-xs">
-                                    <span className="text-muted-foreground shrink-0">Cmd {index + 1}</span>
-                                    <span className={`truncate ${isCode ? 'font-mono text-muted-foreground' : ''}`}>{title || (isCode ? 'Code' : 'Markdown')}</span>
-                                </div>
-                            );
-                        })}
-                        {(!notebook || notebook.cells.length === 0) && (
-                            <p className="text-xs text-muted-foreground">No cells yet</p>
+                        {headings.length === 0 ? (
+                            <p className="text-xs text-muted-foreground leading-relaxed">
+                                No headings yet. Add a markdown cell with <span className="font-mono">#</span>, <span className="font-mono">##</span> or <span className="font-mono">###</span> to build a table of contents.
+                            </p>
+                        ) : (
+                            <div className="space-y-0.5">
+                                {headings.map(h => (
+                                    <div key={h.key}
+                                        onClick={() => {
+                                            const el = document.querySelector(`[data-cell-id="${h.cellId}"]`);
+                                            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                                        }}
+                                        style={{ paddingLeft: `${(h.level - minLevel) * 12 + 8}px` }}
+                                        title={h.text}
+                                        className={`py-1 pr-2 rounded hover:bg-muted cursor-pointer truncate text-xs ${h.level === minLevel ? 'font-medium text-foreground' : 'text-muted-foreground'}`}>
+                                        {h.text || 'Untitled'}
+                                    </div>
+                                ))}
+                            </div>
                         )}
                     </div>
                 );
+            }
 
             case 'settings':
                 return (
