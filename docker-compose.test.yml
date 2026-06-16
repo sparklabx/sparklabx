@@ -41,8 +41,6 @@ services:
       - OIDC_PROVIDER_NAME=${OIDC_PROVIDER_NAME:-SSO}
       - OIDC_REDIRECT_URL=${OIDC_REDIRECT_URL}
       - OIDC_POST_LOGIN_REDIRECT=${OIDC_POST_LOGIN_REDIRECT:-http://localhost:3000}
-      - TRINO_URL=${TRINO_URL}
-      - TRINO_AUTH=${TRINO_AUTH:-idp-passthrough}
       - CONNECTOR_ISSUER=${CONNECTOR_ISSUER:-sparklabx}
       # Connector signing key is generated on first boot and persisted in Postgres
       # (app_secrets) — stable across restarts, no volume. Set CONNECTOR_JWT_PRIVATE_KEY

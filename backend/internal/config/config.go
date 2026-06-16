@@ -68,23 +68,16 @@ type Config struct {
 	KernelPodMaxTotal    int
 	KernelDockerNetwork  string
 	KernelPullSecret     string // optional K8s imagePullSecret for private forks
-	KernelTrinoURL       string // optional TRINO_URL — seeds a "trino" connector into the DB once on first boot (then managed in the UI). Empty → no seed.
 	KernelCallbackURL    string // backend base URL reachable FROM kernels; the data helpers call it to fetch a fresh OIDC token per query
 
-	// Connector auth (see docs/connectors-design.md). The app mints RS256 JWTs
-	// for connectors; ConnectorJWTPrivateKey is the signing key (PEM) — empty →
-	// an ephemeral key is generated at boot (dev). ConnectorIssuer is the token
-	// `iss` (and what a connector's required-issuer must match). TrinoAuth picks
-	// how the Trino instance authenticates: "idp-passthrough" (forward the IdP
-	// token — current/back-compat) or "app-jwt" (app-minted token).
-	// ConnectorJWTKeyFile is a path the app loads the signing key from, creating
-	// and persisting one on first boot if absent — keeps the JWKS `kid` stable
-	// across restarts (preferred over the inline PEM). Used only when
-	// ConnectorJWTPrivateKey is empty.
+	// Connector auth (see docs/connectors-design.md). The app mints RS256 JWTs for
+	// connectors; ConnectorJWTPrivateKey is the signing key (PEM) — empty → loaded
+	// from ConnectorJWTKeyFile, else generated once and persisted in the DB.
+	// ConnectorIssuer is the token `iss` (what a connector's required-issuer must
+	// match). Connectors themselves are added/managed at runtime in the UI.
 	ConnectorJWTPrivateKey string
 	ConnectorJWTKeyFile    string
 	ConnectorIssuer        string
-	TrinoAuth              string
 
 	// Per-user kernel pod resource requests/limits. Strings in k8s quantity
 	// format ("500m", "1Gi"). For docker_per_user mode only the *Limit values
@@ -164,13 +157,11 @@ func Load() *Config {
 		KernelPodMaxTotal:    getEnvInt("KERNEL_POD_MAX_TOTAL", 50),
 		KernelDockerNetwork:  getEnv("KERNEL_DOCKER_NETWORK", "sparklabx_default"),
 		KernelPullSecret:     getEnv("KERNEL_PULL_SECRET", ""), // empty → no imagePullSecret
-		KernelTrinoURL:       getEnv("TRINO_URL", ""),
 		KernelCallbackURL:    getEnv("KERNEL_CALLBACK_URL", "http://sparklabx-backend:10000"),
 
 		ConnectorJWTPrivateKey: getEnv("CONNECTOR_JWT_PRIVATE_KEY", ""),
 		ConnectorJWTKeyFile:    getEnv("CONNECTOR_JWT_PRIVATE_KEY_FILE", ""),
 		ConnectorIssuer:        getEnv("CONNECTOR_ISSUER", "sparklabx"),
-		TrinoAuth:              getEnv("TRINO_AUTH", "idp-passthrough"),
 
 		KernelPodCPURequest:    getEnv("KERNEL_POD_CPU_REQUEST", "500m"),
 		KernelPodMemoryRequest: getEnv("KERNEL_POD_MEMORY_REQUEST", "1Gi"),
