@@ -357,7 +357,11 @@ export default function NotebookPage() {
                 // Some packages need extra SparkSession config registered at build time
                 // (not just the JAR on the classpath). Detect common ones and inject.
                 const extraConfigs = new Map<string, string>();
-                const pkgLower = (packages || '').toLowerCase();
+                // DataFlint (Spark performance UI) is on by default for PySpark — its
+                // jar is pre-warmed in the kernel image so this resolves offline. The
+                // detection below then sets spark.plugins.
+                const pyPackages = [packagesForSparkJars, 'io.dataflint:spark_2.12:0.9.9'].filter(Boolean).join(',');
+                const pkgLower = pyPackages.toLowerCase();
                 if (pkgLower.includes('io.delta:delta-spark') || pkgLower.includes('io.delta:delta-core')) {
                     extraConfigs.set('spark.sql.extensions', 'io.delta.sql.DeltaSparkSessionExtension');
                     extraConfigs.set('spark.sql.catalog.spark_catalog', 'org.apache.spark.sql.delta.catalog.DeltaCatalog');
@@ -404,10 +408,9 @@ export default function NotebookPage() {
         .master("local[*]") \\
         .config("spark.driver.memory", "2g") \\
         .config("spark.executor.memory", "2g")${s3aEndpointConfigPy}${extraConfigLines}`;
-                if (packagesForSparkJars) {
-                    sparkBuilder += ` \\
-        .config("spark.jars.packages", "${packagesForSparkJars}")`;
-                }
+                // pyPackages always includes DataFlint, so this is always set.
+                sparkBuilder += ` \\
+        .config("spark.jars.packages", "${pyPackages}")`;
                 sparkBuilder += ` \\
         .getOrCreate()`;
 
@@ -503,10 +506,6 @@ except Exception as _e:
                         extraConfigs.set('spark.sql.catalog.iceberg.warehouse', icebergWarehouse);
                     }
                 }
-                // DataFlint: a Spark plugin that adds a performance tab to the Spark UI.
-                if (pkgLower.includes('io.dataflint')) {
-                    extraConfigs.set('spark.plugins', 'io.dataflint.spark.SparkDataflintPlugin');
-                }
                 const extraConfigBlock = Array.from(extraConfigs.entries())
                     .map(([k, v]) => `SparkConfig.set("${k}", "${v}")`)
                     .join('\n');
@@ -519,7 +518,6 @@ except Exception as _e:
                     'spark.sql.catalog.iceberg',
                     'spark.sql.catalog.iceberg.type',
                     'spark.sql.catalog.iceberg.warehouse',
-                    'spark.plugins',
                 ]);
                 const runtimeConfigBlockScala = Array.from(extraConfigs.entries())
                     .filter(([k]) => !STATIC_SPARK_CONF_KEYS.has(k))

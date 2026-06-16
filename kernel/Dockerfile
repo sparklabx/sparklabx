@@ -29,6 +29,14 @@ RUN python3 -c "from pyspark.sql import SparkSession; SparkSession.builder.maste
  && coursier fetch "io.trino:trino-jdbc:${TRINO_JDBC_VERSION}" > /dev/null \
  && echo "pre-warmed Trino JDBC ${TRINO_JDBC_VERSION} (ivy + coursier)"
 
+# DataFlint (Spark performance UI) is ON BY DEFAULT for PySpark — pre-warm its
+# Ivy cache so the default-injected spark.jars.packages resolves offline with all
+# transitive deps (the SparkSession init also sets the spark.plugins it provides).
+# Keep DATAFLINT_VERSION in sync with the frontend default in NotebookPage.tsx.
+ENV DATAFLINT_VERSION=0.9.9
+RUN python3 -c "from pyspark.sql import SparkSession; SparkSession.builder.master('local[1]').config('spark.jars.packages','io.dataflint:spark_2.12:${DATAFLINT_VERSION}').config('spark.plugins','io.dataflint.spark.SparkDataflintPlugin').getOrCreate().stop()" \
+ && echo "pre-warmed DataFlint ${DATAFLINT_VERSION} (ivy)"
+
 # Spark S3 config (STS credentials injected via env vars at pod creation)
 ENV SPARK_CONF_DIR=/home/exam/spark-conf
 RUN mkdir -p $SPARK_CONF_DIR

@@ -85,7 +85,7 @@ interface PackagePreset {
     label: string;
     description: string;
     packages: string[];
-    group: 'format' | 'driver' | 'tool'; // table formats vs connector drivers vs tools
+    group: 'format' | 'driver'; // table formats vs connector drivers
 }
 
 const PACKAGE_PRESETS: PackagePreset[] = [
@@ -124,19 +124,11 @@ const PACKAGE_PRESETS: PackagePreset[] = [
         packages: ['com.mysql:mysql-connector-j:9.1.0'],
         group: 'driver',
     },
-    {
-        id: 'dataflint',
-        label: 'DataFlint',
-        description: 'Spark performance UI — adds a DataFlint tab to the Spark UI (spark.plugins auto-set)',
-        packages: ['io.dataflint:spark_2.12:0.9.9'],
-        group: 'tool',
-    },
 ];
 
 const PRESET_GROUPS: { group: PackagePreset['group']; title: string }[] = [
     { group: 'format', title: 'Table formats' },
     { group: 'driver', title: 'Connector drivers' },
-    { group: 'tool', title: 'Tools' },
 ];
 
 function normalizePackageInput(value?: string): string {
