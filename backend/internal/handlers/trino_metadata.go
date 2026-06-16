@@ -19,14 +19,9 @@ import (
 // / tables of the user's connected Trino, queried AS the user via their OIDC
 // token (the same passthrough the trino() helper uses). Read-only metadata only.
 
-// trinoHTTPBase derives the Trino HTTP base URL from the configured JDBC URL
-// (jdbc:trino://host:port?SSL=true&SSLVerification=NONE → https://host:port) and
-// whether to skip TLS verification (self-signed dev certs).
-func (h *AuthHandler) trinoHTTPBase() (base string, insecure bool, ok bool) {
-	return trinoHTTPBaseFrom(h.cfg.KernelTrinoURL)
-}
-
-// trinoHTTPBaseFrom derives the Trino HTTP base + TLS-skip flag from a JDBC URL.
+// trinoHTTPBaseFrom derives the Trino HTTP base URL + TLS-skip flag from a JDBC
+// URL (jdbc:trino://host:port?SSL=true&SSLVerification=NONE → https://host:port;
+// SSLVerification=NONE → skip cert verification for self-signed dev certs).
 func trinoHTTPBaseFrom(raw string) (base string, insecure bool, ok bool) {
 	if raw == "" {
 		return "", false, false

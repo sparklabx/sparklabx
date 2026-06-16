@@ -146,25 +146,24 @@ func (s *SharedGateway) RecentLogs(_ context.Context, _ string, _ int) (string, 
 // Populated from *config.Config in main.go so this package doesn't depend on
 // the config package.
 type KernelGatewaySettings struct {
-	Mode               string        // "shared" | "docker_per_user" | "k8s_per_user"
-	Environment        string        // "production" | other — gates the shared-mode safety check
-	JupyterGatewayURL  string        // only used in shared mode
-	PodImage           string        // kernel container/pod image
-	PodNamespace       string        // K8s namespace (k8s_per_user)
-	DockerNetwork      string        // host docker network (docker_per_user)
-	MinIOEndpoint      string        // injected as S3_ENDPOINT env in kernel
-	IdleTimeout        time.Duration // reap kernel after this long idle
-	MaxKernels         int           // hard cap on concurrent kernels
-	PullSecret         string        // optional K8s imagePullSecret name (empty → none)
-	CredsResolver      UserCredsResolver
-	OIDCTokenResolver  UserOIDCTokenResolver // returns the kernel's callback token (SPARKLABX_KERNEL_TOKEN); nil → no SSO passthrough
-	TrinoURL           string                // optional default Trino JDBC URL injected as TRINO_URL for the trino() helper
-	KernelAPIURL       string                // backend URL injected as SPARKLABX_API_URL so kernels can fetch a fresh OIDC token
-	ConnectorsManifest string                // JSON [{id,driver,url}] injected as SPARKLABX_CONNECTORS for the generic data helpers (static fallback)
-	// ConnectorsManifestProvider, when set, is called at each kernel spawn with the
-	// spawning user's id to get the manifest of connectors VISIBLE to that user
-	// (shared + their personal) — so runtime adds/removes reach new kernels without
-	// a restart. Falls back to the static ConnectorsManifest.
+	Mode              string        // "shared" | "docker_per_user" | "k8s_per_user"
+	Environment       string        // "production" | other — gates the shared-mode safety check
+	JupyterGatewayURL string        // only used in shared mode
+	PodImage          string        // kernel container/pod image
+	PodNamespace      string        // K8s namespace (k8s_per_user)
+	DockerNetwork     string        // host docker network (docker_per_user)
+	MinIOEndpoint     string        // injected as S3_ENDPOINT env in kernel
+	IdleTimeout       time.Duration // reap kernel after this long idle
+	MaxKernels        int           // hard cap on concurrent kernels
+	PullSecret        string        // optional K8s imagePullSecret name (empty → none)
+	CredsResolver     UserCredsResolver
+	OIDCTokenResolver UserOIDCTokenResolver // returns the kernel's callback token (SPARKLABX_KERNEL_TOKEN); nil → no SSO passthrough
+	TrinoURL          string                // optional default Trino JDBC URL injected as TRINO_URL for the trino() helper
+	KernelAPIURL      string                // backend URL injected as SPARKLABX_API_URL so kernels can fetch a fresh OIDC token
+	// ConnectorsManifestProvider is called at each kernel spawn with the spawning
+	// user's id to get the SPARKLABX_CONNECTORS manifest of connectors VISIBLE to
+	// that user (shared + their personal) — so runtime adds/removes reach new
+	// kernels without a restart.
 	ConnectorsManifestProvider func(userID string) string
 
 	// Resource requests/limits in k8s quantity format ("500m", "1Gi"). For
@@ -176,14 +175,13 @@ type KernelGatewaySettings struct {
 	PodMemoryLimit   string
 }
 
-// resolveConnectorsManifest returns the SPARKLABX_CONNECTORS JSON to inject at
-// spawn — the live provider when set (reflects runtime adds/deletes), else the
-// static boot-time value.
-func resolveConnectorsManifest(static string, provider func(string) string, userID string) string {
+// resolveConnectorsManifest returns the SPARKLABX_CONNECTORS JSON to inject for
+// userID at spawn (connectors visible to that user), or "" when no provider.
+func resolveConnectorsManifest(provider func(string) string, userID string) string {
 	if provider != nil {
 		return provider(userID)
 	}
-	return static
+	return ""
 }
 
 // NewKernelGateway picks an implementation based on settings.Mode.
@@ -227,7 +225,6 @@ func NewKernelGateway(s KernelGatewaySettings) (KernelGateway, error) {
 			OIDCTokenResolver:          s.OIDCTokenResolver,
 			TrinoURL:                   s.TrinoURL,
 			KernelAPIURL:               s.KernelAPIURL,
-			ConnectorsManifest:         s.ConnectorsManifest,
 			ConnectorsManifestProvider: s.ConnectorsManifestProvider,
 			CPULimit:                   s.PodCPULimit,
 			MemoryLimit:                s.PodMemoryLimit,
@@ -247,7 +244,6 @@ func NewKernelGateway(s KernelGatewaySettings) (KernelGateway, error) {
 			OIDCTokenResolver:          s.OIDCTokenResolver,
 			TrinoURL:                   s.TrinoURL,
 			KernelAPIURL:               s.KernelAPIURL,
-			ConnectorsManifest:         s.ConnectorsManifest,
 			ConnectorsManifestProvider: s.ConnectorsManifestProvider,
 			CPURequest:                 s.PodCPURequest,
 			MemoryRequest:              s.PodMemoryRequest,

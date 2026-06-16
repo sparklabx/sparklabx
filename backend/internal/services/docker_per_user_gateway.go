@@ -59,7 +59,6 @@ type DockerPerUserConfig struct {
 	OIDCTokenResolver          UserOIDCTokenResolver      // returns the kernel callback token (SPARKLABX_KERNEL_TOKEN); nil → no SSO passthrough
 	TrinoURL                   string                     // injected as TRINO_URL for the trino() helper; empty → not set
 	KernelAPIURL               string                     // injected as SPARKLABX_API_URL so the kernel can fetch a fresh OIDC token
-	ConnectorsManifest         string                     // injected as SPARKLABX_CONNECTORS (JSON [{id,driver,url}]) for the generic data helpers (static fallback)
 	ConnectorsManifestProvider func(userID string) string // live per-user manifest at spawn time; nil → use ConnectorsManifest
 
 	// Per-container limits in k8s quantity format ("500m", "1Gi"). Docker
@@ -360,7 +359,7 @@ func (g *DockerPerUserGateway) EnsureSpawning(userID string, spec *ResourceSpec)
 	}
 	// Connector manifest ([{id,driver,url}]) for the generic data helpers; each
 	// connector gets an alias that fetches a fresh credential per query.
-	if m := resolveConnectorsManifest(g.cfg.ConnectorsManifest, g.cfg.ConnectorsManifestProvider, userID); m != "" {
+	if m := resolveConnectorsManifest(g.cfg.ConnectorsManifestProvider, userID); m != "" {
 		env = append(env, "SPARKLABX_CONNECTORS="+m)
 	}
 

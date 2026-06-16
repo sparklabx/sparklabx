@@ -139,7 +139,6 @@ func main() {
 		OIDCTokenResolver:          oidcTokenResolver,
 		TrinoURL:                   cfg.KernelTrinoURL,
 		KernelAPIURL:               cfg.KernelCallbackURL,
-		ConnectorsManifest:         authHandler.ConnectorsKernelManifest(""),
 		ConnectorsManifestProvider: authHandler.ConnectorsKernelManifest,
 		PodCPURequest:              cfg.KernelPodCPURequest,
 		PodMemoryRequest:           cfg.KernelPodMemoryRequest,
