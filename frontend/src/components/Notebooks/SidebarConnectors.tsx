@@ -185,10 +185,10 @@ export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: (
 
     return (
         <div className="p-2 text-xs">
-            <div className="flex items-center justify-between px-1 mb-2">
-                <span className="font-semibold text-muted-foreground uppercase">Data Sources</span>
-                <button className="p-1 rounded hover:bg-muted text-muted-foreground" title="Add data source" onClick={() => { setEditId(null); setAddOpen(true); }}>
-                    <Plus className="size-3.5" />
+            <div className="flex items-center justify-end px-1 mb-2">
+                <button className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted"
+                    title="Add data source" onClick={() => { setEditId(null); setAddOpen(true); }}>
+                    <Plus className="size-3.5" /> Add source
                 </button>
             </div>
 

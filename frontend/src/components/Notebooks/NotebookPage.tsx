@@ -1792,7 +1792,7 @@ try {
             {sidebarOpen && (
                 <div className="w-56 border-r border-border bg-card flex flex-col shrink-0">
                     <div className="flex items-center justify-between px-3 py-2 border-b border-border h-12">
-                        <span className="text-xs font-semibold capitalize">{sidebarTab}</span>
+                        <span className="text-xs font-semibold">{({ workspace: 'Notebooks', files: 'Files', catalog: 'Data Sources', toc: 'Contents', settings: 'Settings' } as Record<string, string>)[sidebarTab] ?? sidebarTab}</span>
                         <X className="size-4 cursor-pointer text-muted-foreground hover:text-foreground" onClick={() => setSidebarOpen(false)} />
                     </div>
                     <div className="flex-1 overflow-auto">
