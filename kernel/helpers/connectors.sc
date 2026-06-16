@@ -25,6 +25,32 @@ val _spxConnectors: Map[String, (String, String)] = {
   m.toMap
 }
 
+// connector id -> kind (trino|postgres|mysql), for the type helpers below.
+val _spxKinds: Map[String, String] = {
+  val m = mutable.Map[String, String]()
+  sys.env.get("SPARKLABX_CONNECTORS").foreach { raw =>
+    try {
+      val it = _spxMapper.readTree(raw).elements()
+      while (it.hasNext) {
+        val n = it.next()
+        m(n.path("id").asText("")) = n.path("kind").asText("")
+      }
+    } catch { case _: Throwable => }
+  }
+  if (m.isEmpty && sys.env.contains("TRINO_URL")) m("trino") = "trino"
+  m.toMap
+}
+
+// The single connector id of a given kind, or a clear error when none / several.
+def _spxKindId(kind: String): String = {
+  _spxKinds.collect { case (id, k) if k == kind => id }.toList match {
+    case one :: Nil => one
+    case Nil        => throw new RuntimeException(s"SparkLabX: no '$kind' connector configured")
+    case many       => throw new RuntimeException(
+      s"SparkLabX: several '$kind' connectors (${many.mkString(", ")}) — call one by id: query(\"${many.head}\", ...)")
+  }
+}
+
 // connector id -> (scheme, token, user, password, expiresAtEpochSec)
 val _spxCredCache = mutable.Map[String, (String, String, String, String, Long)]()
 
@@ -81,5 +107,10 @@ def query(connector: String, sql: String, url: String = null): org.apache.spark.
   r.load()
 }
 
-// Back-compat alias.
+// Type helpers — call the sole connector of a kind by its type name (the tidy
+// common case). With several of a kind these throw "call it by id". Scala can't
+// define a top-level def per connector id dynamically, so use query("id", ...)
+// for a specific instance among many.
 def trino(sql: String, url: String = null): org.apache.spark.sql.DataFrame = query("trino", sql, url)
+def postgres(sql: String, url: String = null): org.apache.spark.sql.DataFrame = query(_spxKindId("postgres"), sql, url)
+def mysql(sql: String, url: String = null): org.apache.spark.sql.DataFrame = query(_spxKindId("mysql"), sql, url)

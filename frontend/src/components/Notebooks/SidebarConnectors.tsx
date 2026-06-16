@@ -56,6 +56,11 @@ export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: (
 
     const active = connectors.find(c => c.id === activeId);
 
+    // The notebook helper name: the connector's kind when it's the sole one of
+    // that kind (the tidy postgres()/trino() case), else its id — mirrors the
+    // kernel's alias rules so the copied snippet is exactly what works.
+    const aliasFor = (c: Connector) => (connectors.filter(x => x.kind === c.kind).length === 1 ? c.kind : c.id);
+
     // Keep a valid selection as the list changes (add/delete).
     useEffect(() => {
         if (connectors.length && !connectors.some(c => c.id === activeId)) {
@@ -105,7 +110,8 @@ export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: (
     };
 
     const copyRef = (cat: string, schema: string, table: string) => {
-        const snippet = `${activeId}("${cat}.${schema}.${table}")`;
+        const name = active ? aliasFor(active) : activeId;
+        const snippet = `${name}("${cat}.${schema}.${table}")`;
         navigator.clipboard.writeText(snippet);
         toast.success(`Copied: ${snippet}`);
     };
@@ -178,7 +184,7 @@ export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: (
                             {!c.browsable ? (
                                 <div className="py-1 text-[11px] text-muted-foreground">
                                     <p className="flex items-center gap-1"><Terminal className="size-3" /> No catalog browser yet.</p>
-                                    <p className="mt-1">Use <code className="text-[11px]">{`${c.id}("schema.table")`}</code> or <code className="text-[11px]">{`query("${c.id}", "SELECT …")`}</code> in a cell.</p>
+                                    <p className="mt-1">Use <code className="text-[11px]">{`${aliasFor(c)}("schema.table")`}</code> or <code className="text-[11px]">{`${aliasFor(c)}("SELECT …")`}</code> in a cell.</p>
                                 </div>
                             ) : (
                                 <>
@@ -212,7 +218,7 @@ export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: (
                                                         {openSchema[key] && (tables[key] || []).map(table => (
                                                             <div key={`${key}/${table}`}
                                                                 className="flex items-center gap-1 py-1 pl-8 rounded hover:bg-muted cursor-pointer"
-                                                                title={`Copy ${c.id}("${cat}.${schema}.${table}")`}
+                                                                title={`Copy ${aliasFor(c)}("${cat}.${schema}.${table}")`}
                                                                 onClick={() => copyRef(cat, schema, table)}>
                                                                 <Table2 className="size-3 shrink-0 text-emerald-500" />
                                                                 <span className="truncate">{table}</span>
@@ -227,7 +233,7 @@ export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: (
                                     ))}
                                     {status === 'ready' && catalogs.length > 0 && (
                                         <p className="mt-2 pt-1.5 border-t border-border/50 text-[10px] text-muted-foreground">
-                                            Click a table to copy <code className="text-[10px]">{`${c.id}("…")`}</code>.
+                                            Click a table to copy <code className="text-[10px]">{`${aliasFor(c)}("…")`}</code>.
                                         </p>
                                     )}
                                 </>
@@ -237,7 +243,7 @@ export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: (
                 </div>
             ))}
 
-            <AddConnectorDialog open={addOpen} onClose={() => setAddOpen(false)} onCreated={onChanged} />
+            <AddConnectorDialog open={addOpen} onClose={() => setAddOpen(false)} onCreated={onChanged} existingIds={connectors.map(c => c.id)} />
         </div>
     );
 };

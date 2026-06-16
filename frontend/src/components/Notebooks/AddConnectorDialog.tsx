@@ -40,11 +40,22 @@ function slugify(s: string): string {
     return s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 64);
 }
 
+// Default the id to the connector type so the kernel helper reads cleanly —
+// postgres(), mysql(), trino(). Dedupe against existing ids: postgres_2, …
+function defaultIdFor(type: string, existing: string[]): string {
+    if (!type) return '';
+    if (!existing.includes(type)) return type;
+    let i = 2;
+    while (existing.includes(`${type}_${i}`)) i++;
+    return `${type}_${i}`;
+}
+
 export const AddConnectorDialog: React.FC<{
     open: boolean;
     onClose: () => void;
     onCreated: () => void;
-}> = ({ open, onClose, onCreated }) => {
+    existingIds: string[];
+}> = ({ open, onClose, onCreated, existingIds }) => {
     const [types, setTypes] = useState<ConnectorTypeInfo[]>([]);
     const [typeId, setTypeId] = useState('');
     const [label, setLabel] = useState('');
@@ -67,7 +78,7 @@ export const AddConnectorDialog: React.FC<{
                 const ts = r.data?.types || [];
                 setTypes(ts);
                 const first = ts[0];
-                if (first) { setTypeId(first.id); setAuth(first.default_auth); }
+                if (first) { setTypeId(first.id); setAuth(first.default_auth); setId(defaultIdFor(first.id, existingIds)); }
             })
             .catch(() => toast.error('Failed to load connector types'));
     }, [open]);
@@ -76,11 +87,8 @@ export const AddConnectorDialog: React.FC<{
         setTypeId(t);
         const info = types.find(x => x.id === t);
         setAuth(info?.default_auth || '');
-    };
-
-    const onLabelChange = (v: string) => {
-        setLabel(v);
-        if (!idEdited) setId(slugify(v));
+        // Re-default the id to the new type unless the user typed their own.
+        if (!idEdited) setId(defaultIdFor(t, existingIds));
     };
 
     const submit = async () => {
@@ -129,7 +137,7 @@ export const AddConnectorDialog: React.FC<{
                     <div className="space-y-1.5">
                         <Label className="text-xs">Name</Label>
                         <input className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
-                            placeholder="Analytics Trino" value={label} onChange={e => onLabelChange(e.target.value)} />
+                            placeholder="Analytics Trino" value={label} onChange={e => setLabel(e.target.value)} />
                     </div>
 
                     <div className="space-y-1.5">

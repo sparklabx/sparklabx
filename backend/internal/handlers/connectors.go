@@ -119,12 +119,13 @@ func (h *AuthHandler) connectorInstances() []ConnectorInstance {
 func (h *AuthHandler) ConnectorsKernelManifest() string {
 	type entry struct {
 		ID     string `json:"id"`
+		Kind   string `json:"kind"`
 		Driver string `json:"driver"`
 		URL    string `json:"url"`
 	}
 	var list []entry
 	for _, inst := range h.connectorInstances() {
-		list = append(list, entry{ID: inst.ID, Driver: connectorTypes[inst.Type].DriverClass, URL: inst.URL})
+		list = append(list, entry{ID: inst.ID, Kind: inst.Type, Driver: connectorTypes[inst.Type].DriverClass, URL: inst.URL})
 	}
 	if len(list) == 0 {
 		return ""

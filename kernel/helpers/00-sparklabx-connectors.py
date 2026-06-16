@@ -31,7 +31,7 @@ except Exception:
     pass
 # Back-compat: no manifest but a default TRINO_URL → synthesize a trino connector.
 if not _CONNECTORS and _os.environ.get("TRINO_URL"):
-    _CONNECTORS["trino"] = {"id": "trino", "driver": "io.trino.jdbc.TrinoDriver", "url": _os.environ["TRINO_URL"]}
+    _CONNECTORS["trino"] = {"id": "trino", "kind": "trino", "driver": "io.trino.jdbc.TrinoDriver", "url": _os.environ["TRINO_URL"]}
 
 _cred_cache = {}  # id -> {scheme, token, user, password, exp}
 
@@ -108,9 +108,30 @@ def _make_alias(cid):
     return fn
 
 
-# One helper per configured connector (e.g. trino, postgres). trino() is always
-# defined for back-compat even before a manifest is injected.
+def _make_ambiguous(kind, ids):
+    def fn(*_args, **_kwargs):
+        raise RuntimeError(
+            f"SparkLabX: there are several '{kind}' connectors ({', '.join(ids)}) — "
+            f"call one by id, e.g. {ids[0]}('schema.table'), or query('{ids[0]}', 'SELECT ...').")
+    fn.__name__ = kind
+    return fn
+
+
+# Per-connector helper named after its id (e.g. trino, analytics_pg).
 for _cid in _CONNECTORS:
     globals()[_cid] = _make_alias(_cid)
+
+# Type helpers (postgres(), mysql(), trino()): when a kind has exactly one
+# connector, call it by the kind name too — the common, tidy case. With several
+# of a kind, the type name raises a helpful "call it by id" error instead.
+_by_kind = {}
+for _c in _CONNECTORS.values():
+    _by_kind.setdefault(_c.get("kind") or "", []).append(_c["id"])
+for _kind, _ids in _by_kind.items():
+    if not _kind or _kind in _CONNECTORS:
+        continue  # no kind, or an instance already owns that exact name
+    globals()[_kind] = _make_alias(_ids[0]) if len(_ids) == 1 else _make_ambiguous(_kind, _ids)
+
+# trino() is always defined for back-compat even before a manifest is injected.
 if "trino" not in globals():
     globals()["trino"] = _make_alias("trino")
