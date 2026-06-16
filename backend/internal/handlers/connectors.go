@@ -21,37 +21,70 @@ const connectorTokenTTL = 5 * time.Minute
 
 // ConnectorType is a supported kind of data source (built-in, code-level).
 type ConnectorType struct {
-	ID           string
-	Label        string
-	Icon         string
-	DriverClass  string
-	MetaStrategy string // "trino-show" | "jdbc-information-schema" | "api"
-	DefaultAuth  string // "app-jwt" | "idp-passthrough" | ...
+	ID            string
+	Label         string
+	Icon          string
+	DriverClass   string
+	DriverPackage string   // Maven coord the kernel needs (connect-dialog nudge)
+	MetaStrategy  string   // "trino-show" | "none" (no catalog browser yet)
+	DefaultAuth   string   // "app-jwt" | "idp-passthrough" | "broker-mapped"
+	AuthOptions   []string // selectable auth strategies in the Add dialog
 }
+
+// Browsable reports whether this type has a catalog browser (sidebar tree).
+func (t ConnectorType) Browsable() bool { return t.MetaStrategy == "trino-show" }
+
+// NeedsCredentials reports whether the Add dialog must collect a username/password
+// (broker-mapped sources store them encrypted; SSO/app-jwt sources don't).
+func (t ConnectorType) NeedsCredentials() bool { return t.DefaultAuth == "broker-mapped" }
 
 var connectorTypes = map[string]ConnectorType{
 	"trino": {
 		ID: "trino", Label: "Trino", Icon: "trino",
-		DriverClass:  "io.trino.jdbc.TrinoDriver",
-		MetaStrategy: "trino-show", DefaultAuth: "app-jwt",
+		DriverClass:   "io.trino.jdbc.TrinoDriver",
+		DriverPackage: "io.trino:trino-jdbc:481",
+		MetaStrategy:  "trino-show", DefaultAuth: "app-jwt",
+		AuthOptions: []string{"app-jwt", "idp-passthrough"},
 	},
-	// postgres / mysql / bigquery / … land here as each connector is added.
+	"postgres": {
+		ID: "postgres", Label: "PostgreSQL", Icon: "postgres",
+		DriverClass:   "org.postgresql.Driver",
+		DriverPackage: "org.postgresql:postgresql:42.7.4",
+		MetaStrategy:  "none", DefaultAuth: "broker-mapped",
+		AuthOptions: []string{"broker-mapped"},
+	},
+	"mysql": {
+		ID: "mysql", Label: "MySQL", Icon: "mysql",
+		DriverClass:   "com.mysql.cj.jdbc.Driver",
+		DriverPackage: "com.mysql:mysql-connector-j:9.1.0",
+		MetaStrategy:  "none", DefaultAuth: "broker-mapped",
+		AuthOptions: []string{"broker-mapped"},
+	},
+	// bigquery / snowflake / … land here as each connector is added.
 }
 
 // ConnectorInstance is a configured, enabled connection (per-deployment).
 type ConnectorInstance struct {
-	ID    string
-	Type  string
-	Label string
-	URL   string
-	Auth  string
+	ID          string
+	Type        string
+	Label       string
+	URL         string
+	Auth        string
+	Username    string // broker-mapped only
+	PasswordEnc string // broker-mapped only (AES-GCM)
+	FromEnv     bool   // true for the TRINO_URL seed → not deletable
 }
 
 func (i ConnectorInstance) metaStrategy() string { return connectorTypes[i.Type].MetaStrategy }
 func (i ConnectorInstance) icon() string         { return connectorTypes[i.Type].Icon }
 
-// connectorInstances builds the active connectors from config. For now the only
-// source is TRINO_URL (back-compat); a CONNECTORS JSON list can extend this later.
+// envSeedID is the id of the connector seeded from the TRINO_URL env var. It is
+// always present (back-compat) and cannot be deleted or shadowed by a DB row.
+const envSeedID = "trino"
+
+// connectorInstances builds the active connectors: the TRINO_URL env seed plus
+// every admin-managed row in the connectors table. Queried per call (small
+// table) so the set reflects runtime adds/deletes without a restart.
 func (h *AuthHandler) connectorInstances() []ConnectorInstance {
 	var out []ConnectorInstance
 	if h.cfg.KernelTrinoURL != "" {
@@ -59,7 +92,23 @@ func (h *AuthHandler) connectorInstances() []ConnectorInstance {
 		if auth == "" {
 			auth = connectorTypes["trino"].DefaultAuth
 		}
-		out = append(out, ConnectorInstance{ID: "trino", Type: "trino", Label: "Trino", URL: h.cfg.KernelTrinoURL, Auth: auth})
+		out = append(out, ConnectorInstance{ID: envSeedID, Type: "trino", Label: "Trino", URL: h.cfg.KernelTrinoURL, Auth: auth, FromEnv: true})
+	}
+	rows, err := database.GetDB().Query(`SELECT id, type, label, url, auth, username, password_enc FROM connectors ORDER BY created_at`)
+	if err != nil {
+		log.Warn().Err(err).Msg("list connectors failed; using env seed only")
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var c ConnectorInstance
+		if err := rows.Scan(&c.ID, &c.Type, &c.Label, &c.URL, &c.Auth, &c.Username, &c.PasswordEnc); err != nil {
+			continue
+		}
+		if c.ID == envSeedID {
+			continue // env seed wins
+		}
+		out = append(out, c)
 	}
 	return out
 }
@@ -142,6 +191,8 @@ func (h *AuthHandler) ListConnectors(c *gin.Context) {
 		out = append(out, gin.H{
 			"id": inst.ID, "label": inst.Label, "icon": inst.icon(),
 			"kind": inst.Type, "auth": inst.Auth,
+			"browsable": connectorTypes[inst.Type].Browsable(),
+			"deletable": !inst.FromEnv,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"connectors": out})
@@ -156,6 +207,27 @@ func (h *AuthHandler) ConnectorCredentials(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "unknown connector"})
 		return
 	}
+	// broker-mapped: a shared username/password stored encrypted on the connector
+	// (not the user's identity). The kernel helper applies it as JDBC user/password.
+	if inst.Auth == "broker-mapped" {
+		password := ""
+		if inst.PasswordEnc != "" && h.iam != nil {
+			if pw, err := h.iam.DecryptSecret(inst.PasswordEnc); err == nil {
+				password = pw
+			} else {
+				log.Error().Err(err).Str("connector", inst.ID).Msg("decrypt connector password failed")
+			}
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"scheme":      "user-password",
+			"username":    inst.Username,
+			"password":    password,
+			"expires_in":  0,
+			"sso_expired": false,
+		})
+		return
+	}
+
 	token, exp, ssoExpired, _ := h.resolveConnectorBearer(inst, c.GetString("admin_id"))
 	c.JSON(http.StatusOK, gin.H{
 		"scheme":       "bearer",
@@ -173,6 +245,13 @@ func (h *AuthHandler) ConnectorMetadata(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "unknown connector"})
 		return
 	}
+	// No catalog browser for this type yet (e.g. Postgres/MySQL) — the FE shows a
+	// "use query()" hint instead of a tree.
+	if !connectorTypes[inst.Type].Browsable() {
+		c.JSON(http.StatusOK, gin.H{"enabled": true, "browsable": false, "items": []string{}})
+		return
+	}
+
 	adminID := c.GetString("admin_id")
 	token, _, ssoExpired, principal := h.resolveConnectorBearer(inst, adminID)
 	if token == "" {

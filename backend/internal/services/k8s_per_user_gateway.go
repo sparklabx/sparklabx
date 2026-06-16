@@ -63,16 +63,17 @@ func pullSecretRefs(name string) []corev1.LocalObjectReference {
 
 // K8sPerUserConfig configures the dynamic per-user gateway.
 type K8sPerUserConfig struct {
-	Namespace          string                // K8s namespace where kernel pods live
-	PodImage           string                // image to run for each user pod
-	IdleTimeout        time.Duration         // delete pod after this long without activity
-	MaxPods            int                   // hard cap on concurrent pods cluster-wide
-	PullSecret         string                // optional imagePullSecret name; empty → none
-	CredsResolver      UserCredsResolver     // nil → use root creds from sparklabx-secrets (legacy)
-	OIDCTokenResolver  UserOIDCTokenResolver // returns the kernel callback token (SPARKLABX_KERNEL_TOKEN); nil → no SSO passthrough
-	TrinoURL           string                // injected as TRINO_URL for the trino() helper; empty → not set
-	KernelAPIURL       string                // injected as SPARKLABX_API_URL so the kernel can fetch a fresh OIDC token
-	ConnectorsManifest string                // injected as SPARKLABX_CONNECTORS (JSON [{id,driver,url}]) for the generic data helpers
+	Namespace                  string                // K8s namespace where kernel pods live
+	PodImage                   string                // image to run for each user pod
+	IdleTimeout                time.Duration         // delete pod after this long without activity
+	MaxPods                    int                   // hard cap on concurrent pods cluster-wide
+	PullSecret                 string                // optional imagePullSecret name; empty → none
+	CredsResolver              UserCredsResolver     // nil → use root creds from sparklabx-secrets (legacy)
+	OIDCTokenResolver          UserOIDCTokenResolver // returns the kernel callback token (SPARKLABX_KERNEL_TOKEN); nil → no SSO passthrough
+	TrinoURL                   string                // injected as TRINO_URL for the trino() helper; empty → not set
+	KernelAPIURL               string                // injected as SPARKLABX_API_URL so the kernel can fetch a fresh OIDC token
+	ConnectorsManifest         string                // injected as SPARKLABX_CONNECTORS (JSON [{id,driver,url}]) for the generic data helpers (static fallback)
+	ConnectorsManifestProvider func() string         // live manifest at spawn time; nil → use ConnectorsManifest
 
 	// Per-pod resource quantities ("500m", "1Gi"). Empty → fall back to
 	// defaults (500m/1Gi requests, 2000m/4Gi limits). MustParse'd at spawn,
@@ -742,8 +743,8 @@ func (g *K8sPerUserGateway) buildPodSpec(userID, podName string, res podSizes) *
 	if g.cfg.TrinoURL != "" {
 		awsEnv = append(awsEnv, corev1.EnvVar{Name: "TRINO_URL", Value: g.cfg.TrinoURL})
 	}
-	if g.cfg.ConnectorsManifest != "" {
-		awsEnv = append(awsEnv, corev1.EnvVar{Name: "SPARKLABX_CONNECTORS", Value: g.cfg.ConnectorsManifest})
+	if m := resolveConnectorsManifest(g.cfg.ConnectorsManifest, g.cfg.ConnectorsManifestProvider); m != "" {
+		awsEnv = append(awsEnv, corev1.EnvVar{Name: "SPARKLABX_CONNECTORS", Value: m})
 	}
 
 	return &corev1.Pod{

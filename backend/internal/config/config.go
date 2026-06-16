@@ -77,7 +77,12 @@ type Config struct {
 	// `iss` (and what a connector's required-issuer must match). TrinoAuth picks
 	// how the Trino instance authenticates: "idp-passthrough" (forward the IdP
 	// token — current/back-compat) or "app-jwt" (app-minted token).
+	// ConnectorJWTKeyFile is a path the app loads the signing key from, creating
+	// and persisting one on first boot if absent — keeps the JWKS `kid` stable
+	// across restarts (preferred over the inline PEM). Used only when
+	// ConnectorJWTPrivateKey is empty.
 	ConnectorJWTPrivateKey string
+	ConnectorJWTKeyFile    string
 	ConnectorIssuer        string
 	TrinoAuth              string
 
@@ -163,6 +168,7 @@ func Load() *Config {
 		KernelCallbackURL:    getEnv("KERNEL_CALLBACK_URL", "http://sparklabx-backend:10000"),
 
 		ConnectorJWTPrivateKey: getEnv("CONNECTOR_JWT_PRIVATE_KEY", ""),
+		ConnectorJWTKeyFile:    getEnv("CONNECTOR_JWT_PRIVATE_KEY_FILE", ""),
 		ConnectorIssuer:        getEnv("CONNECTOR_ISSUER", "sparklabx"),
 		TrinoAuth:              getEnv("TRINO_AUTH", "idp-passthrough"),
 

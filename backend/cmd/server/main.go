@@ -59,13 +59,24 @@ func main() {
 	authHandler := handlers.NewAuthHandler(cfg, minioIAM)
 
 	// Connector token signing key (app mints RS256 JWTs that connectors validate
-	// via /api/v1/.well-known/jwks.json). Ephemeral if no key is configured.
-	connectorKeys, err := connectorauth.New(cfg.ConnectorJWTPrivateKey, cfg.ConnectorIssuer)
+	// via /api/v1/.well-known/jwks.json). Precedence: inline PEM, else a key file
+	// (created+persisted on first boot for a stable JWKS), else an ephemeral key.
+	connectorKeyPEM := cfg.ConnectorJWTPrivateKey
+	if connectorKeyPEM == "" && cfg.ConnectorJWTKeyFile != "" {
+		connectorKeyPEM, err = connectorauth.LoadOrCreatePEM(cfg.ConnectorJWTKeyFile)
+		if err != nil {
+			log.Fatal().Err(err).Str("file", cfg.ConnectorJWTKeyFile).Msg("failed to load/create connector signing key file")
+		}
+	}
+	connectorKeys, err := connectorauth.New(connectorKeyPEM, cfg.ConnectorIssuer)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to init connector signing key")
 	}
-	if cfg.ConnectorJWTPrivateKey == "" {
-		log.Warn().Msg("CONNECTOR_JWT_PRIVATE_KEY not set — using an ephemeral connector signing key (set one for stable prod JWKS)")
+	switch {
+	case connectorKeyPEM == "":
+		log.Warn().Msg("connector signing key is ephemeral — set CONNECTOR_JWT_PRIVATE_KEY_FILE (or _KEY) so the JWKS kid survives restarts")
+	case cfg.ConnectorJWTKeyFile != "" && cfg.ConnectorJWTPrivateKey == "":
+		log.Info().Str("file", cfg.ConnectorJWTKeyFile).Msg("connector signing key loaded from file (stable JWKS)")
 	}
 	authHandler.SetConnectorKeys(connectorKeys)
 
@@ -108,25 +119,26 @@ func main() {
 
 	// KernelGateway: shared single container OR per-user pod via KERNEL_MODE.
 	kernelGateway, err := services.NewKernelGateway(services.KernelGatewaySettings{
-		Mode:               cfg.KernelMode,
-		Environment:        cfg.Environment,
-		JupyterGatewayURL:  cfg.JupyterGatewayURL,
-		PodImage:           cfg.KernelPodImage,
-		PodNamespace:       cfg.KernelPodNamespace,
-		DockerNetwork:      cfg.KernelDockerNetwork,
-		MinIOEndpoint:      cfg.MinIOEndpoint,
-		IdleTimeout:        time.Duration(cfg.KernelPodIdleMinutes) * time.Minute,
-		MaxKernels:         cfg.KernelPodMaxTotal,
-		PullSecret:         cfg.KernelPullSecret,
-		CredsResolver:      credsResolver,
-		OIDCTokenResolver:  oidcTokenResolver,
-		TrinoURL:           cfg.KernelTrinoURL,
-		KernelAPIURL:       cfg.KernelCallbackURL,
-		ConnectorsManifest: authHandler.ConnectorsKernelManifest(),
-		PodCPURequest:      cfg.KernelPodCPURequest,
-		PodMemoryRequest:   cfg.KernelPodMemoryRequest,
-		PodCPULimit:        cfg.KernelPodCPULimit,
-		PodMemoryLimit:     cfg.KernelPodMemoryLimit,
+		Mode:                       cfg.KernelMode,
+		Environment:                cfg.Environment,
+		JupyterGatewayURL:          cfg.JupyterGatewayURL,
+		PodImage:                   cfg.KernelPodImage,
+		PodNamespace:               cfg.KernelPodNamespace,
+		DockerNetwork:              cfg.KernelDockerNetwork,
+		MinIOEndpoint:              cfg.MinIOEndpoint,
+		IdleTimeout:                time.Duration(cfg.KernelPodIdleMinutes) * time.Minute,
+		MaxKernels:                 cfg.KernelPodMaxTotal,
+		PullSecret:                 cfg.KernelPullSecret,
+		CredsResolver:              credsResolver,
+		OIDCTokenResolver:          oidcTokenResolver,
+		TrinoURL:                   cfg.KernelTrinoURL,
+		KernelAPIURL:               cfg.KernelCallbackURL,
+		ConnectorsManifest:         authHandler.ConnectorsKernelManifest(),
+		ConnectorsManifestProvider: authHandler.ConnectorsKernelManifest,
+		PodCPURequest:              cfg.KernelPodCPURequest,
+		PodMemoryRequest:           cfg.KernelPodMemoryRequest,
+		PodCPULimit:                cfg.KernelPodCPULimit,
+		PodMemoryLimit:             cfg.KernelPodMemoryLimit,
 	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to initialize kernel gateway")
@@ -290,8 +302,12 @@ func main() {
 		//   - mint/resolve a per-query credential, called by the kernel (kernel token)
 		v1.GET("/.well-known/jwks.json", authHandler.ConnectorJWKS)
 		v1.GET("/connectors", middleware.RequireAdmin(cfg), authHandler.ListConnectors)
+		v1.GET("/connector-types", middleware.RequireAdmin(cfg), authHandler.ConnectorTypes)
 		v1.GET("/connectors/:id/metadata", middleware.RequireAdmin(cfg), authHandler.ConnectorMetadata)
 		v1.GET("/connectors/:id/credentials", middleware.RequireKernelToken(cfg), authHandler.ConnectorCredentials)
+		// Add/remove connectors — superadmin only (global, shared data sources).
+		v1.POST("/connectors", middleware.RequireAdmin(cfg), middleware.RequireSuperAdmin(), authHandler.CreateConnector)
+		v1.DELETE("/connectors/:id", middleware.RequireAdmin(cfg), middleware.RequireSuperAdmin(), authHandler.DeleteConnector)
 	}
 
 	addr := ":" + cfg.ServicePort

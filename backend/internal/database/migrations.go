@@ -77,6 +77,22 @@ func MigrateAndSeed(cfg *config.Config) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_allowed_email_rules_lookup ON allowed_email_rules(enabled, rule_type, value)`,
 
+		// Admin-managed data connectors (Trino, Postgres, MySQL, …). The TRINO_URL
+		// env still seeds a non-deletable "trino" connector; these are the ones
+		// added from the UI. password_enc is AES-GCM (services.MinIOIAM key) for
+		// broker-mapped (user/password) sources; empty for app-jwt/idp-passthrough.
+		`CREATE TABLE IF NOT EXISTS connectors (
+			id VARCHAR(64) PRIMARY KEY,
+			type VARCHAR(32) NOT NULL,
+			label VARCHAR(128) NOT NULL,
+			url TEXT NOT NULL,
+			auth VARCHAR(32) NOT NULL,
+			username VARCHAR(255) NOT NULL DEFAULT '',
+			password_enc TEXT NOT NULL DEFAULT '',
+			added_by VARCHAR(255) NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ DEFAULT NOW()
+		)`,
+
 		// K8s per-user pod tracking
 		`CREATE TABLE IF NOT EXISTS user_kernel_pods (
 			user_id        TEXT PRIMARY KEY,

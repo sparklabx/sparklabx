@@ -7,6 +7,7 @@
 package connectorauth
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -15,6 +16,8 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -47,6 +50,37 @@ func New(pemKey, issuer string) (*Keys, error) {
 		priv = p
 	}
 	return &Keys{priv: priv, kid: thumbprint(&priv.PublicKey), issuer: issuer}, nil
+}
+
+// LoadOrCreatePEM returns a PEM-encoded RSA private key read from path. If the
+// file is missing or empty, it generates a new 2048-bit key, writes it there
+// (0600), and returns that — so the signing key, and thus the JWKS `kid`, stays
+// stable across restarts without committing a secret or pasting multiline PEM
+// into env. An empty path returns ("", nil) so the caller falls back to an
+// ephemeral key. Pair with CONNECTOR_JWT_PRIVATE_KEY_FILE + a persistent volume.
+func LoadOrCreatePEM(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	if b, err := os.ReadFile(path); err == nil && len(bytes.TrimSpace(b)) > 0 {
+		return string(b), nil
+	}
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return "", fmt.Errorf("generate connector signing key: %w", err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		return "", fmt.Errorf("marshal connector signing key: %w", err)
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", fmt.Errorf("create connector key dir: %w", err)
+	}
+	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
+		return "", fmt.Errorf("write connector signing key: %w", err)
+	}
+	return string(pemBytes), nil
 }
 
 func parsePEMPrivateKey(s string) (*rsa.PrivateKey, error) {

@@ -141,15 +141,19 @@ func quoteTrinoIdent(s string) string {
 //	?catalog=c               → SHOW SCHEMAS FROM "c"
 //	?catalog=c&schema=s      → SHOW TABLES FROM "c"."s"
 func (h *AuthHandler) TrinoMetadata(c *gin.Context) {
-	base, insecure, ok := h.trinoHTTPBase()
+	// Thin shim over the generic connector path so the old frontend's
+	// /trino/metadata honours the trino instance's auth strategy (app-jwt or
+	// idp-passthrough) — resolving the bearer via ValidOIDCAccessToken directly
+	// would forward an IdP token that an app-jwt Trino rejects.
+	inst, ok := h.connectorByID("trino")
 	if !ok {
 		c.JSON(http.StatusOK, gin.H{"enabled": false, "items": []string{}})
 		return
 	}
-	token, _, ssoExpired, _ := h.ValidOIDCAccessToken(c.GetString("admin_id"))
+	token, _, ssoExpired, principal := h.resolveConnectorBearer(inst, c.GetString("admin_id"))
 	if token == "" {
-		// Browsing Trino needs the SSO passthrough: non-SSO users have no
-		// identity to present, and an expired session must re-login.
+		// No credential to present: non-SSO/idp-passthrough users have no
+		// identity, or an expired session must re-login.
 		c.JSON(http.StatusOK, gin.H{
 			"enabled":     true,
 			"items":       []string{},
@@ -158,26 +162,13 @@ func (h *AuthHandler) TrinoMetadata(c *gin.Context) {
 		})
 		return
 	}
-	user := jwtPreferredUsername(token)
-	if user == "" {
-		user = c.GetString("admin_username")
+	if principal == "" {
+		principal = c.GetString("admin_username")
 	}
 
-	catalog := c.Query("catalog")
-	schema := c.Query("schema")
-	var sql, level string
-	switch {
-	case catalog == "":
-		sql, level = "SHOW CATALOGS", "catalog"
-	case schema == "":
-		sql, level = "SHOW SCHEMAS FROM "+quoteTrinoIdent(catalog), "schema"
-	default:
-		sql, level = "SHOW TABLES FROM "+quoteTrinoIdent(catalog)+"."+quoteTrinoIdent(schema), "table"
-	}
-
-	items, err := trinoShow(base, insecure, token, user, sql)
+	items, level, err := h.connectorMetadata(inst, token, principal, c.Query("catalog"), c.Query("schema"))
 	if err != nil {
-		log.Warn().Err(err).Str("sql", sql).Msg("trino metadata query failed")
+		log.Warn().Err(err).Msg("trino metadata query failed")
 		c.JSON(http.StatusBadGateway, gin.H{"error": "trino query failed"})
 		return
 	}

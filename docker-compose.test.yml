@@ -45,6 +45,10 @@ services:
       - TRINO_AUTH=${TRINO_AUTH:-idp-passthrough}
       - CONNECTOR_ISSUER=${CONNECTOR_ISSUER:-sparklabx}
       - CONNECTOR_JWT_PRIVATE_KEY=${CONNECTOR_JWT_PRIVATE_KEY:-}
+      # Stable connector signing key: created+persisted on first boot to this
+      # path (backed by the connector_keys volume below), so the JWKS kid
+      # survives backend restarts and Trino keeps validating app-minted tokens.
+      - CONNECTOR_JWT_PRIVATE_KEY_FILE=${CONNECTOR_JWT_PRIVATE_KEY_FILE:-/var/lib/sparklabx/connector-signing-key.pem}
       - KERNEL_CALLBACK_URL=${KERNEL_CALLBACK_URL:-http://sparklabx-backend:10000}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
@@ -69,6 +73,8 @@ services:
     volumes:
       # Required when KERNEL_MODE=docker_per_user (see comment in docker-compose.yml).
       - /var/run/docker.sock:/var/run/docker.sock
+      # Persists the auto-generated connector signing key across restarts.
+      - connector_keys:/var/lib/sparklabx
     depends_on:
       - postgres
     restart: unless-stopped
@@ -144,6 +150,7 @@ services:
 volumes:
   postgres_data:
   minio_data:
+  connector_keys:
 
 # Pin the network name so it doesn't depend on the project directory. Backend
 # joins per-user kernel containers to this network via KERNEL_DOCKER_NETWORK,
