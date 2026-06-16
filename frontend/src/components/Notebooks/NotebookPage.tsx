@@ -376,6 +376,10 @@ export default function NotebookPage() {
                         extraConfigs.set('spark.sql.catalog.iceberg.warehouse', icebergWarehouse);
                     }
                 }
+                // DataFlint: a Spark plugin that adds a performance tab to the Spark UI.
+                if (pkgLower.includes('io.dataflint')) {
+                    extraConfigs.set('spark.plugins', 'io.dataflint.spark.SparkDataflintPlugin');
+                }
                 const extraConfigLines = Array.from(extraConfigs.entries())
                     .map(([k, v]) => ` \\
         .config("${k}", "${v}")`)
@@ -388,6 +392,7 @@ export default function NotebookPage() {
                     'spark.sql.catalog.iceberg',
                     'spark.sql.catalog.iceberg.type',
                     'spark.sql.catalog.iceberg.warehouse',
+                    'spark.plugins',
                 ]);
                 const runtimeConfigLinesPy = Array.from(extraConfigs.entries())
                     .filter(([k]) => !STATIC_SPARK_CONF_KEYS.has(k))
@@ -498,6 +503,10 @@ except Exception as _e:
                         extraConfigs.set('spark.sql.catalog.iceberg.warehouse', icebergWarehouse);
                     }
                 }
+                // DataFlint: a Spark plugin that adds a performance tab to the Spark UI.
+                if (pkgLower.includes('io.dataflint')) {
+                    extraConfigs.set('spark.plugins', 'io.dataflint.spark.SparkDataflintPlugin');
+                }
                 const extraConfigBlock = Array.from(extraConfigs.entries())
                     .map(([k, v]) => `SparkConfig.set("${k}", "${v}")`)
                     .join('\n');
@@ -510,6 +519,7 @@ except Exception as _e:
                     'spark.sql.catalog.iceberg',
                     'spark.sql.catalog.iceberg.type',
                     'spark.sql.catalog.iceberg.warehouse',
+                    'spark.plugins',
                 ]);
                 const runtimeConfigBlockScala = Array.from(extraConfigs.entries())
                     .filter(([k]) => !STATIC_SPARK_CONF_KEYS.has(k))
