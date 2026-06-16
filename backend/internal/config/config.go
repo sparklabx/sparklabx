@@ -68,7 +68,7 @@ type Config struct {
 	KernelPodMaxTotal    int
 	KernelDockerNetwork  string
 	KernelPullSecret     string // optional K8s imagePullSecret for private forks
-	KernelTrinoURL       string // optional default Trino JDBC URL injected into kernels for the trino() helper (empty → helper requires an explicit url=)
+	KernelTrinoURL       string // optional TRINO_URL — seeds a "trino" connector into the DB once on first boot (then managed in the UI). Empty → no seed.
 	KernelCallbackURL    string // backend base URL reachable FROM kernels; the data helpers call it to fetch a fresh OIDC token per query
 
 	// Connector auth (see docs/connectors-design.md). The app mints RS256 JWTs
@@ -191,12 +191,6 @@ func Load() *Config {
 // the SSO button and the /auth/oidc/* routes are active only when this is true.
 func (c *Config) OIDCEnabled() bool {
 	return c.OIDCIssuerURL != "" && c.OIDCClientID != "" && c.OIDCRedirectURL != ""
-}
-
-// TrinoEnabled reports whether a default Trino URL is configured. Drives the
-// notebook's Trino catalog-browser sidebar tab.
-func (c *Config) TrinoEnabled() bool {
-	return c.KernelTrinoURL != ""
 }
 
 func getEnv(key, fallback string) string {

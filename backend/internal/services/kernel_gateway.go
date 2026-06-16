@@ -158,7 +158,6 @@ type KernelGatewaySettings struct {
 	PullSecret        string        // optional K8s imagePullSecret name (empty → none)
 	CredsResolver     UserCredsResolver
 	OIDCTokenResolver UserOIDCTokenResolver // returns the kernel's callback token (SPARKLABX_KERNEL_TOKEN); nil → no SSO passthrough
-	TrinoURL          string                // optional default Trino JDBC URL injected as TRINO_URL for the trino() helper
 	KernelAPIURL      string                // backend URL injected as SPARKLABX_API_URL so kernels can fetch a fresh OIDC token
 	// ConnectorsManifestProvider is called at each kernel spawn with the spawning
 	// user's id to get the SPARKLABX_CONNECTORS manifest of connectors VISIBLE to
@@ -223,7 +222,6 @@ func NewKernelGateway(s KernelGatewaySettings) (KernelGateway, error) {
 			MinIOEndpoint:              s.MinIOEndpoint,
 			CredsResolver:              s.CredsResolver,
 			OIDCTokenResolver:          s.OIDCTokenResolver,
-			TrinoURL:                   s.TrinoURL,
 			KernelAPIURL:               s.KernelAPIURL,
 			ConnectorsManifestProvider: s.ConnectorsManifestProvider,
 			CPULimit:                   s.PodCPULimit,
@@ -242,7 +240,6 @@ func NewKernelGateway(s KernelGatewaySettings) (KernelGateway, error) {
 			PullSecret:                 s.PullSecret,
 			CredsResolver:              s.CredsResolver,
 			OIDCTokenResolver:          s.OIDCTokenResolver,
-			TrinoURL:                   s.TrinoURL,
 			KernelAPIURL:               s.KernelAPIURL,
 			ConnectorsManifestProvider: s.ConnectorsManifestProvider,
 			CPURequest:                 s.PodCPURequest,

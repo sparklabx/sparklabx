@@ -180,7 +180,6 @@ class AuthService {
   // callers must optional-chain — the type reflects that reality.
   async getAuthConfig(): Promise<{
     oidc?: { enabled?: boolean; provider_name?: string };
-    trino?: { enabled?: boolean };
   }> {
     const response = await axios.get(`${API_BASE}/auth/config`);
     return response.data;

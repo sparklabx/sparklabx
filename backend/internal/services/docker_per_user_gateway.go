@@ -57,7 +57,6 @@ type DockerPerUserConfig struct {
 	MinIOEndpoint              string                     // injected as S3_ENDPOINT env so kernel reaches MinIO
 	CredsResolver              UserCredsResolver          // nil → fall back to root creds via env passthrough
 	OIDCTokenResolver          UserOIDCTokenResolver      // returns the kernel callback token (SPARKLABX_KERNEL_TOKEN); nil → no SSO passthrough
-	TrinoURL                   string                     // injected as TRINO_URL for the trino() helper; empty → not set
 	KernelAPIURL               string                     // injected as SPARKLABX_API_URL so the kernel can fetch a fresh OIDC token
 	ConnectorsManifestProvider func(userID string) string // live per-user manifest at spawn time; nil → use ConnectorsManifest
 
@@ -354,9 +353,6 @@ func (g *DockerPerUserGateway) EnsureSpawning(userID string, spec *ResourceSpec)
 		}
 	}
 	// Default Trino endpoint for the trino() notebook helper (operator-configured).
-	if g.cfg.TrinoURL != "" {
-		env = append(env, "TRINO_URL="+g.cfg.TrinoURL)
-	}
 	// Connector manifest ([{id,driver,url}]) for the generic data helpers; each
 	// connector gets an alias that fetches a fresh credential per query.
 	if m := resolveConnectorsManifest(g.cfg.ConnectorsManifestProvider, userID); m != "" {
