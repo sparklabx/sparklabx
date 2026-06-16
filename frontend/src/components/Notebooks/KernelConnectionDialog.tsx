@@ -85,6 +85,7 @@ interface PackagePreset {
     label: string;
     description: string;
     packages: string[];
+    group: 'format' | 'driver'; // table formats vs connector drivers
 }
 
 const PACKAGE_PRESETS: PackagePreset[] = [
@@ -93,40 +94,41 @@ const PACKAGE_PRESETS: PackagePreset[] = [
         label: 'Delta',
         description: 'Delta Lake for Spark 3.5 / Scala 2.12',
         packages: ['io.delta:delta-spark_2.12:3.3.2'],
+        group: 'format',
     },
     {
         id: 'iceberg',
         label: 'Iceberg',
         description: 'Iceberg runtime for Spark 3.5 / Scala 2.12',
         packages: ['org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.10.1'],
+        group: 'format',
     },
     {
         id: 'trino',
         label: 'Trino',
         description: 'Trino JDBC driver — query external Trino clusters (edit the version to match yours)',
         packages: ['io.trino:trino-jdbc:481'],
+        group: 'driver',
     },
     {
         id: 'postgres',
         label: 'PostgreSQL',
         description: 'PostgreSQL JDBC driver — for postgres() / query() data sources',
         packages: ['org.postgresql:postgresql:42.7.4'],
+        group: 'driver',
     },
     {
         id: 'mysql',
         label: 'MySQL',
         description: 'MySQL JDBC driver — for mysql() / query() data sources',
         packages: ['com.mysql:mysql-connector-j:9.1.0'],
+        group: 'driver',
     },
-    {
-        id: 'delta-iceberg',
-        label: 'Delta + Iceberg',
-        description: 'Enable both Delta Lake and Iceberg',
-        packages: [
-            'io.delta:delta-spark_2.12:3.3.2',
-            'org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.10.1',
-        ],
-    },
+];
+
+const PRESET_GROUPS: { group: PackagePreset['group']; title: string }[] = [
+    { group: 'format', title: 'Table formats' },
+    { group: 'driver', title: 'Connector drivers' },
 ];
 
 function normalizePackageInput(value?: string): string {
@@ -643,32 +645,30 @@ export function KernelConnectionDialog({
                                 <AccordionTrigger className="py-3 text-xs font-medium hover:no-underline">
                                     Package Presets
                                 </AccordionTrigger>
-                                <AccordionContent className="space-y-2">
-                                    <div className="flex flex-wrap gap-2">
-                                        {PACKAGE_PRESETS.map((preset) => (
-                                            <Button
-                                                key={preset.id}
-                                                type="button"
-                                                variant={activePresetId === preset.id ? 'default' : 'outline'}
-                                                size="sm"
-                                                className="h-7 px-2 text-xs"
-                                                onClick={() => applyPreset(preset)}
-                                                title={configuredKinds.includes(preset.id) ? 'Configured on this server' : undefined}
-                                            >
-                                                {preset.label}
-                                                {configuredKinds.includes(preset.id) && (
-                                                    <span className="ml-1.5 inline-block size-1.5 rounded-full bg-emerald-500" aria-label="configured" />
-                                                )}
-                                            </Button>
-                                        ))}
-                                    </div>
-                                    <div className="space-y-1">
-                                        {PACKAGE_PRESETS.map((preset) => (
-                                            <div key={`${preset.id}-hint`} className="text-[10px] text-muted-foreground">
-                                                <span className="font-medium text-foreground">{preset.label}:</span> {preset.description}
+                                <AccordionContent className="space-y-3">
+                                    {PRESET_GROUPS.map(({ group, title }) => (
+                                        <div key={group} className="space-y-1.5">
+                                            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{title}</p>
+                                            <div className="flex flex-wrap gap-2">
+                                                {PACKAGE_PRESETS.filter(p => p.group === group).map((preset) => (
+                                                    <Button
+                                                        key={preset.id}
+                                                        type="button"
+                                                        variant={activePresetId === preset.id ? 'default' : 'outline'}
+                                                        size="sm"
+                                                        className="h-7 px-2 text-xs"
+                                                        onClick={() => applyPreset(preset)}
+                                                        title={preset.description + (configuredKinds.includes(preset.id) ? ' — configured on this server' : '')}
+                                                    >
+                                                        {preset.label}
+                                                        {configuredKinds.includes(preset.id) && (
+                                                            <span className="ml-1.5 inline-block size-1.5 rounded-full bg-emerald-500" aria-label="configured" />
+                                                        )}
+                                                    </Button>
+                                                ))}
                                             </div>
-                                        ))}
-                                    </div>
+                                        </div>
+                                    ))}
                                 </AccordionContent>
                             </AccordionItem>
                         </Accordion>
