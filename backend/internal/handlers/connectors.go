@@ -32,7 +32,7 @@ type ConnectorType struct {
 }
 
 // Browsable reports whether this type has a catalog browser (sidebar tree).
-func (t ConnectorType) Browsable() bool { return t.MetaStrategy == "trino-show" }
+func (t ConnectorType) Browsable() bool { return t.MetaStrategy != "" && t.MetaStrategy != "none" }
 
 // NeedsCredentials reports whether the Add dialog must collect a username/password
 // (broker-mapped sources store them encrypted; SSO/app-jwt sources don't).
@@ -50,14 +50,14 @@ var connectorTypes = map[string]ConnectorType{
 		ID: "postgres", Label: "PostgreSQL", Icon: "postgres",
 		DriverClass:   "org.postgresql.Driver",
 		DriverPackage: "org.postgresql:postgresql:42.7.4",
-		MetaStrategy:  "none", DefaultAuth: "broker-mapped",
+		MetaStrategy:  "jdbc-information-schema", DefaultAuth: "broker-mapped",
 		AuthOptions: []string{"broker-mapped"},
 	},
 	"mysql": {
 		ID: "mysql", Label: "MySQL", Icon: "mysql",
 		DriverClass:   "com.mysql.cj.jdbc.Driver",
 		DriverPackage: "com.mysql:mysql-connector-j:9.1.0",
-		MetaStrategy:  "none", DefaultAuth: "broker-mapped",
+		MetaStrategy:  "jdbc-information-schema", DefaultAuth: "broker-mapped",
 		AuthOptions: []string{"broker-mapped"},
 	},
 	// bigquery / snowflake / … land here as each connector is added.
@@ -246,36 +246,49 @@ func (h *AuthHandler) ConnectorMetadata(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "unknown connector"})
 		return
 	}
-	// No catalog browser for this type yet (e.g. Postgres/MySQL) — the FE shows a
-	// "use query()" hint instead of a tree.
-	if !connectorTypes[inst.Type].Browsable() {
+	switch inst.metaStrategy() {
+	case "trino-show":
+		// Browsed as the logged-in user via an app-jwt / IdP bearer.
+		token, _, ssoExpired, principal := h.resolveConnectorBearer(inst, c.GetString("admin_id"))
+		if token == "" {
+			c.JSON(http.StatusOK, gin.H{
+				"enabled": true, "items": []string{},
+				"sso_expired": ssoExpired, "needs_sso": !ssoExpired,
+			})
+			return
+		}
+		if principal == "" {
+			principal = c.GetString("admin_username")
+		}
+		items, level, err := h.connectorMetadata(inst, token, principal, c.Query("catalog"), c.Query("schema"))
+		if err != nil {
+			log.Warn().Err(err).Str("connector", inst.ID).Msg("connector metadata query failed")
+			c.JSON(http.StatusBadGateway, gin.H{"error": "metadata query failed"})
+			return
+		}
+		if items == nil {
+			items = []string{}
+		}
+		c.JSON(http.StatusOK, gin.H{"enabled": true, "level": level, "items": items})
+
+	case "jdbc-information-schema":
+		// Browsed via the connector's shared credentials (?catalog carries the
+		// selected schema). Two levels: schemas → tables.
+		items, level, err := h.jdbcMetadata(inst, c.Query("catalog"))
+		if err != nil {
+			log.Warn().Err(err).Str("connector", inst.ID).Msg("jdbc metadata query failed")
+			c.JSON(http.StatusBadGateway, gin.H{"error": "metadata query failed"})
+			return
+		}
+		if items == nil {
+			items = []string{}
+		}
+		c.JSON(http.StatusOK, gin.H{"enabled": true, "level": level, "items": items})
+
+	default:
+		// No catalog browser for this type — the FE shows a "use query()" hint.
 		c.JSON(http.StatusOK, gin.H{"enabled": true, "browsable": false, "items": []string{}})
-		return
 	}
-
-	adminID := c.GetString("admin_id")
-	token, _, ssoExpired, principal := h.resolveConnectorBearer(inst, adminID)
-	if token == "" {
-		c.JSON(http.StatusOK, gin.H{
-			"enabled": true, "items": []string{},
-			"sso_expired": ssoExpired, "needs_sso": !ssoExpired,
-		})
-		return
-	}
-	if principal == "" {
-		principal = c.GetString("admin_username")
-	}
-
-	items, level, err := h.connectorMetadata(inst, token, principal, c.Query("catalog"), c.Query("schema"))
-	if err != nil {
-		log.Warn().Err(err).Str("connector", inst.ID).Msg("connector metadata query failed")
-		c.JSON(http.StatusBadGateway, gin.H{"error": "metadata query failed"})
-		return
-	}
-	if items == nil {
-		items = []string{}
-	}
-	c.JSON(http.StatusOK, gin.H{"enabled": true, "level": level, "items": items})
 }
 
 // connectorMetadata dispatches to the right metadata adapter for the connector's

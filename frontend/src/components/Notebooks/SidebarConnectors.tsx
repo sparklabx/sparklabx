@@ -8,10 +8,11 @@ import { MysqlIcon } from './parts/MysqlIcon';
 import { AddConnectorDialog } from './AddConnectorDialog';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 
-// Data-source manager. Lists the configured connectors (Trino, Postgres, …),
-// each authenticated as the user via the backend. Browsable connectors (Trino)
-// expand into a catalog/schema/table tree; others show a query() hint. Superadmins
-// can add/remove sources. Driven entirely by the /connectors registry.
+// Data-source manager. Lists the configured connectors (Trino, Postgres, …) and,
+// for browsable ones, a lazy catalog tree of whatever depth the backend reports
+// (Trino: catalog→schema→table; SQL DBs: schema→table). Clicking a leaf copies a
+// ready-to-run helper snippet. Superadmins add/remove sources. Driven by the
+// /connectors registry.
 
 export type Connector = {
     id: string;
@@ -25,8 +26,12 @@ export type Connector = {
 
 type MetaResp = { enabled: boolean; level?: string; items?: string[]; needs_sso?: boolean; sso_expired?: boolean };
 
-async function fetchMeta(id: string, catalog?: string, schema?: string): Promise<MetaResp> {
-    const res = await axios.get<MetaResp>(`/api/v1/connectors/${id}/metadata`, { params: { catalog, schema } });
+// Fetch one level of the tree. The path's first two segments map to the backend's
+// ?catalog=&schema= params (enough for the deepest 3-level case, Trino).
+async function fetchMeta(id: string, path: string[]): Promise<MetaResp> {
+    const res = await axios.get<MetaResp>(`/api/v1/connectors/${id}/metadata`, {
+        params: { catalog: path[0], schema: path[1] },
+    });
     return res.data;
 }
 
@@ -39,85 +44,121 @@ const ConnectorIcon: React.FC<{ kind: string }> = ({ kind }) => {
     return <Database className="size-3.5 shrink-0" />;
 };
 
+// One node in the lazy tree. A "table"-level node is a leaf (click → copy a
+// helper snippet); anything else is a branch that loads its children on expand.
+const MetaNode: React.FC<{ connectorId: string; alias: string; path: string[]; level: string }> = ({ connectorId, alias, path, level }) => {
+    const isLeaf = level === 'table';
+    const [open, setOpen] = useState(false);
+    const [children, setChildren] = useState<{ items: string[]; level: string } | null>(null);
+    const [busy, setBusy] = useState(false);
+    const name = path[path.length - 1];
+    const indent = { paddingLeft: `${(path.length - 1) * 0.75 + 0.25}rem` };
+
+    const onClick = async () => {
+        if (isLeaf) {
+            const snippet = `${alias}("${path.join('.')}")`;
+            navigator.clipboard.writeText(snippet);
+            toast.success(`Copied: ${snippet}`);
+            return;
+        }
+        const next = !open;
+        setOpen(next);
+        if (next && children === null) {
+            setBusy(true);
+            try { const d = await fetchMeta(connectorId, path); setChildren({ items: d.items || [], level: d.level || 'table' }); }
+            catch { toast.error('Failed to load'); }
+            finally { setBusy(false); }
+        }
+    };
+
+    return (
+        <div>
+            <div className="flex items-center gap-1 py-1 pr-1 rounded hover:bg-muted cursor-pointer"
+                style={indent}
+                title={isLeaf ? `Copy ${alias}("${path.join('.')}")` : undefined}
+                onClick={onClick}>
+                {isLeaf
+                    ? <Table2 className="size-3 shrink-0 text-emerald-500" />
+                    : (open ? <ChevronDown className="size-3 shrink-0" /> : <ChevronRight className="size-3 shrink-0" />)}
+                {!isLeaf && path.length === 1 && <Database className="size-3 shrink-0 text-blue-500" />}
+                <span className={`truncate ${path.length > 1 && !isLeaf ? 'text-muted-foreground' : ''}`}>{name}</span>
+                {busy && <Loader2 className="size-3 animate-spin ml-auto" />}
+            </div>
+            {open && children && children.items.map(child => (
+                <MetaNode key={child} connectorId={connectorId} alias={alias} path={[...path, child]} level={children.level} />
+            ))}
+            {open && children && children.items.length === 0 && (
+                <p className="py-1 text-[11px] text-muted-foreground" style={{ paddingLeft: `${path.length * 0.75 + 0.25}rem` }}>empty</p>
+            )}
+        </div>
+    );
+};
+
 type Status = 'loading' | 'ready' | 'needs_sso' | 'sso_expired' | 'error';
+
+const Hint: React.FC<{ icon: React.ElementType; title: string; sub: string }> = ({ icon: Icon, title, sub }) => (
+    <div className="p-4 text-center text-muted-foreground">
+        <Icon className="size-6 mx-auto mb-2 opacity-60" />
+        <p className="text-xs font-medium">{title}</p>
+        <p className="text-[11px] mt-1">{sub}</p>
+    </div>
+);
+
+// The catalog tree for one browsable connector: loads the root level, then nodes
+// expand lazily. Remounted (via key) to refresh or switch connectors.
+const MetaTree: React.FC<{ connectorId: string; alias: string; label: string; onRefresh: () => void }> = ({ connectorId, alias, label, onRefresh }) => {
+    const [status, setStatus] = useState<Status>('loading');
+    const [roots, setRoots] = useState<string[]>([]);
+    const [rootLevel, setRootLevel] = useState('table');
+
+    const load = useCallback(async () => {
+        setStatus('loading');
+        try {
+            const d = await fetchMeta(connectorId, []);
+            if (!d.enabled) { setStatus('error'); return; }
+            if (d.sso_expired) { setStatus('sso_expired'); return; }
+            if (d.needs_sso) { setStatus('needs_sso'); return; }
+            setRoots(d.items || []); setRootLevel(d.level || 'table'); setStatus('ready');
+        } catch { setStatus('error'); }
+    }, [connectorId]);
+    useEffect(() => { void load(); }, [load]);
+
+    if (status === 'loading') return <div className="flex items-center gap-2 py-2 text-muted-foreground"><Loader2 className="size-3 animate-spin" /> Loading…</div>;
+    if (status === 'needs_sso') return <Hint icon={ShieldAlert} title="Sign in with SSO" sub={`${label} browses as your SSO identity. Log in via SSO.`} />;
+    if (status === 'sso_expired') return <Hint icon={ShieldAlert} title="SSO session expired" sub="Log out and back in to refresh access." />;
+    if (status === 'error') return (
+        <div className="py-2 text-center">
+            <Hint icon={Database} title={`${label} unavailable`} sub="Couldn't reach the source." />
+            <button className="text-[11px] text-primary hover:underline" onClick={onRefresh}>Retry</button>
+        </div>
+    );
+    if (roots.length === 0) return <p className="py-2 text-muted-foreground">Nothing visible.</p>;
+    return (
+        <>
+            {roots.map(r => <MetaNode key={r} connectorId={connectorId} alias={alias} path={[r]} level={rootLevel} />)}
+            <p className="mt-2 pt-1.5 border-t border-border/50 text-[10px] text-muted-foreground">
+                Click a table to copy <code className="text-[10px]">{`${alias}("…")`}</code>.
+            </p>
+        </>
+    );
+};
 
 export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: () => void }> = ({ connectors, onChanged }) => {
     const { isSuperAdmin } = useCurrentUser();
     const [activeId, setActiveId] = useState<string>(connectors[0]?.id ?? '');
     const [addOpen, setAddOpen] = useState(false);
-
-    const [status, setStatus] = useState<Status>('loading');
-    const [catalogs, setCatalogs] = useState<string[]>([]);
-    const [openCat, setOpenCat] = useState<Record<string, boolean>>({});
-    const [openSchema, setOpenSchema] = useState<Record<string, boolean>>({});
-    const [schemas, setSchemas] = useState<Record<string, string[]>>({});
-    const [tables, setTables] = useState<Record<string, string[]>>({});
-    const [busy, setBusy] = useState<Record<string, boolean>>({});
-
-    const active = connectors.find(c => c.id === activeId);
+    const [reloadKey, setReloadKey] = useState(0); // bump to remount the tree (refresh)
 
     // The notebook helper name: the connector's kind when it's the sole one of
-    // that kind (the tidy postgres()/trino() case), else its id — mirrors the
-    // kernel's alias rules so the copied snippet is exactly what works.
+    // that kind (postgres()/trino()), else its id — mirrors the kernel's aliases.
     const aliasFor = (c: Connector) => (connectors.filter(x => x.kind === c.kind).length === 1 ? c.kind : c.id);
 
-    // Keep a valid selection as the list changes (add/delete).
     useEffect(() => {
-        if (connectors.length && !connectors.some(c => c.id === activeId)) {
-            setActiveId(connectors[0].id);
-        }
+        if (connectors.length && !connectors.some(c => c.id === activeId)) setActiveId(connectors[0].id);
     }, [connectors, activeId]);
 
-    const loadCatalogs = useCallback(async (id: string, browsable?: boolean) => {
-        if (!id || !browsable) { setStatus('ready'); return; }
-        setStatus('loading');
-        setCatalogs([]); setOpenCat({}); setOpenSchema({}); setSchemas({}); setTables({});
-        try {
-            const d = await fetchMeta(id);
-            if (!d.enabled) { setStatus('error'); return; }
-            if (d.sso_expired) { setStatus('sso_expired'); return; }
-            if (d.needs_sso) { setStatus('needs_sso'); return; }
-            setCatalogs(d.items || []);
-            setStatus('ready');
-        } catch {
-            setStatus('error');
-        }
-    }, []);
-
-    useEffect(() => { void loadCatalogs(activeId, active?.browsable); }, [activeId, active?.browsable, loadCatalogs]);
-
-    const toggleCat = async (cat: string) => {
-        const next = !openCat[cat];
-        setOpenCat(s => ({ ...s, [cat]: next }));
-        if (next && schemas[cat] === undefined) {
-            setBusy(b => ({ ...b, [cat]: true }));
-            try { const d = await fetchMeta(activeId, cat); setSchemas(s => ({ ...s, [cat]: d.items || [] })); }
-            catch { toast.error('Failed to load schemas'); }
-            finally { setBusy(b => ({ ...b, [cat]: false })); }
-        }
-    };
-
-    const toggleSchema = async (cat: string, schema: string) => {
-        const key = `${cat}/${schema}`;
-        const next = !openSchema[key];
-        setOpenSchema(s => ({ ...s, [key]: next }));
-        if (next && tables[key] === undefined) {
-            setBusy(b => ({ ...b, [key]: true }));
-            try { const d = await fetchMeta(activeId, cat, schema); setTables(t => ({ ...t, [key]: d.items || [] })); }
-            catch { toast.error('Failed to load tables'); }
-            finally { setBusy(b => ({ ...b, [key]: false })); }
-        }
-    };
-
-    const copyRef = (cat: string, schema: string, table: string) => {
-        const name = active ? aliasFor(active) : activeId;
-        const snippet = `${name}("${cat}.${schema}.${table}")`;
-        navigator.clipboard.writeText(snippet);
-        toast.success(`Copied: ${snippet}`);
-    };
-
     const deleteConnector = async (c: Connector) => {
-        if (!window.confirm(`Remove data source "${c.label}"? Notebooks using ${c.id}() will stop working.`)) return;
+        if (!window.confirm(`Remove data source "${c.label}"? Notebooks using ${aliasFor(c)}() will stop working.`)) return;
         try {
             await axios.delete(`/api/v1/connectors/${c.id}`);
             toast.success(`Removed "${c.label}"`);
@@ -127,14 +168,6 @@ export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: (
             toast.error(err.response?.data?.error || 'Failed to remove data source');
         }
     };
-
-    const Hint: React.FC<{ icon: React.ElementType; title: string; sub: string }> = ({ icon: Icon, title, sub }) => (
-        <div className="p-4 text-center text-muted-foreground">
-            <Icon className="size-6 mx-auto mb-2 opacity-60" />
-            <p className="text-xs font-medium">{title}</p>
-            <p className="text-[11px] mt-1">{sub}</p>
-        </div>
-    );
 
     return (
         <div className="p-2 text-xs">
@@ -148,25 +181,19 @@ export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: (
             </div>
 
             {connectors.length === 0 && (
-                <Hint
-                    icon={Database}
-                    title="No data sources yet"
-                    sub={isSuperAdmin ? 'Click + to connect Trino, PostgreSQL or MySQL.' : 'Ask a superadmin to add a data source.'}
-                />
+                <Hint icon={Database} title="No data sources yet"
+                    sub={isSuperAdmin ? 'Click + to connect Trino, PostgreSQL or MySQL.' : 'Ask a superadmin to add a data source.'} />
             )}
 
-            {/* Connector list — click to select; trash to remove (superadmin). */}
             {connectors.map(c => (
                 <div key={c.id}>
-                    <div
-                        className={`group flex items-center gap-1.5 py-1 px-1 rounded cursor-pointer ${c.id === activeId ? 'bg-primary/10 text-primary' : 'hover:bg-muted'}`}
-                        onClick={() => setActiveId(c.id)}
-                    >
+                    <div className={`group flex items-center gap-1.5 py-1 px-1 rounded cursor-pointer ${c.id === activeId ? 'bg-primary/10 text-primary' : 'hover:bg-muted'}`}
+                        onClick={() => setActiveId(c.id)}>
                         <ConnectorIcon kind={c.kind} />
                         <span className="truncate flex-1">{c.label}</span>
-                        {c.id === activeId && active?.browsable && (
+                        {c.id === activeId && c.browsable && (
                             <button className="p-0.5 rounded hover:bg-muted-foreground/10" title="Refresh"
-                                onClick={(e) => { e.stopPropagation(); void loadCatalogs(c.id, true); }}>
+                                onClick={(e) => { e.stopPropagation(); setReloadKey(k => k + 1); }}>
                                 <RefreshCw className="size-3" />
                             </button>
                         )}
@@ -178,66 +205,16 @@ export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: (
                         )}
                     </div>
 
-                    {/* Detail for the selected connector. */}
                     {c.id === activeId && (
                         <div className="ml-1 mt-0.5 mb-1 border-l border-border/60 pl-2">
-                            {!c.browsable ? (
-                                <div className="py-1 text-[11px] text-muted-foreground">
-                                    <p className="flex items-center gap-1"><Terminal className="size-3" /> No catalog browser yet.</p>
-                                    <p className="mt-1">Use <code className="text-[11px]">{`${aliasFor(c)}("schema.table")`}</code> or <code className="text-[11px]">{`${aliasFor(c)}("SELECT …")`}</code> in a cell.</p>
-                                </div>
-                            ) : (
-                                <>
-                                    {status === 'loading' && <div className="flex items-center gap-2 py-2 text-muted-foreground"><Loader2 className="size-3 animate-spin" /> Loading…</div>}
-                                    {status === 'needs_sso' && <Hint icon={ShieldAlert} title="Sign in with SSO" sub={`${c.label} browses as your SSO identity. Log in via SSO.`} />}
-                                    {status === 'sso_expired' && <Hint icon={ShieldAlert} title="SSO session expired" sub="Log out and back in to refresh access." />}
-                                    {status === 'error' && (
-                                        <div className="py-2 text-center">
-                                            <Hint icon={Database} title={`${c.label} unavailable`} sub="Couldn't reach the source." />
-                                            <button className="text-[11px] text-primary hover:underline" onClick={() => void loadCatalogs(c.id, true)}>Retry</button>
-                                        </div>
-                                    )}
-                                    {status === 'ready' && catalogs.length === 0 && <p className="py-2 text-muted-foreground">No catalogs visible.</p>}
-                                    {status === 'ready' && catalogs.map(cat => (
-                                        <div key={cat}>
-                                            <div className="flex items-center gap-1 py-1 rounded hover:bg-muted cursor-pointer" onClick={() => void toggleCat(cat)}>
-                                                {openCat[cat] ? <ChevronDown className="size-3 shrink-0" /> : <ChevronRight className="size-3 shrink-0" />}
-                                                <Database className="size-3 shrink-0 text-blue-500" />
-                                                <span className="truncate">{cat}</span>
-                                                {busy[cat] && <Loader2 className="size-3 animate-spin ml-auto" />}
-                                            </div>
-                                            {openCat[cat] && (schemas[cat] || []).map(schema => {
-                                                const key = `${cat}/${schema}`;
-                                                return (
-                                                    <div key={key}>
-                                                        <div className="flex items-center gap-1 py-1 pl-4 rounded hover:bg-muted cursor-pointer" onClick={() => void toggleSchema(cat, schema)}>
-                                                            {openSchema[key] ? <ChevronDown className="size-3 shrink-0" /> : <ChevronRight className="size-3 shrink-0" />}
-                                                            <span className="truncate text-muted-foreground">{schema}</span>
-                                                            {busy[key] && <Loader2 className="size-3 animate-spin ml-auto" />}
-                                                        </div>
-                                                        {openSchema[key] && (tables[key] || []).map(table => (
-                                                            <div key={`${key}/${table}`}
-                                                                className="flex items-center gap-1 py-1 pl-8 rounded hover:bg-muted cursor-pointer"
-                                                                title={`Copy ${aliasFor(c)}("${cat}.${schema}.${table}")`}
-                                                                onClick={() => copyRef(cat, schema, table)}>
-                                                                <Table2 className="size-3 shrink-0 text-emerald-500" />
-                                                                <span className="truncate">{table}</span>
-                                                            </div>
-                                                        ))}
-                                                        {openSchema[key] && tables[key]?.length === 0 && <p className="pl-8 py-1 text-[11px] text-muted-foreground">No tables</p>}
-                                                    </div>
-                                                );
-                                            })}
-                                            {openCat[cat] && schemas[cat]?.length === 0 && <p className="pl-4 py-1 text-[11px] text-muted-foreground">No schemas</p>}
-                                        </div>
-                                    ))}
-                                    {status === 'ready' && catalogs.length > 0 && (
-                                        <p className="mt-2 pt-1.5 border-t border-border/50 text-[10px] text-muted-foreground">
-                                            Click a table to copy <code className="text-[10px]">{`${aliasFor(c)}("…")`}</code>.
-                                        </p>
-                                    )}
-                                </>
-                            )}
+                            {c.browsable
+                                ? <MetaTree key={`${c.id}:${reloadKey}`} connectorId={c.id} alias={aliasFor(c)} label={c.label} onRefresh={() => setReloadKey(k => k + 1)} />
+                                : (
+                                    <div className="py-1 text-[11px] text-muted-foreground">
+                                        <p className="flex items-center gap-1"><Terminal className="size-3" /> No catalog browser yet.</p>
+                                        <p className="mt-1">Use <code className="text-[11px]">{`${aliasFor(c)}("schema.table")`}</code> or <code className="text-[11px]">{`${aliasFor(c)}("SELECT …")`}</code> in a cell.</p>
+                                    </div>
+                                )}
                         </div>
                     )}
                 </div>
