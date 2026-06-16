@@ -209,11 +209,29 @@ sso:
 
 # ─────────────────────────────────────────────────────────────
 # Trino (optional). Default Trino JDBC URL injected into kernels for the
-# built-in trino() helper + the notebook's Trino catalog browser. With SSO
-# enabled, the user's OIDC token is passed through (no password).
+# built-in trino() helper + the notebook's catalog browser.
 # ─────────────────────────────────────────────────────────────
 trino:
   url: ""                 # e.g. jdbc:trino://trino.corp:443?SSL=true
+  # How the user is authenticated to Trino:
+  #   app-jwt          - the app mints a short-lived RS256 JWT; Trino validates it
+  #                      against the app's JWKS. Works for ANY login method
+  #                      (Google/Microsoft/OIDC/password). Configure Trino with
+  #                      http-server.authentication.jwt.key-file=<app>/api/v1/.well-known/jwks.json
+  #                      and required-issuer=<connector.issuer>.
+  #   idp-passthrough  - forward the user's IdP token (Trino trusts the IdP JWKS
+  #                      directly). Only works for SSO logins.
+  auth: "app-jwt"
+
+# ─────────────────────────────────────────────────────────────
+# Connector auth (app-as-issuer). The app signs connector tokens with an RSA key
+# and publishes the public half at /api/v1/.well-known/jwks.json.
+# ─────────────────────────────────────────────────────────────
+connector:
+  issuer: "sparklabx"     # token `iss`; must equal the connector's required-issuer
+  # RSA signing key (PEM). Leave blank to auto-generate a stable key into the
+  # chart-managed Secret (reused across upgrades). Set only to pin your own key.
+  jwtPrivateKey: ""
 
 # ─────────────────────────────────────────────────────────────
 # Frontend

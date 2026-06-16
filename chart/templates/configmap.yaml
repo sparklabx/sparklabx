@@ -36,6 +36,12 @@ data:
   OIDC_INTERNAL_ISSUER_URL: {{ .Values.sso.internalIssuerUrl | quote }}
   # Trino default URL for the trino() helper + catalog browser.
   TRINO_URL: {{ .Values.trino.url | quote }}
+  # How connectors authenticate the user. "app-jwt": the app mints a short-lived
+  # RS256 JWT (validated by the connector against /api/v1/.well-known/jwks.json)
+  # so any login method reaches the connector. "idp-passthrough": forward the
+  # user's IdP token. CONNECTOR_ISSUER must match the connector's required-issuer.
+  TRINO_AUTH: {{ .Values.trino.auth | quote }}
+  CONNECTOR_ISSUER: {{ .Values.connector.issuer | quote }}
   # Backend URL reachable FROM kernel pods (in-session OIDC token refresh). The
   # backend Service is named "backend" in this chart, so the config.go default
   # (sparklabx-backend) would be wrong — set the in-cluster FQDN explicitly.
