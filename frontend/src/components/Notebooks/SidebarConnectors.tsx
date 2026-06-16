@@ -203,15 +203,15 @@ export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: (
                         onClick={() => setActiveId(c.id === activeId ? '' : c.id)}>
                         <ConnectorIcon kind={c.kind} />
                         <span className="truncate flex-1">{c.label}</span>
-                        {c.scope === 'shared'
-                            ? <Globe className="size-3 shrink-0 text-muted-foreground/70" />
-                            : <Lock className="size-3 shrink-0 text-muted-foreground/70" />}
                         {c.id === activeId && c.browsable && (
                             <button className="p-0.5 rounded hover:bg-muted-foreground/10" title="Refresh"
                                 onClick={(e) => { e.stopPropagation(); setReloadKey(k => k + 1); }}>
                                 <RefreshCw className="size-3" />
                             </button>
                         )}
+                        {c.scope === 'shared'
+                            ? <Globe className="size-3 shrink-0 text-muted-foreground/70" />
+                            : <Lock className="size-3 shrink-0 text-muted-foreground/70" />}
                         {c.deletable && (
                             <button className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-muted-foreground/10"
                                 title="Edit" onClick={(e) => { e.stopPropagation(); setEditId(c.id); setAddOpen(true); }}>
