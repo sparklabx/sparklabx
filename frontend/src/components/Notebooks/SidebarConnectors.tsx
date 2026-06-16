@@ -1,12 +1,16 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { Database, ChevronRight, ChevronDown, Table2, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
 
-// Trino catalog browser. Lists the catalogs / schemas / tables of the user's
-// connected Trino — queried AS the user via their OIDC token by the backend
-// (GET /api/v1/trino/metadata). Click a table to copy a ready-to-run
-// trino("catalog.schema.table") snippet (mirrors the Files "Copy Path" UX).
+// Generic connector catalog browser. Lists catalogs / schemas / tables of the
+// selected connector — queried AS the user via the backend
+// (GET /api/v1/connectors/:id/metadata, resolved per the connector's auth
+// strategy). Click a table to copy a ready-to-run query("<id>", "…") snippet.
+// Replaces the Trino-specific SidebarTrino; driven entirely by the /connectors
+// registry so a new connector needs no frontend change.
+
+export type Connector = { id: string; label: string; icon: string; kind: string; auth: string };
 
 type MetaResp = {
     enabled: boolean;
@@ -16,14 +20,15 @@ type MetaResp = {
     sso_expired?: boolean;
 };
 
-async function fetchMeta(catalog?: string, schema?: string): Promise<MetaResp> {
-    const res = await axios.get<MetaResp>('/api/v1/trino/metadata', { params: { catalog, schema } });
+async function fetchMeta(id: string, catalog?: string, schema?: string): Promise<MetaResp> {
+    const res = await axios.get<MetaResp>(`/api/v1/connectors/${id}/metadata`, { params: { catalog, schema } });
     return res.data;
 }
 
 type Status = 'loading' | 'ready' | 'needs_sso' | 'sso_expired' | 'error';
 
-export const SidebarTrino: React.FC = () => {
+export const SidebarConnectors: React.FC<{ connectors: Connector[] }> = ({ connectors }) => {
+    const [activeId, setActiveId] = useState<string>(connectors[0]?.id ?? '');
     const [status, setStatus] = useState<Status>('loading');
     const [catalogs, setCatalogs] = useState<string[]>([]);
     const [openCat, setOpenCat] = useState<Record<string, boolean>>({});
@@ -32,10 +37,13 @@ export const SidebarTrino: React.FC = () => {
     const [tables, setTables] = useState<Record<string, string[]>>({});
     const [busy, setBusy] = useState<Record<string, boolean>>({});
 
-    const loadCatalogs = async () => {
+    const loadCatalogs = useCallback(async (id: string) => {
+        if (!id) { setStatus('error'); return; }
         setStatus('loading');
+        // Reset the tree when switching connectors.
+        setCatalogs([]); setOpenCat({}); setOpenSchema({}); setSchemas({}); setTables({});
         try {
-            const d = await fetchMeta();
+            const d = await fetchMeta(id);
             if (!d.enabled) { setStatus('error'); return; }
             if (d.sso_expired) { setStatus('sso_expired'); return; }
             if (d.needs_sso) { setStatus('needs_sso'); return; }
@@ -44,15 +52,16 @@ export const SidebarTrino: React.FC = () => {
         } catch {
             setStatus('error');
         }
-    };
-    useEffect(() => { void loadCatalogs(); }, []);
+    }, []);
+
+    useEffect(() => { void loadCatalogs(activeId); }, [activeId, loadCatalogs]);
 
     const toggleCat = async (cat: string) => {
         const next = !openCat[cat];
         setOpenCat(s => ({ ...s, [cat]: next }));
         if (next && schemas[cat] === undefined) {
             setBusy(b => ({ ...b, [cat]: true }));
-            try { const d = await fetchMeta(cat); setSchemas(s => ({ ...s, [cat]: d.items || [] })); }
+            try { const d = await fetchMeta(activeId, cat); setSchemas(s => ({ ...s, [cat]: d.items || [] })); }
             catch { toast.error('Failed to load schemas'); }
             finally { setBusy(b => ({ ...b, [cat]: false })); }
         }
@@ -64,14 +73,14 @@ export const SidebarTrino: React.FC = () => {
         setOpenSchema(s => ({ ...s, [key]: next }));
         if (next && tables[key] === undefined) {
             setBusy(b => ({ ...b, [key]: true }));
-            try { const d = await fetchMeta(cat, schema); setTables(t => ({ ...t, [key]: d.items || [] })); }
+            try { const d = await fetchMeta(activeId, cat, schema); setTables(t => ({ ...t, [key]: d.items || [] })); }
             catch { toast.error('Failed to load tables'); }
             finally { setBusy(b => ({ ...b, [key]: false })); }
         }
     };
 
     const copyRef = (cat: string, schema: string, table: string) => {
-        const snippet = `trino("${cat}.${schema}.${table}")`;
+        const snippet = `query("${activeId}", "${cat}.${schema}.${table}")`;
         navigator.clipboard.writeText(snippet);
         toast.success(`Copied: ${snippet}`);
     };
@@ -84,24 +93,37 @@ export const SidebarTrino: React.FC = () => {
         </div>
     );
 
+    const active = connectors.find(c => c.id === activeId);
+
     return (
         <div className="p-2 text-xs">
             <div className="flex items-center justify-between px-1 mb-2">
-                <span className="font-semibold text-muted-foreground uppercase">Trino Catalog</span>
-                <button className="p-1 rounded hover:bg-muted text-muted-foreground" title="Refresh" onClick={() => void loadCatalogs()}>
+                <span className="font-semibold text-muted-foreground uppercase">Catalog</span>
+                <button className="p-1 rounded hover:bg-muted text-muted-foreground" title="Refresh" onClick={() => void loadCatalogs(activeId)}>
                     <RefreshCw className="size-3" />
                 </button>
             </div>
 
+            {/* Connector picker — shown only when more than one connector is configured. */}
+            {connectors.length > 1 && (
+                <select
+                    className="w-full mb-2 px-2 py-1 rounded border border-border bg-background text-xs"
+                    value={activeId}
+                    onChange={e => setActiveId(e.target.value)}
+                >
+                    {connectors.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+                </select>
+            )}
+
             {status === 'loading' && (
                 <div className="flex items-center gap-2 p-3 text-muted-foreground"><Loader2 className="size-3 animate-spin" /> Loading…</div>
             )}
-            {status === 'needs_sso' && <Hint icon={ShieldAlert} title="Sign in with SSO" sub="Trino browsing uses your SSO identity. Log in via SSO to see your catalogs." />}
+            {status === 'needs_sso' && <Hint icon={ShieldAlert} title="Sign in with SSO" sub="Catalog browsing uses your SSO identity. Log in via SSO to see your data." />}
             {status === 'sso_expired' && <Hint icon={ShieldAlert} title="SSO session expired" sub="Please log out and log in again to refresh access." />}
             {status === 'error' && (
                 <div className="p-3 text-center">
-                    <Hint icon={Database} title="Trino unavailable" sub="Couldn't reach Trino. Check the connection and retry." />
-                    <button className="mt-1 text-[11px] text-primary hover:underline" onClick={() => void loadCatalogs()}>Retry</button>
+                    <Hint icon={Database} title={`${active?.label ?? 'Connector'} unavailable`} sub="Couldn't reach the connector. Check the connection and retry." />
+                    <button className="mt-1 text-[11px] text-primary hover:underline" onClick={() => void loadCatalogs(activeId)}>Retry</button>
                 </div>
             )}
 
@@ -131,7 +153,7 @@ export const SidebarTrino: React.FC = () => {
                                     <div
                                         key={`${key}/${table}`}
                                         className="flex items-center gap-1 py-1 pl-10 pr-1 rounded hover:bg-muted cursor-pointer group"
-                                        title={`Copy trino("${cat}.${schema}.${table}")`}
+                                        title={`Copy query("${activeId}", "${cat}.${schema}.${table}")`}
                                         onClick={() => copyRef(cat, schema, table)}
                                     >
                                         <Table2 className="size-3 shrink-0 text-emerald-500" />

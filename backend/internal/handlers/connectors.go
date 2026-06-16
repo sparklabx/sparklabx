@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -61,6 +62,26 @@ func (h *AuthHandler) connectorInstances() []ConnectorInstance {
 		out = append(out, ConnectorInstance{ID: "trino", Type: "trino", Label: "Trino", URL: h.cfg.KernelTrinoURL, Auth: auth})
 	}
 	return out
+}
+
+// ConnectorsKernelManifest is the JSON injected into kernels (SPARKLABX_CONNECTORS)
+// so the generic data helpers can build a reader per connector: {id, driver, url}.
+// Credentials are fetched per query from /connectors/:id/credentials, not here.
+func (h *AuthHandler) ConnectorsKernelManifest() string {
+	type entry struct {
+		ID     string `json:"id"`
+		Driver string `json:"driver"`
+		URL    string `json:"url"`
+	}
+	var list []entry
+	for _, inst := range h.connectorInstances() {
+		list = append(list, entry{ID: inst.ID, Driver: connectorTypes[inst.Type].DriverClass, URL: inst.URL})
+	}
+	if len(list) == 0 {
+		return ""
+	}
+	b, _ := json.Marshal(list)
+	return string(b)
 }
 
 func (h *AuthHandler) connectorByID(id string) (ConnectorInstance, bool) {

@@ -74,7 +74,7 @@ import { getUserDataPath } from '@/services/notebookStorageService';
 
 import { KernelConnectionDialog } from './KernelConnectionDialog';
 import { SidebarFiles } from './SidebarFiles';
-import { SidebarTrino } from './SidebarTrino';
+import { SidebarConnectors, type Connector } from './SidebarConnectors';
 import { SparkUIDialog } from './parts/SparkUIDialog';
 import { ConnectionStatusBadge } from './parts/ConnectionStatusBadge';
 import { LanguageIcon } from './parts/LanguageIcon';
@@ -720,13 +720,13 @@ try {
     const [sidebarOpen, setSidebarOpen] = useState(true);
     const [searchQuery, setSearchQuery] = useState('');
 
-    // Whether to show the Trino catalog-browser tab (only when a Trino URL is
-    // configured server-side). Fetched once from the public auth config.
-    const [trinoEnabled, setTrinoEnabled] = useState(false);
+    // Configured data connectors (Trino, …). Drives the catalog-browser tab and
+    // its registry-backed picker. Fetched once; empty → the tab stays hidden.
+    const [connectors, setConnectors] = useState<Connector[]>([]);
     useEffect(() => {
-        axios.get('/api/v1/auth/config')
-            .then(res => setTrinoEnabled(!!res.data?.trino?.enabled))
-            .catch(() => { /* config unavailable → hide the tab */ });
+        axios.get<{ connectors?: Connector[] }>('/api/v1/connectors')
+            .then(res => setConnectors(res.data?.connectors || []))
+            .catch(() => { /* unavailable → hide the catalog tab */ });
     }, []);
 
     // Fetch notebooks list for sidebar
@@ -1698,7 +1698,7 @@ try {
                 return <SidebarFiles />;
 
             case 'catalog':
-                return <SidebarTrino />;
+                return <SidebarConnectors connectors={connectors} />;
         }
     };
 
@@ -1776,7 +1776,7 @@ try {
                 sidebarTab={sidebarTab}
                 sidebarOpen={sidebarOpen}
                 onPick={(tab: SidebarTab) => { setSidebarTab(tab); setSidebarOpen(true); }}
-                trinoEnabled={trinoEnabled}
+                connectorKinds={connectors.map(c => c.kind)}
             />
 
 

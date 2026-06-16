@@ -50,15 +50,16 @@ type cachedUsage struct {
 const usageTTL = 2 * time.Second
 
 type DockerPerUserConfig struct {
-	Image             string                // kernel image to run
-	Network           string                // docker network name backend is on (default: "sparklabx_default")
-	IdleTimeout       time.Duration         // reap container after this long idle
-	MaxContainers     int                   // hard cap; rejects spawn beyond
-	MinIOEndpoint     string                // injected as S3_ENDPOINT env so kernel reaches MinIO
-	CredsResolver     UserCredsResolver     // nil → fall back to root creds via env passthrough
-	OIDCTokenResolver UserOIDCTokenResolver // returns the kernel callback token (SPARKLABX_KERNEL_TOKEN); nil → no SSO passthrough
-	TrinoURL          string                // injected as TRINO_URL for the trino() helper; empty → not set
-	KernelAPIURL      string                // injected as SPARKLABX_API_URL so the kernel can fetch a fresh OIDC token
+	Image              string                // kernel image to run
+	Network            string                // docker network name backend is on (default: "sparklabx_default")
+	IdleTimeout        time.Duration         // reap container after this long idle
+	MaxContainers      int                   // hard cap; rejects spawn beyond
+	MinIOEndpoint      string                // injected as S3_ENDPOINT env so kernel reaches MinIO
+	CredsResolver      UserCredsResolver     // nil → fall back to root creds via env passthrough
+	OIDCTokenResolver  UserOIDCTokenResolver // returns the kernel callback token (SPARKLABX_KERNEL_TOKEN); nil → no SSO passthrough
+	TrinoURL           string                // injected as TRINO_URL for the trino() helper; empty → not set
+	KernelAPIURL       string                // injected as SPARKLABX_API_URL so the kernel can fetch a fresh OIDC token
+	ConnectorsManifest string                // injected as SPARKLABX_CONNECTORS (JSON [{id,driver,url}]) for the generic data helpers
 
 	// Per-container limits in k8s quantity format ("500m", "1Gi"). Docker
 	// doesn't have a separate "request" concept, so only the limit values
@@ -355,6 +356,11 @@ func (g *DockerPerUserGateway) EnsureSpawning(userID string, spec *ResourceSpec)
 	// Default Trino endpoint for the trino() notebook helper (operator-configured).
 	if g.cfg.TrinoURL != "" {
 		env = append(env, "TRINO_URL="+g.cfg.TrinoURL)
+	}
+	// Connector manifest ([{id,driver,url}]) for the generic data helpers; each
+	// connector gets an alias that fetches a fresh credential per query.
+	if g.cfg.ConnectorsManifest != "" {
+		env = append(env, "SPARKLABX_CONNECTORS="+g.cfg.ConnectorsManifest)
 	}
 
 	// Per-spawn limits: user-picked spec wins over the configured defaults.

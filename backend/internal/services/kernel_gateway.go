@@ -146,20 +146,21 @@ func (s *SharedGateway) RecentLogs(_ context.Context, _ string, _ int) (string, 
 // Populated from *config.Config in main.go so this package doesn't depend on
 // the config package.
 type KernelGatewaySettings struct {
-	Mode              string        // "shared" | "docker_per_user" | "k8s_per_user"
-	Environment       string        // "production" | other — gates the shared-mode safety check
-	JupyterGatewayURL string        // only used in shared mode
-	PodImage          string        // kernel container/pod image
-	PodNamespace      string        // K8s namespace (k8s_per_user)
-	DockerNetwork     string        // host docker network (docker_per_user)
-	MinIOEndpoint     string        // injected as S3_ENDPOINT env in kernel
-	IdleTimeout       time.Duration // reap kernel after this long idle
-	MaxKernels        int           // hard cap on concurrent kernels
-	PullSecret        string        // optional K8s imagePullSecret name (empty → none)
-	CredsResolver     UserCredsResolver
-	OIDCTokenResolver UserOIDCTokenResolver // returns the kernel's callback token (SPARKLABX_KERNEL_TOKEN); nil → no SSO passthrough
-	TrinoURL          string                // optional default Trino JDBC URL injected as TRINO_URL for the trino() helper
-	KernelAPIURL      string                // backend URL injected as SPARKLABX_API_URL so kernels can fetch a fresh OIDC token
+	Mode               string        // "shared" | "docker_per_user" | "k8s_per_user"
+	Environment        string        // "production" | other — gates the shared-mode safety check
+	JupyterGatewayURL  string        // only used in shared mode
+	PodImage           string        // kernel container/pod image
+	PodNamespace       string        // K8s namespace (k8s_per_user)
+	DockerNetwork      string        // host docker network (docker_per_user)
+	MinIOEndpoint      string        // injected as S3_ENDPOINT env in kernel
+	IdleTimeout        time.Duration // reap kernel after this long idle
+	MaxKernels         int           // hard cap on concurrent kernels
+	PullSecret         string        // optional K8s imagePullSecret name (empty → none)
+	CredsResolver      UserCredsResolver
+	OIDCTokenResolver  UserOIDCTokenResolver // returns the kernel's callback token (SPARKLABX_KERNEL_TOKEN); nil → no SSO passthrough
+	TrinoURL           string                // optional default Trino JDBC URL injected as TRINO_URL for the trino() helper
+	KernelAPIURL       string                // backend URL injected as SPARKLABX_API_URL so kernels can fetch a fresh OIDC token
+	ConnectorsManifest string                // JSON [{id,driver,url}] injected as SPARKLABX_CONNECTORS for the generic data helpers
 
 	// Resource requests/limits in k8s quantity format ("500m", "1Gi"). For
 	// docker_per_user mode only the *Limit values apply (Docker has no
@@ -202,17 +203,18 @@ func NewKernelGateway(s KernelGatewaySettings) (KernelGateway, error) {
 		return NewSharedGateway(s.JupyterGatewayURL), nil
 	case "docker_per_user":
 		gw, err := NewDockerPerUserGateway(DockerPerUserConfig{
-			Image:             s.PodImage,
-			Network:           s.DockerNetwork,
-			IdleTimeout:       s.IdleTimeout,
-			MaxContainers:     s.MaxKernels,
-			MinIOEndpoint:     s.MinIOEndpoint,
-			CredsResolver:     s.CredsResolver,
-			OIDCTokenResolver: s.OIDCTokenResolver,
-			TrinoURL:          s.TrinoURL,
-			KernelAPIURL:      s.KernelAPIURL,
-			CPULimit:          s.PodCPULimit,
-			MemoryLimit:       s.PodMemoryLimit,
+			Image:              s.PodImage,
+			Network:            s.DockerNetwork,
+			IdleTimeout:        s.IdleTimeout,
+			MaxContainers:      s.MaxKernels,
+			MinIOEndpoint:      s.MinIOEndpoint,
+			CredsResolver:      s.CredsResolver,
+			OIDCTokenResolver:  s.OIDCTokenResolver,
+			TrinoURL:           s.TrinoURL,
+			KernelAPIURL:       s.KernelAPIURL,
+			ConnectorsManifest: s.ConnectorsManifest,
+			CPULimit:           s.PodCPULimit,
+			MemoryLimit:        s.PodMemoryLimit,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("init DockerPerUserGateway: %w", err)
@@ -220,19 +222,20 @@ func NewKernelGateway(s KernelGatewaySettings) (KernelGateway, error) {
 		return gw, nil
 	case "k8s_per_user":
 		gw, err := NewK8sPerUserGateway(K8sPerUserConfig{
-			Namespace:         s.PodNamespace,
-			PodImage:          s.PodImage,
-			IdleTimeout:       s.IdleTimeout,
-			MaxPods:           s.MaxKernels,
-			PullSecret:        s.PullSecret,
-			CredsResolver:     s.CredsResolver,
-			OIDCTokenResolver: s.OIDCTokenResolver,
-			TrinoURL:          s.TrinoURL,
-			KernelAPIURL:      s.KernelAPIURL,
-			CPURequest:        s.PodCPURequest,
-			MemoryRequest:     s.PodMemoryRequest,
-			CPULimit:          s.PodCPULimit,
-			MemoryLimit:       s.PodMemoryLimit,
+			Namespace:          s.PodNamespace,
+			PodImage:           s.PodImage,
+			IdleTimeout:        s.IdleTimeout,
+			MaxPods:            s.MaxKernels,
+			PullSecret:         s.PullSecret,
+			CredsResolver:      s.CredsResolver,
+			OIDCTokenResolver:  s.OIDCTokenResolver,
+			TrinoURL:           s.TrinoURL,
+			KernelAPIURL:       s.KernelAPIURL,
+			ConnectorsManifest: s.ConnectorsManifest,
+			CPURequest:         s.PodCPURequest,
+			MemoryRequest:      s.PodMemoryRequest,
+			CPULimit:           s.PodCPULimit,
+			MemoryLimit:        s.PodMemoryLimit,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("init K8sPerUserGateway: %w", err)
