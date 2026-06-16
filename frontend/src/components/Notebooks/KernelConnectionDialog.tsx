@@ -161,7 +161,6 @@ export function KernelConnectionDialog({
     const [loadingKernelSpecs, setLoadingKernelSpecs] = useState(false);
     const [selectedKernelName, setSelectedKernelName] = useState<string>('');
     const [sparkPackages, setSparkPackages] = useState<string>('');
-    const [activePresetId, setActivePresetId] = useState<string | null>(null);
     const [icebergWarehousePath, setIcebergWarehousePath] = useState<string>('');
 
     // Resource sizing (k8s_per_user, issue #41). resourceConfig.enabled gates the
@@ -282,15 +281,6 @@ export function KernelConnectionDialog({
         if (open) {
             setSparkPackages(normalizePackageInput(savedPackages));
             setIcebergWarehousePath(savedIcebergWarehousePath || '');
-            const saved = normalizePackageInput(savedPackages)
-                .split(/[,\n]/)
-                .map(pkg => pkg.trim())
-                .filter(Boolean);
-            const exactPreset = PACKAGE_PRESETS.find((preset) =>
-                preset.packages.length === saved.length &&
-                preset.packages.every((pkg) => saved.includes(pkg))
-            );
-            setActivePresetId(exactPreset?.id || null);
         } else {
             setTimeout(() => {
                 setSelectedKernelName('');
@@ -314,43 +304,32 @@ export function KernelConnectionDialog({
         }
     };
 
+    // Presets are multi-select and additive — each toggles its own coordinates in
+    // and out of the list independently, so you can enable Delta + Iceberg + a
+    // driver together. "Active" is derived from the list (below), so manual edits
+    // stay consistent with the highlighted presets.
     const applyPreset = (preset: PackagePreset) => {
         const current = packageListFromInput(sparkPackages);
-        if (activePresetId === preset.id) {
-            const remaining = current.filter(pkg => !preset.packages.includes(pkg));
-            setSparkPackages(remaining.join('\n'));
-            setActivePresetId(null);
-            return;
-        }
-
-        const nextPreset = PACKAGE_PRESETS.find(item => item.id === preset.id);
-        const withoutPreviousPreset = activePresetId
-            ? current.filter(pkg => {
-                const previousPreset = PACKAGE_PRESETS.find(item => item.id === activePresetId);
-                return !previousPreset?.packages.includes(pkg);
-            })
-            : current;
-        const merged = Array.from(new Set([...(withoutPreviousPreset || []), ...(nextPreset?.packages || [])]));
-        setSparkPackages(merged.join('\n'));
-        setActivePresetId(preset.id);
+        const allPresent = preset.packages.every(pkg => current.includes(pkg));
+        const next = allPresent
+            ? current.filter(pkg => !preset.packages.includes(pkg))
+            : Array.from(new Set([...current, ...preset.packages]));
+        setSparkPackages(next.join('\n'));
     };
 
     const updatePackageRow = (index: number, value: string) => {
         const nextRows = [...packageRows];
         nextRows[index] = value;
         setSparkPackages(normalizePackageInput(nextRows.join('\n')));
-        setActivePresetId(null);
     };
 
     const addPackageRow = () => {
         setSparkPackages(packageRows.filter(Boolean).concat('').join('\n'));
-        setActivePresetId(null);
     };
 
     const removePackageRow = (index: number) => {
         const nextRows = packageRows.filter((_, rowIndex) => rowIndex !== index);
         setSparkPackages(normalizePackageInput(nextRows.join('\n')));
-        setActivePresetId(null);
     };
 
     const handleSubmit = async () => {
@@ -654,7 +633,7 @@ export function KernelConnectionDialog({
                                                     <Button
                                                         key={preset.id}
                                                         type="button"
-                                                        variant={activePresetId === preset.id ? 'default' : 'outline'}
+                                                        variant={preset.packages.every(p => currentPackages.includes(p)) ? 'default' : 'outline'}
                                                         size="sm"
                                                         className="h-7 px-2 text-xs"
                                                         onClick={() => applyPreset(preset)}
