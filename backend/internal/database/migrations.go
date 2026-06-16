@@ -96,6 +96,10 @@ func MigrateAndSeed(cfg *config.Config) error {
 		// admin id makes it personal (visible only to that user). Existing rows
 		// default to shared.
 		`ALTER TABLE connectors ADD COLUMN IF NOT EXISTS owner_id VARCHAR(64) NOT NULL DEFAULT ''`,
+		// One-time bootstrap markers (e.g. seeding the TRINO_URL connector into the
+		// connectors table once, so it's editable/deletable and won't re-appear
+		// after a user removes it).
+		`CREATE TABLE IF NOT EXISTS connector_bootstrap (key VARCHAR(64) PRIMARY KEY)`,
 
 		// K8s per-user pod tracking
 		`CREATE TABLE IF NOT EXISTS user_kernel_pods (
@@ -162,6 +166,29 @@ func MigrateAndSeed(cfg *config.Config) error {
 		}
 	}
 	log.Info().Msg("database migrations completed")
+
+	// One-time: promote the TRINO_URL env connector into the connectors table as a
+	// normal shared source (editable/deletable like any other). The marker keeps
+	// it from re-appearing after a user deletes it.
+	if cfg.KernelTrinoURL != "" {
+		var seeded bool
+		_ = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM connector_bootstrap WHERE key = 'trino')`).Scan(&seeded)
+		if !seeded {
+			auth := cfg.TrinoAuth
+			if auth == "" {
+				auth = "app-jwt"
+			}
+			if _, err := db.Exec(
+				`INSERT INTO connectors (id, type, label, url, auth, owner_id, added_by)
+				 VALUES ('trino', 'trino', 'Trino', $1, $2, '', 'env-bootstrap') ON CONFLICT (id) DO NOTHING`,
+				cfg.KernelTrinoURL, auth); err != nil {
+				log.Error().Err(err).Msg("seed Trino connector from TRINO_URL failed")
+			} else {
+				_, _ = db.Exec(`INSERT INTO connector_bootstrap (key) VALUES ('trino') ON CONFLICT DO NOTHING`)
+				log.Info().Msg("seeded Trino connector from TRINO_URL (now manageable in the UI)")
+			}
+		}
+	}
 
 	// Seed admin user
 	if cfg.SeedAdminUsername != "" && cfg.SeedAdminPassword != "" {

@@ -74,7 +74,6 @@ type ConnectorInstance struct {
 	Username    string // broker-mapped only
 	PasswordEnc string // broker-mapped only (AES-GCM)
 	OwnerID     string // "" = shared (org-wide); else the admin who owns it (personal)
-	FromEnv     bool   // true for the TRINO_URL seed → not deletable
 }
 
 // Shared reports whether the connector is org-wide (vs personal to one admin).
@@ -83,27 +82,17 @@ func (i ConnectorInstance) Shared() bool { return i.OwnerID == "" }
 func (i ConnectorInstance) metaStrategy() string { return connectorTypes[i.Type].MetaStrategy }
 func (i ConnectorInstance) icon() string         { return connectorTypes[i.Type].Icon }
 
-// envSeedID is the id of the connector seeded from the TRINO_URL env var. It is
-// always present (back-compat) and cannot be deleted or shadowed by a DB row.
-const envSeedID = "trino"
-
-// connectorInstances builds the connectors VISIBLE to userID: the TRINO_URL env
-// seed (shared) + shared DB rows + that user's personal rows. Queried per call
-// (small table) so the set reflects runtime adds/deletes without a restart.
+// connectorInstances builds the connectors VISIBLE to userID: shared rows
+// (owner_id = '') + that user's personal rows. The TRINO_URL env connector is
+// seeded into this table once at startup, so it's just another row here.
+// Queried per call (small table) so the set reflects runtime adds/deletes.
 func (h *AuthHandler) connectorInstances(userID string) []ConnectorInstance {
 	var out []ConnectorInstance
-	if h.cfg.KernelTrinoURL != "" {
-		auth := h.cfg.TrinoAuth
-		if auth == "" {
-			auth = connectorTypes["trino"].DefaultAuth
-		}
-		out = append(out, ConnectorInstance{ID: envSeedID, Type: "trino", Label: "Trino", URL: h.cfg.KernelTrinoURL, Auth: auth, FromEnv: true})
-	}
 	rows, err := database.GetDB().Query(
 		`SELECT id, type, label, url, auth, username, password_enc, owner_id
 		 FROM connectors WHERE owner_id = '' OR owner_id = $1 ORDER BY created_at`, userID)
 	if err != nil {
-		log.Warn().Err(err).Msg("list connectors failed; using env seed only")
+		log.Warn().Err(err).Msg("list connectors failed")
 		return out
 	}
 	defer rows.Close()
@@ -111,9 +100,6 @@ func (h *AuthHandler) connectorInstances(userID string) []ConnectorInstance {
 		var c ConnectorInstance
 		if err := rows.Scan(&c.ID, &c.Type, &c.Label, &c.URL, &c.Auth, &c.Username, &c.PasswordEnc, &c.OwnerID); err != nil {
 			continue
-		}
-		if c.ID == envSeedID {
-			continue // env seed wins
 		}
 		out = append(out, c)
 	}
@@ -204,9 +190,8 @@ func (h *AuthHandler) ListConnectors(c *gin.Context) {
 		if inst.Shared() {
 			scope = "shared"
 		}
-		// You can delete your own personal source; a superadmin can delete shared
-		// ones too. The env-seed Trino is never deletable here.
-		deletable := !inst.FromEnv && (inst.OwnerID == adminID || (inst.Shared() && isSuper))
+		// You can delete your own personal source; a superadmin can delete shared ones.
+		deletable := inst.OwnerID == adminID || (inst.Shared() && isSuper)
 		out = append(out, gin.H{
 			"id": inst.ID, "label": inst.Label, "icon": inst.icon(),
 			"kind": inst.Type, "auth": inst.Auth,

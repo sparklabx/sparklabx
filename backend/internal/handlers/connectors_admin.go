@@ -68,10 +68,6 @@ func (h *AuthHandler) CreateConnector(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "id must match ^[a-z][a-z0-9_]*$ (≤64 chars)"})
 		return
 	}
-	if req.ID == envSeedID {
-		c.JSON(http.StatusBadRequest, gin.H{"error": `"trino" is reserved for the TRINO_URL connector`})
-		return
-	}
 	if req.Label == "" || req.URL == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "label and url are required"})
 		return
@@ -150,7 +146,7 @@ func (h *AuthHandler) GetConnector(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"id": inst.ID, "type": inst.Type, "label": inst.Label, "url": inst.URL,
 		"auth": inst.Auth, "username": inst.Username, "scope": scope,
-		"has_password": inst.PasswordEnc != "", "editable": !inst.FromEnv,
+		"has_password": inst.PasswordEnc != "", "editable": true,
 	})
 }
 
@@ -158,10 +154,6 @@ func (h *AuthHandler) GetConnector(c *gin.Context) {
 // id and type are immutable; a blank password keeps the stored one.
 func (h *AuthHandler) UpdateConnector(c *gin.Context) {
 	id := c.Param("id")
-	if id == envSeedID {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "the TRINO_URL connector is configured via env and cannot be edited here"})
-		return
-	}
 	var owner, typ string
 	if err := database.GetDB().QueryRow(`SELECT owner_id, type FROM connectors WHERE id = $1`, id).Scan(&owner, &typ); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "connector not found"})
@@ -249,13 +241,9 @@ func (h *AuthHandler) UpdateConnector(c *gin.Context) {
 }
 
 // DeleteConnector removes a connector. The owner may delete their personal
-// source; a superadmin may delete a shared one. The env seed is refused.
+// source; a superadmin may delete a shared one.
 func (h *AuthHandler) DeleteConnector(c *gin.Context) {
 	id := c.Param("id")
-	if id == envSeedID {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "the TRINO_URL connector is configured via env and cannot be deleted here"})
-		return
-	}
 	var owner string
 	if err := database.GetDB().QueryRow(`SELECT owner_id FROM connectors WHERE id = $1`, id).Scan(&owner); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "connector not found"})
