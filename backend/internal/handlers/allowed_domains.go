@@ -54,20 +54,20 @@ var (
 	// opens registration to everyone on that provider. Admin must explicitly
 	// opt-in by setting force=true.
 	publicEmailProviders = map[string]bool{
-		"gmail.com":       true,
-		"googlemail.com":  true,
-		"outlook.com":     true,
-		"hotmail.com":     true,
-		"live.com":        true,
-		"yahoo.com":       true,
-		"yahoo.co.uk":     true,
-		"icloud.com":      true,
-		"me.com":          true,
-		"proton.me":       true,
-		"protonmail.com":  true,
-		"aol.com":         true,
-		"qq.com":          true,
-		"163.com":         true,
+		"gmail.com":      true,
+		"googlemail.com": true,
+		"outlook.com":    true,
+		"hotmail.com":    true,
+		"live.com":       true,
+		"yahoo.com":      true,
+		"yahoo.co.uk":    true,
+		"icloud.com":     true,
+		"me.com":         true,
+		"proton.me":      true,
+		"protonmail.com": true,
+		"aol.com":        true,
+		"qq.com":         true,
+		"163.com":        true,
 	}
 )
 

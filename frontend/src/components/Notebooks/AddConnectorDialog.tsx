@@ -33,7 +33,7 @@ const URL_PLACEHOLDER: Record<string, string> = {
 const AUTH_LABEL: Record<string, string> = {
     'app-jwt': 'App-signed JWT (any login works)',
     'idp-passthrough': 'Forward IdP token (SSO only)',
-    'broker-mapped': 'Shared username / password',
+    'broker-mapped': 'Username / password',
 };
 
 // "My Trino Prod" → "my_trino_prod"

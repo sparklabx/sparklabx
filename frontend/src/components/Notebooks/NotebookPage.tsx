@@ -1524,7 +1524,6 @@ try {
             case 'workspace':
                 return (
                     <div className="p-3">
-                        <h3 className="text-xs font-semibold mb-3 text-muted-foreground uppercase">Notebooks</h3>
                         <div className="relative mb-3">
                             <Search className="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
                             <Input
@@ -1614,12 +1613,22 @@ try {
                 return (
                     <div className="p-3">
                         <h3 className="text-xs font-semibold mb-3 text-muted-foreground uppercase">Table of Contents</h3>
-                        {notebook?.cells.map((cell, index) => (
-                            <div key={cell.id} className="flex items-center gap-2 py-1 px-2 rounded hover:bg-muted cursor-pointer text-xs">
-                                <span className="text-muted-foreground">Cmd {index + 1}</span>
-                                <span className="truncate">{cell.type.toLowerCase() === 'code' ? 'Code' : cell.source.split('\n')[0].replace('#', '').trim()}</span>
-                            </div>
-                        ))}
+                        {notebook?.cells.map((cell, index) => {
+                            const isCode = cell.type.toLowerCase() === 'code';
+                            const firstLine = cell.source.split('\n').find(l => l.trim()) || '';
+                            const title = isCode ? firstLine.trim() : firstLine.replace(/^#+/, '').trim();
+                            return (
+                                <div key={cell.id}
+                                    onClick={() => {
+                                        const el = document.querySelector(`[data-cell-id="${cell.id}"]`);
+                                        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                    }}
+                                    className="flex items-center gap-2 py-1 px-2 rounded hover:bg-muted cursor-pointer text-xs">
+                                    <span className="text-muted-foreground shrink-0">Cmd {index + 1}</span>
+                                    <span className={`truncate ${isCode ? 'font-mono text-muted-foreground' : ''}`}>{title || (isCode ? 'Code' : 'Markdown')}</span>
+                                </div>
+                            );
+                        })}
                         {(!notebook || notebook.cells.length === 0) && (
                             <p className="text-xs text-muted-foreground">No cells yet</p>
                         )}

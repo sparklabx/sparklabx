@@ -360,13 +360,12 @@ func parseKernelKey(key string) (notebookID, userID string) {
 	return "", ""
 }
 
-
 // Connect creates or reuses a kernel session on the user's gateway.
 //
 // Async-friendly contract:
 //   - 200 + {kernel_id}        — pod ready, kernel session created. FE opens WS.
 //   - 202 + {phase, message}   — pod still spawning. FE polls /spawn-status and
-//                                 retries this endpoint when phase reaches 'ready'.
+//     retries this endpoint when phase reaches 'ready'.
 //   - 503 + {error}            — hard failure (capacity, K8s API down). FE shows error.
 //
 // SharedGateway never returns 202 (EnsureSpawning is no-op, Status is always
