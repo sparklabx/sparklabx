@@ -34,13 +34,9 @@ data:
   OIDC_REDIRECT_URL: {{ .Values.sso.redirectUrl | default (ternary (printf "%s/api/v1/auth/oidc/callback" $appURL) "" (ne $appURL "")) | quote }}
   OIDC_POST_LOGIN_REDIRECT: {{ .Values.sso.postLoginRedirect | default $appURL | quote }}
   OIDC_INTERNAL_ISSUER_URL: {{ .Values.sso.internalIssuerUrl | quote }}
-  # Trino default URL for the trino() helper + catalog browser.
-  TRINO_URL: {{ .Values.trino.url | quote }}
-  # How connectors authenticate the user. "app-jwt": the app mints a short-lived
-  # RS256 JWT (validated by the connector against /api/v1/.well-known/jwks.json)
-  # so any login method reaches the connector. "idp-passthrough": forward the
-  # user's IdP token. CONNECTOR_ISSUER must match the connector's required-issuer.
-  TRINO_AUTH: {{ .Values.trino.auth | quote }}
+  # Connectors (Trino/Postgres/MySQL) are added at runtime in the UI and stored in
+  # the DB. CONNECTOR_ISSUER is the `iss` of the app-minted tokens; it must match
+  # each connector's required-issuer (e.g. Trino's http-server.authentication.jwt.required-issuer).
   CONNECTOR_ISSUER: {{ .Values.connector.issuer | quote }}
   # Backend URL reachable FROM kernel pods (in-session OIDC token refresh). The
   # backend Service is named "backend" in this chart, so the config.go default

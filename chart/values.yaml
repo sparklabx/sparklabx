@@ -208,27 +208,13 @@ sso:
   internalIssuerUrl: ""
 
 # ─────────────────────────────────────────────────────────────
-# Trino (optional). Default Trino JDBC URL injected into kernels for the
-# built-in trino() helper + the notebook's catalog browser.
-# ─────────────────────────────────────────────────────────────
-trino:
-  url: ""                 # e.g. jdbc:trino://trino.corp:443?SSL=true
-  # How the user is authenticated to Trino:
-  #   app-jwt          - the app mints a short-lived RS256 JWT; Trino validates it
-  #                      against the app's JWKS. Works for ANY login method
-  #                      (Google/Microsoft/OIDC/password). Configure Trino with
-  #                      http-server.authentication.jwt.key-file=<app>/api/v1/.well-known/jwks.json
-  #                      and required-issuer=<connector.issuer>.
-  #   idp-passthrough  - forward the user's IdP token (Trino trusts the IdP JWKS
-  #                      directly). Only works for SSO logins.
-  auth: "app-jwt"
-
-# ─────────────────────────────────────────────────────────────
 # Connector auth (app-as-issuer). The app signs connector tokens with an RSA key
-# and publishes the public half at /api/v1/.well-known/jwks.json.
+# and publishes the public half at /api/v1/.well-known/jwks.json. Data sources
+# (Trino, Postgres, MySQL) are added/managed at runtime in the notebook UI and
+# stored in the database — there's no connector config to declare here.
 # ─────────────────────────────────────────────────────────────
 connector:
-  issuer: "sparklabx"     # token `iss`; must equal the connector's required-issuer
+  issuer: "sparklabx"     # token `iss`; must equal each connector's required-issuer
   # RSA signing key (PEM). Leave blank — the backend generates one on first boot
   # and persists it in Postgres (stable across restarts, shared by all replicas).
   # Set only to pin your own key.
