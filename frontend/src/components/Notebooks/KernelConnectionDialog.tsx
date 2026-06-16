@@ -107,6 +107,18 @@ const PACKAGE_PRESETS: PackagePreset[] = [
         packages: ['io.trino:trino-jdbc:481'],
     },
     {
+        id: 'postgres',
+        label: 'PostgreSQL',
+        description: 'PostgreSQL JDBC driver — for postgres() / query() data sources',
+        packages: ['org.postgresql:postgresql:42.7.4'],
+    },
+    {
+        id: 'mysql',
+        label: 'MySQL',
+        description: 'MySQL JDBC driver — for mysql() / query() data sources',
+        packages: ['com.mysql:mysql-connector-j:9.1.0'],
+    },
+    {
         id: 'delta-iceberg',
         label: 'Delta + Iceberg',
         description: 'Enable both Delta Lake and Iceberg',
@@ -162,13 +174,35 @@ export function KernelConnectionDialog({
     const [runningSize, setRunningSize] = useState<{ cores: number; memGB: number } | null>(null);
 
     const [isSubmitting, setIsSubmitting] = useState(false);
+    // Connectors configured on this server (from the registry). Their kind maps
+    // to a driver package preset (e.g. trino → io.trino:trino-jdbc), so we can
+    // badge "Configured" and nudge the user to load the driver that query()/the
+    // per-connector helper needs.
+    const [configuredKinds, setConfiguredKinds] = useState<string[]>([]);
     const packageRows = sparkPackages ? sparkPackages.split('\n') : [''];
+
+    // Configured connectors whose JDBC driver isn't in the package list yet —
+    // their helper (e.g. trino()) would fail to resolve the driver class without it.
+    const currentPackages = packageListFromInput(sparkPackages);
+    const missingDriverPresets = configuredKinds
+        .map(kind => PACKAGE_PRESETS.find(p => p.id === kind))
+        .filter((p): p is PackagePreset => !!p)
+        .filter(p => !p.packages.every(pkg => currentPackages.includes(pkg)));
 
     // Fetch kernel specs when dialog opens
     useEffect(() => {
         if (open && Object.keys(kernelSpecs).length === 0) {
             fetchKernelSpecsList();
         }
+    }, [open]);
+
+    // Fetch configured connectors so we can flag which driver presets this
+    // deployment actually needs.
+    useEffect(() => {
+        if (!open) return;
+        axios.get<{ connectors?: { kind: string }[] }>('/api/v1/connectors')
+            .then(r => setConfiguredKinds((r.data?.connectors || []).map(c => c.kind)))
+            .catch(() => setConfiguredKinds([]));
     }, [open]);
 
     // Fetch resource presets when dialog opens. Pick the saved preset, else the
@@ -581,6 +615,29 @@ export function KernelConnectionDialog({
                     {/* Spark Packages / JARs */}
                     <div className="space-y-2">
                         <Label className="text-sm font-medium">Spark JARs / Packages (Optional)</Label>
+                        {missingDriverPresets.length > 0 && (
+                            <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-3 py-2">
+                                <p className="text-[11px] text-amber-700 dark:text-amber-300">
+                                    {missingDriverPresets.map(p => p.label).join(', ')} {missingDriverPresets.length === 1 ? 'is' : 'are'} configured on this server.
+                                    Add {missingDriverPresets.length === 1 ? 'its' : 'their'} driver so the connector helper works in this kernel.
+                                </p>
+                                <div className="mt-1.5 flex flex-wrap gap-2">
+                                    {missingDriverPresets.map(p => (
+                                        <Button
+                                            key={`add-${p.id}`}
+                                            type="button"
+                                            size="sm"
+                                            variant="outline"
+                                            className="h-6 px-2 text-[11px]"
+                                            onClick={() => applyPreset(p)}
+                                        >
+                                            <Plus className="mr-1 h-3 w-3" />
+                                            Add {p.label} driver
+                                        </Button>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
                         <Accordion type="single" collapsible defaultValue="package-presets" className="rounded-md border border-border/70 bg-muted/30 px-3">
                             <AccordionItem value="package-presets" className="border-none">
                                 <AccordionTrigger className="py-3 text-xs font-medium hover:no-underline">
@@ -596,8 +653,12 @@ export function KernelConnectionDialog({
                                                 size="sm"
                                                 className="h-7 px-2 text-xs"
                                                 onClick={() => applyPreset(preset)}
+                                                title={configuredKinds.includes(preset.id) ? 'Configured on this server' : undefined}
                                             >
                                                 {preset.label}
+                                                {configuredKinds.includes(preset.id) && (
+                                                    <span className="ml-1.5 inline-block size-1.5 rounded-full bg-emerald-500" aria-label="configured" />
+                                                )}
                                             </Button>
                                         ))}
                                     </div>

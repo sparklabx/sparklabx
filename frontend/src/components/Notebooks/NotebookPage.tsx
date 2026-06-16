@@ -720,14 +720,15 @@ try {
     const [sidebarOpen, setSidebarOpen] = useState(true);
     const [searchQuery, setSearchQuery] = useState('');
 
-    // Configured data connectors (Trino, …). Drives the catalog-browser tab and
-    // its registry-backed picker. Fetched once; empty → the tab stays hidden.
+    // Configured data connectors (Trino, Postgres, …) for the Data Sources panel.
+    // Refetched after add/remove so the manager stays in sync.
     const [connectors, setConnectors] = useState<Connector[]>([]);
-    useEffect(() => {
+    const loadConnectors = useCallback(() => {
         axios.get<{ connectors?: Connector[] }>('/api/v1/connectors')
             .then(res => setConnectors(res.data?.connectors || []))
-            .catch(() => { /* unavailable → hide the catalog tab */ });
+            .catch(() => { /* unavailable → empty list */ });
     }, []);
+    useEffect(() => { loadConnectors(); }, [loadConnectors]);
 
     // Fetch notebooks list for sidebar
     const { notebooks: allNotebooks, loading: notebooksLoading, loadNotebooks, createNotebook, deleteNotebook } = useNotebookList();
@@ -1698,7 +1699,7 @@ try {
                 return <SidebarFiles />;
 
             case 'catalog':
-                return <SidebarConnectors connectors={connectors} />;
+                return <SidebarConnectors connectors={connectors} onChanged={loadConnectors} />;
         }
     };
 
@@ -1776,7 +1777,6 @@ try {
                 sidebarTab={sidebarTab}
                 sidebarOpen={sidebarOpen}
                 onPick={(tab: SidebarTab) => { setSidebarTab(tab); setSidebarOpen(true); }}
-                connectorKinds={connectors.map(c => c.kind)}
             />
 
 

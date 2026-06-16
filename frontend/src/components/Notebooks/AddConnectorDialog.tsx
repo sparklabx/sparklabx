@@ -1,0 +1,189 @@
+import React, { useEffect, useState } from 'react';
+import axios from 'axios';
+import { toast } from 'sonner';
+import {
+    Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Loader2, Database } from 'lucide-react';
+
+// Dialog for adding a data connector (superadmin). Driven by /connector-types so
+// new backend types appear here with no frontend change.
+
+type ConnectorTypeInfo = {
+    id: string;
+    label: string;
+    icon: string;
+    browsable: boolean;
+    needs_credentials: boolean;
+    auth_options: string[];
+    default_auth: string;
+    driver_package: string;
+};
+
+const URL_PLACEHOLDER: Record<string, string> = {
+    trino: 'jdbc:trino://trino.corp:443?SSL=true',
+    postgres: 'jdbc:postgresql://db.corp:5432/analytics',
+    mysql: 'jdbc:mysql://db.corp:3306/analytics',
+};
+
+const AUTH_LABEL: Record<string, string> = {
+    'app-jwt': 'App-signed JWT (any login works)',
+    'idp-passthrough': 'Forward IdP token (SSO only)',
+    'broker-mapped': 'Shared username / password',
+};
+
+// "My Trino Prod" → "my_trino_prod"
+function slugify(s: string): string {
+    return s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 64);
+}
+
+export const AddConnectorDialog: React.FC<{
+    open: boolean;
+    onClose: () => void;
+    onCreated: () => void;
+}> = ({ open, onClose, onCreated }) => {
+    const [types, setTypes] = useState<ConnectorTypeInfo[]>([]);
+    const [typeId, setTypeId] = useState('');
+    const [label, setLabel] = useState('');
+    const [id, setId] = useState('');
+    const [idEdited, setIdEdited] = useState(false);
+    const [url, setUrl] = useState('');
+    const [auth, setAuth] = useState('');
+    const [username, setUsername] = useState('');
+    const [password, setPassword] = useState('');
+    const [submitting, setSubmitting] = useState(false);
+
+    const type = types.find(t => t.id === typeId);
+
+    useEffect(() => {
+        if (!open) return;
+        // Reset on open.
+        setLabel(''); setId(''); setIdEdited(false); setUrl(''); setUsername(''); setPassword('');
+        axios.get<{ types?: ConnectorTypeInfo[] }>('/api/v1/connector-types')
+            .then(r => {
+                const ts = r.data?.types || [];
+                setTypes(ts);
+                const first = ts[0];
+                if (first) { setTypeId(first.id); setAuth(first.default_auth); }
+            })
+            .catch(() => toast.error('Failed to load connector types'));
+    }, [open]);
+
+    const onPickType = (t: string) => {
+        setTypeId(t);
+        const info = types.find(x => x.id === t);
+        setAuth(info?.default_auth || '');
+    };
+
+    const onLabelChange = (v: string) => {
+        setLabel(v);
+        if (!idEdited) setId(slugify(v));
+    };
+
+    const submit = async () => {
+        if (!typeId || !label.trim() || !id.trim() || !url.trim()) {
+            toast.error('Type, label, id and URL are required');
+            return;
+        }
+        setSubmitting(true);
+        try {
+            await axios.post('/api/v1/connectors', {
+                id: id.trim(), type: typeId, label: label.trim(), url: url.trim(),
+                auth, username, password,
+            });
+            toast.success(`Added data source "${label.trim()}"`);
+            onCreated();
+            onClose();
+        } catch (e) {
+            const err = e as { response?: { data?: { error?: string } } };
+            toast.error(err.response?.data?.error || 'Failed to add data source');
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
+    return (
+        <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+            <DialogContent className="max-w-md">
+                <DialogHeader>
+                    <DialogTitle className="flex items-center gap-2">
+                        <Database className="size-4 text-muted-foreground" /> Add data source
+                    </DialogTitle>
+                    <DialogDescription>Connect a Trino, PostgreSQL or MySQL source for notebooks.</DialogDescription>
+                </DialogHeader>
+
+                <div className="space-y-3 text-sm">
+                    <div className="space-y-1.5">
+                        <Label className="text-xs">Type</Label>
+                        <Select value={typeId} onValueChange={onPickType}>
+                            <SelectTrigger className="h-9"><SelectValue placeholder="Select a type…" /></SelectTrigger>
+                            <SelectContent>
+                                {types.map(t => <SelectItem key={t.id} value={t.id}>{t.label}</SelectItem>)}
+                            </SelectContent>
+                        </Select>
+                    </div>
+
+                    <div className="space-y-1.5">
+                        <Label className="text-xs">Name</Label>
+                        <input className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                            placeholder="Analytics Trino" value={label} onChange={e => onLabelChange(e.target.value)} />
+                    </div>
+
+                    <div className="space-y-1.5">
+                        <Label className="text-xs">Id <span className="text-muted-foreground">(used in <code>query("id", …)</code>)</span></Label>
+                        <input className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm font-mono"
+                            placeholder="analytics_trino" value={id}
+                            onChange={e => { setIdEdited(true); setId(slugify(e.target.value)); }} />
+                    </div>
+
+                    <div className="space-y-1.5">
+                        <Label className="text-xs">JDBC URL</Label>
+                        <input className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm font-mono"
+                            placeholder={URL_PLACEHOLDER[typeId] || 'jdbc:…'} value={url} onChange={e => setUrl(e.target.value)} />
+                    </div>
+
+                    {type && type.auth_options.length > 1 && (
+                        <div className="space-y-1.5">
+                            <Label className="text-xs">Authentication</Label>
+                            <Select value={auth} onValueChange={setAuth}>
+                                <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                                <SelectContent>
+                                    {type.auth_options.map(a => <SelectItem key={a} value={a}>{AUTH_LABEL[a] || a}</SelectItem>)}
+                                </SelectContent>
+                            </Select>
+                        </div>
+                    )}
+
+                    {type?.needs_credentials && (
+                        <div className="grid grid-cols-2 gap-2">
+                            <div className="space-y-1.5">
+                                <Label className="text-xs">Username</Label>
+                                <input className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                                    value={username} onChange={e => setUsername(e.target.value)} />
+                            </div>
+                            <div className="space-y-1.5">
+                                <Label className="text-xs">Password</Label>
+                                <input type="password" className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                                    value={password} onChange={e => setPassword(e.target.value)} />
+                            </div>
+                        </div>
+                    )}
+                    {type?.needs_credentials && (
+                        <p className="text-[11px] text-muted-foreground">Credentials are stored encrypted and shared by everyone using this source.</p>
+                    )}
+                </div>
+
+                <DialogFooter>
+                    <Button variant="outline" onClick={onClose}>Cancel</Button>
+                    <Button onClick={submit} disabled={submitting}>
+                        {submitting && <Loader2 className="mr-2 size-4 animate-spin" />}
+                        Add source
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    );
+};
