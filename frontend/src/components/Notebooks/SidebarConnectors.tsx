@@ -165,8 +165,10 @@ export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: (
     // that kind (postgres()/trino()), else its id — mirrors the kernel's aliases.
     const aliasFor = (c: Connector) => (connectors.filter(x => x.kind === c.kind).length === 1 ? c.kind : c.id);
 
+    // If the selected connector disappears (deleted), collapse to none — but
+    // leave an intentional empty selection (collapsed) alone so toggling works.
     useEffect(() => {
-        if (connectors.length && !connectors.some(c => c.id === activeId)) setActiveId(connectors[0].id);
+        if (activeId && !connectors.some(c => c.id === activeId)) setActiveId('');
     }, [connectors, activeId]);
 
     const deleteConnector = async (c: Connector) => {
@@ -198,7 +200,7 @@ export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: (
             {connectors.map(c => (
                 <div key={c.id}>
                     <div className={`group flex items-center gap-1.5 py-1 px-1 rounded cursor-pointer ${c.id === activeId ? 'bg-primary/10 text-primary' : 'hover:bg-muted'}`}
-                        onClick={() => setActiveId(c.id)}>
+                        onClick={() => setActiveId(c.id === activeId ? '' : c.id)}>
                         <ConnectorIcon kind={c.kind} />
                         <span className="truncate flex-1">{c.label}</span>
                         {c.scope === 'shared'

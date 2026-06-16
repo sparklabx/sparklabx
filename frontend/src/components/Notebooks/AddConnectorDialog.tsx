@@ -205,16 +205,14 @@ export const AddConnectorDialog: React.FC<{
                             placeholder="Analytics Trino" value={label} onChange={e => setLabel(e.target.value)} />
                     </div>
 
-                    <div className="space-y-1.5">
-                        <Label className="text-xs">Id <span className="text-muted-foreground">(used as the helper name)</span></Label>
-                        {editing ? (
-                            <p className="px-2 py-1 text-sm font-mono text-muted-foreground">{id}<span className="opacity-60">(…)</span></p>
-                        ) : (
+                    {!editing && (
+                        <div className="space-y-1.5">
+                            <Label className="text-xs">Id <span className="text-muted-foreground">(used as the helper name)</span></Label>
                             <input className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm font-mono"
                                 placeholder="analytics_trino" value={id}
                                 onChange={e => { setIdEdited(true); setId(slugify(e.target.value)); }} />
-                        )}
-                    </div>
+                        </div>
+                    )}
 
                     <div className="space-y-1.5">
                         <Label className="text-xs">JDBC URL</Label>
