@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -162,17 +163,36 @@ func (h *AuthHandler) TestConnector(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true, "message": "Connected"})
 
 	case "trino-show":
-		token, _, ssoExpired, principal := h.resolveConnectorBearer(inst, c.GetString("admin_id"))
-		if token == "" {
-			c.JSON(http.StatusOK, gin.H{"ok": false, "error": "sign in with SSO to test this connector", "sso_expired": ssoExpired})
-			return
+		var authHeader, user string
+		if inst.Auth == "broker-mapped" {
+			pw := req.Password
+			if pw == "" && req.ID != "" && h.iam != nil { // edit, blank pw → stored
+				var enc string
+				_ = database.GetDB().QueryRow(
+					`SELECT password_enc FROM connectors WHERE id = $1 AND (owner_id = '' OR owner_id = $2)`,
+					req.ID, c.GetString("admin_id")).Scan(&enc)
+				if enc != "" {
+					if p, e := h.iam.DecryptSecret(enc); e == nil {
+						pw = p
+					}
+				}
+			}
+			authHeader = "Basic " + base64.StdEncoding.EncodeToString([]byte(inst.Username+":"+pw))
+			user = inst.Username
+		} else {
+			ah, u, ssoExpired, ok := h.trinoBrowseAuth(inst, c.GetString("admin_id"), c.GetString("admin_username"))
+			if !ok {
+				c.JSON(http.StatusOK, gin.H{"ok": false, "error": "sign in with SSO to test this connector", "sso_expired": ssoExpired})
+				return
+			}
+			authHeader, user = ah, u
 		}
 		base, insecure, ok := trinoHTTPBaseFrom(inst.URL)
 		if !ok {
 			c.JSON(http.StatusOK, gin.H{"ok": false, "error": "invalid trino url"})
 			return
 		}
-		if _, err := trinoShow(base, insecure, token, principal, "SHOW CATALOGS"); err != nil {
+		if _, err := trinoShow(base, insecure, authHeader, user, "SHOW CATALOGS"); err != nil {
 			c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
 			return
 		}

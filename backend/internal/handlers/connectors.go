@@ -45,7 +45,7 @@ var connectorTypes = map[string]ConnectorType{
 		DriverClass:   "io.trino.jdbc.TrinoDriver",
 		DriverPackage: "io.trino:trino-jdbc:481",
 		MetaStrategy:  "trino-show", DefaultAuth: "app-jwt",
-		AuthOptions: []string{"app-jwt", "idp-passthrough"},
+		AuthOptions: []string{"app-jwt", "idp-passthrough", "broker-mapped"},
 	},
 	"postgres": {
 		ID: "postgres", Label: "PostgreSQL", Icon: "postgres",
@@ -83,7 +83,7 @@ func (i ConnectorInstance) metaStrategy() string { return connectorTypes[i.Type]
 func (i ConnectorInstance) icon() string         { return connectorTypes[i.Type].Icon }
 
 // connectorInstances builds the connectors VISIBLE to userID: shared rows
-// (owner_id = '') + that user's personal rows. The TRINO_URL env connector is
+// (owner_id = ”) + that user's personal rows. The TRINO_URL env connector is
 // seeded into this table once at startup, so it's just another row here.
 // Queried per call (small table) so the set reflects runtime adds/deletes.
 func (h *AuthHandler) connectorInstances(userID string) []ConnectorInstance {
@@ -267,19 +267,16 @@ func (h *AuthHandler) ConnectorMetadata(c *gin.Context) {
 	path := metaPath(c)
 	switch inst.metaStrategy() {
 	case "trino-show":
-		// Browsed as the logged-in user via an app-jwt / IdP bearer.
-		token, _, ssoExpired, principal := h.resolveConnectorBearer(inst, c.GetString("admin_id"))
-		if token == "" {
+		// Browsed via Basic (broker-mapped) or an app-jwt/IdP bearer per the user.
+		authHeader, user, ssoExpired, ok := h.trinoBrowseAuth(inst, c.GetString("admin_id"), c.GetString("admin_username"))
+		if !ok {
 			c.JSON(http.StatusOK, gin.H{
 				"enabled": true, "items": []string{},
 				"sso_expired": ssoExpired, "needs_sso": !ssoExpired,
 			})
 			return
 		}
-		if principal == "" {
-			principal = c.GetString("admin_username")
-		}
-		items, level, err := h.connectorMetadata(inst, token, principal, path)
+		items, level, err := h.connectorMetadata(inst, authHeader, user, path)
 		if err != nil {
 			log.Warn().Err(err).Str("connector", inst.ID).Msg("connector metadata query failed")
 			c.JSON(http.StatusBadGateway, gin.H{"error": "metadata query failed"})
@@ -313,7 +310,7 @@ func (h *AuthHandler) ConnectorMetadata(c *gin.Context) {
 // connectorMetadata dispatches to the right metadata adapter for the connector's
 // strategy. path is the drill-down so far (catalog, schema, table); the returned
 // level names what the items are (catalog|schema|table|column).
-func (h *AuthHandler) connectorMetadata(inst ConnectorInstance, token, user string, path []string) ([]string, string, error) {
+func (h *AuthHandler) connectorMetadata(inst ConnectorInstance, authHeader, user string, path []string) ([]string, string, error) {
 	switch inst.metaStrategy() {
 	case "trino-show":
 		base, insecure, ok := trinoHTTPBaseFrom(inst.URL)
@@ -338,7 +335,7 @@ func (h *AuthHandler) connectorMetadata(inst ConnectorInstance, token, user stri
 		default:
 			stmt, level = "SHOW COLUMNS FROM "+q(path[0], path[1], path[2]), "column"
 		}
-		items, err := trinoShow(base, insecure, token, user, stmt)
+		items, err := trinoShow(base, insecure, authHeader, user, stmt)
 		return items, level, err
 	default:
 		return nil, "", fmt.Errorf("unsupported metadata strategy %q", inst.metaStrategy())

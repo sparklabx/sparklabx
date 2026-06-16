@@ -65,13 +65,15 @@ func jwtPreferredUsername(token string) string {
 // trinoShow runs a single-column SHOW statement over Trino's HTTP protocol
 // (POST /v1/statement, then follow nextUri) and returns the first column as a
 // string list. Authenticated as the user via their OIDC access token.
-func trinoShow(base string, insecure bool, token, user, sql string) ([]string, error) {
+func trinoShow(base string, insecure bool, authHeader, user, sql string) ([]string, error) {
 	client := &http.Client{Timeout: 20 * time.Second}
 	if insecure {
 		client.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 	}
 	setHeaders := func(r *http.Request) {
-		r.Header.Set("Authorization", "Bearer "+token)
+		if authHeader != "" {
+			r.Header.Set("Authorization", authHeader)
+		}
 		if user != "" {
 			r.Header.Set("X-Trino-User", user)
 		}
@@ -135,20 +137,43 @@ func quoteTrinoIdent(s string) string {
 //	(no params)              → SHOW CATALOGS
 //	?catalog=c               → SHOW SCHEMAS FROM "c"
 //	?catalog=c&schema=s      → SHOW TABLES FROM "c"."s"
+//
+// trinoBrowseAuth computes the Authorization header + X-Trino-User for browsing
+// a Trino instance: HTTP Basic for broker-mapped (a shared username/password
+// stored on the connector), else the app-jwt/idp bearer minted for the calling
+// user. ok=false means there's no usable credential (an idp-passthrough user who
+// isn't signed in via SSO) — the caller should surface "sign in with SSO".
+func (h *AuthHandler) trinoBrowseAuth(inst ConnectorInstance, adminID, adminUsername string) (authHeader, user string, ssoExpired, ok bool) {
+	if inst.Auth == "broker-mapped" {
+		pw := ""
+		if inst.PasswordEnc != "" && h.iam != nil {
+			if p, derr := h.iam.DecryptSecret(inst.PasswordEnc); derr == nil {
+				pw = p
+			}
+		}
+		creds := base64.StdEncoding.EncodeToString([]byte(inst.Username + ":" + pw))
+		return "Basic " + creds, inst.Username, false, true
+	}
+	token, _, ssoExp, principal := h.resolveConnectorBearer(inst, adminID)
+	if token == "" {
+		return "", "", ssoExp, false
+	}
+	if principal == "" {
+		principal = adminUsername
+	}
+	return "Bearer " + token, principal, false, true
+}
+
 func (h *AuthHandler) TrinoMetadata(c *gin.Context) {
 	// Thin shim over the generic connector path so the old frontend's
-	// /trino/metadata honours the trino instance's auth strategy (app-jwt or
-	// idp-passthrough) — resolving the bearer via ValidOIDCAccessToken directly
-	// would forward an IdP token that an app-jwt Trino rejects.
+	// /trino/metadata honours the trino instance's auth strategy.
 	inst, ok := h.connectorByID(c.GetString("admin_id"), "trino")
 	if !ok {
 		c.JSON(http.StatusOK, gin.H{"enabled": false, "items": []string{}})
 		return
 	}
-	token, _, ssoExpired, principal := h.resolveConnectorBearer(inst, c.GetString("admin_id"))
-	if token == "" {
-		// No credential to present: non-SSO/idp-passthrough users have no
-		// identity, or an expired session must re-login.
+	authHeader, user, ssoExpired, ok := h.trinoBrowseAuth(inst, c.GetString("admin_id"), c.GetString("admin_username"))
+	if !ok {
 		c.JSON(http.StatusOK, gin.H{
 			"enabled":     true,
 			"items":       []string{},
@@ -157,11 +182,8 @@ func (h *AuthHandler) TrinoMetadata(c *gin.Context) {
 		})
 		return
 	}
-	if principal == "" {
-		principal = c.GetString("admin_username")
-	}
 
-	items, level, err := h.connectorMetadata(inst, token, principal, metaPath(c))
+	items, level, err := h.connectorMetadata(inst, authHeader, user, metaPath(c))
 	if err != nil {
 		log.Warn().Err(err).Msg("trino metadata query failed")
 		c.JSON(http.StatusBadGateway, gin.H{"error": "trino query failed"})

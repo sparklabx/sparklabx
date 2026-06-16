@@ -193,7 +193,7 @@ export const AddConnectorDialog: React.FC<{
                                 <AlertTriangle className="size-3.5 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
                                 <p className="text-[11px] text-amber-700 dark:text-amber-300">
                                     Visible to <strong>everyone</strong> in this workspace.
-                                    {type?.needs_credentials && ' The username/password below will be usable by all users.'}
+                                    {auth === 'broker-mapped' && ' The username/password below will be usable by all users.'}
                                 </p>
                             </div>
                         )}
@@ -232,7 +232,7 @@ export const AddConnectorDialog: React.FC<{
                         </div>
                     )}
 
-                    {type?.needs_credentials && (
+                    {auth === 'broker-mapped' && (
                         <div className="grid grid-cols-2 gap-2">
                             <div className="space-y-1.5">
                                 <Label className="text-xs">Username</Label>
@@ -252,7 +252,7 @@ export const AddConnectorDialog: React.FC<{
                             </div>
                         </div>
                     )}
-                    {type?.needs_credentials && (
+                    {auth === 'broker-mapped' && (
                         <p className="text-[11px] text-muted-foreground">Credentials are stored encrypted and shared by everyone using this source.</p>
                     )}
                 </div>
