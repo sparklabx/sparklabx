@@ -108,11 +108,11 @@ const UserManagement: React.FC = () => {
         {activeTab === 'admins' && isSuperAdmin && (
           <Dialog open={createOpen} onOpenChange={setCreateOpen}>
             <DialogTrigger asChild>
-              <Button size="sm"><Plus className="size-4 mr-1" /> Add Admin</Button>
+              <Button size="sm"><Plus className="size-4 mr-1" /> Add User</Button>
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>Create Admin</DialogTitle>
+                <DialogTitle>Create User</DialogTitle>
               </DialogHeader>
               <div className="space-y-4">
                 <div className="space-y-2">
@@ -176,7 +176,7 @@ const UserManagement: React.FC = () => {
                 {adminsLoading ? (
                   <tr><td colSpan={4} className="py-8 text-center text-muted-foreground">Loading...</td></tr>
                 ) : filteredAdmins.length === 0 ? (
-                  <tr><td colSpan={4} className="py-8 text-center text-muted-foreground">No admins found</td></tr>
+                  <tr><td colSpan={4} className="py-8 text-center text-muted-foreground">No users found</td></tr>
                 ) : filteredAdmins.map(admin => (
                   <tr key={admin.id} className="border-b">
                     <td className="py-3 px-4 font-medium">
