@@ -32,6 +32,20 @@ services:
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - MICROSOFT_CLIENT_ID=${MICROSOFT_CLIENT_ID}
       - MICROSOFT_CLIENT_SECRET=${MICROSOFT_CLIENT_SECRET}
+      # Generic OIDC SSO (see docker-compose.yml for notes)
+      - OIDC_ISSUER_URL=${OIDC_ISSUER_URL}
+      - OIDC_INTERNAL_ISSUER_URL=${OIDC_INTERNAL_ISSUER_URL}
+      - OIDC_CLIENT_ID=${OIDC_CLIENT_ID}
+      - OIDC_CLIENT_SECRET=${OIDC_CLIENT_SECRET}
+      - OIDC_SCOPES=${OIDC_SCOPES:-openid email profile}
+      - OIDC_PROVIDER_NAME=${OIDC_PROVIDER_NAME:-SSO}
+      - OIDC_REDIRECT_URL=${OIDC_REDIRECT_URL}
+      - OIDC_POST_LOGIN_REDIRECT=${OIDC_POST_LOGIN_REDIRECT:-http://localhost:3000}
+      - CONNECTOR_ISSUER=${CONNECTOR_ISSUER:-sparklabx}
+      # Connector signing key is generated on first boot and persisted in Postgres
+      # (app_secrets) — stable across restarts, no volume. Set CONNECTOR_JWT_PRIVATE_KEY
+      # only to pin your own PEM.
+      - KERNEL_CALLBACK_URL=${KERNEL_CALLBACK_URL:-http://sparklabx-backend:10000}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       - MINIO_ENDPOINT=http://minio:9000

@@ -12,9 +12,9 @@ import (
 // Two implementations are wired at startup based on KERNEL_MODE env var:
 //
 //   - SharedGateway:    one Jupyter container serves all users (docker-compose dev,
-//                        small K8s deployments). Cheap, no isolation.
+//     small K8s deployments). Cheap, no isolation.
 //   - K8sPerUserGateway: each user gets a dedicated pod, spawned on demand and
-//                        reaped after idle. Isolated, autoscaling.
+//     reaped after idle. Isolated, autoscaling.
 //
 // Either way, handlers call GetGatewayURL(userID) at request time and proxy
 // kernel requests to whatever URL comes back.
@@ -157,6 +157,13 @@ type KernelGatewaySettings struct {
 	MaxKernels        int           // hard cap on concurrent kernels
 	PullSecret        string        // optional K8s imagePullSecret name (empty → none)
 	CredsResolver     UserCredsResolver
+	OIDCTokenResolver UserOIDCTokenResolver // returns the kernel's callback token (SPARKLABX_KERNEL_TOKEN); nil → no SSO passthrough
+	KernelAPIURL      string                // backend URL injected as SPARKLABX_API_URL so kernels can fetch a fresh OIDC token
+	// ConnectorsManifestProvider is called at each kernel spawn with the spawning
+	// user's id to get the SPARKLABX_CONNECTORS manifest of connectors VISIBLE to
+	// that user (shared + their personal) — so runtime adds/removes reach new
+	// kernels without a restart.
+	ConnectorsManifestProvider func(userID string) string
 
 	// Resource requests/limits in k8s quantity format ("500m", "1Gi"). For
 	// docker_per_user mode only the *Limit values apply (Docker has no
@@ -167,13 +174,22 @@ type KernelGatewaySettings struct {
 	PodMemoryLimit   string
 }
 
+// resolveConnectorsManifest returns the SPARKLABX_CONNECTORS JSON to inject for
+// userID at spawn (connectors visible to that user), or "" when no provider.
+func resolveConnectorsManifest(provider func(string) string, userID string) string {
+	if provider != nil {
+		return provider(userID)
+	}
+	return ""
+}
+
 // NewKernelGateway picks an implementation based on settings.Mode.
 //   - "shared":          SharedGateway pointed at JupyterGatewayURL. ONE container
-//                        for everyone, no isolation.
+//     for everyone, no isolation.
 //   - "docker_per_user": DockerPerUserGateway. One container per user on the local
-//                        Docker daemon. Real IAM isolation. Requires docker.sock mount.
+//     Docker daemon. Real IAM isolation. Requires docker.sock mount.
 //   - "k8s_per_user":    K8sPerUserGateway. Production isolation via Kubernetes.
-//                        Backend must run in-cluster with the RBAC in kubernetes/.
+//     Backend must run in-cluster with the RBAC in kubernetes/.
 func NewKernelGateway(s KernelGatewaySettings) (KernelGateway, error) {
 	mode := s.Mode
 	explicit := mode != ""
@@ -199,14 +215,17 @@ func NewKernelGateway(s KernelGatewaySettings) (KernelGateway, error) {
 		return NewSharedGateway(s.JupyterGatewayURL), nil
 	case "docker_per_user":
 		gw, err := NewDockerPerUserGateway(DockerPerUserConfig{
-			Image:         s.PodImage,
-			Network:       s.DockerNetwork,
-			IdleTimeout:   s.IdleTimeout,
-			MaxContainers: s.MaxKernels,
-			MinIOEndpoint: s.MinIOEndpoint,
-			CredsResolver: s.CredsResolver,
-			CPULimit:      s.PodCPULimit,
-			MemoryLimit:   s.PodMemoryLimit,
+			Image:                      s.PodImage,
+			Network:                    s.DockerNetwork,
+			IdleTimeout:                s.IdleTimeout,
+			MaxContainers:              s.MaxKernels,
+			MinIOEndpoint:              s.MinIOEndpoint,
+			CredsResolver:              s.CredsResolver,
+			OIDCTokenResolver:          s.OIDCTokenResolver,
+			KernelAPIURL:               s.KernelAPIURL,
+			ConnectorsManifestProvider: s.ConnectorsManifestProvider,
+			CPULimit:                   s.PodCPULimit,
+			MemoryLimit:                s.PodMemoryLimit,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("init DockerPerUserGateway: %w", err)
@@ -214,16 +233,19 @@ func NewKernelGateway(s KernelGatewaySettings) (KernelGateway, error) {
 		return gw, nil
 	case "k8s_per_user":
 		gw, err := NewK8sPerUserGateway(K8sPerUserConfig{
-			Namespace:     s.PodNamespace,
-			PodImage:      s.PodImage,
-			IdleTimeout:   s.IdleTimeout,
-			MaxPods:       s.MaxKernels,
-			PullSecret:    s.PullSecret,
-			CredsResolver: s.CredsResolver,
-			CPURequest:    s.PodCPURequest,
-			MemoryRequest: s.PodMemoryRequest,
-			CPULimit:      s.PodCPULimit,
-			MemoryLimit:   s.PodMemoryLimit,
+			Namespace:                  s.PodNamespace,
+			PodImage:                   s.PodImage,
+			IdleTimeout:                s.IdleTimeout,
+			MaxPods:                    s.MaxKernels,
+			PullSecret:                 s.PullSecret,
+			CredsResolver:              s.CredsResolver,
+			OIDCTokenResolver:          s.OIDCTokenResolver,
+			KernelAPIURL:               s.KernelAPIURL,
+			ConnectorsManifestProvider: s.ConnectorsManifestProvider,
+			CPURequest:                 s.PodCPURequest,
+			MemoryRequest:              s.PodMemoryRequest,
+			CPULimit:                   s.PodCPULimit,
+			MemoryLimit:                s.PodMemoryLimit,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("init K8sPerUserGateway: %w", err)

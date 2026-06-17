@@ -12,7 +12,7 @@ type Config struct {
 	DatabaseURL string
 
 	// JWT
-	JWTSecretKey    string
+	JWTSecretKey     string
 	JWTExpireMinutes int
 
 	// Seed admin
@@ -28,10 +28,22 @@ type Config struct {
 	MicrosoftClientID     string
 	MicrosoftClientSecret string
 
+	// Generic OIDC SSO — any enterprise IdP (Keycloak, Okta, Auth0, Azure AD,
+	// Google, ...). Provider-agnostic backend authorization-code flow; endpoints
+	// are discovered from {issuer}/.well-known/openid-configuration.
+	OIDCIssuerURL         string // external, browser-facing issuer
+	OIDCInternalIssuerURL string // back-channel issuer base (token/userinfo) when the backend can't reach the external URL (e.g. local docker). Empty → same as OIDCIssuerURL.
+	OIDCClientID          string
+	OIDCClientSecret      string
+	OIDCScopes            string // space-separated; default "openid email profile"
+	OIDCProviderName      string // login button label, e.g. "Acme SSO"
+	OIDCRedirectURL       string // registered redirect_uri (browser-reachable callback)
+	OIDCPostLoginRedirect string // frontend URL to land on after a successful login
+
 	// AWS
-	AWSProfile     string
-	TFStateBucket  string
-	TFStateRegion  string
+	AWSProfile    string
+	TFStateBucket string
+	TFStateRegion string
 
 	// Service
 	ServiceName string
@@ -49,13 +61,23 @@ type Config struct {
 	JupyterGatewayURL string
 
 	// Kernel deployment (see KERNEL_MODE in .env.example)
-	KernelMode            string
-	KernelPodImage        string
-	KernelPodNamespace    string
-	KernelPodIdleMinutes  int
-	KernelPodMaxTotal     int
-	KernelDockerNetwork   string
-	KernelPullSecret      string // optional K8s imagePullSecret for private forks
+	KernelMode           string
+	KernelPodImage       string
+	KernelPodNamespace   string
+	KernelPodIdleMinutes int
+	KernelPodMaxTotal    int
+	KernelDockerNetwork  string
+	KernelPullSecret     string // optional K8s imagePullSecret for private forks
+	KernelCallbackURL    string // backend base URL reachable FROM kernels; the data helpers call it to fetch a fresh OIDC token per query
+
+	// Connector auth (see docs/connectors-design.md). The app mints RS256 JWTs for
+	// connectors; ConnectorJWTPrivateKey is the signing key (PEM) — empty → loaded
+	// from ConnectorJWTKeyFile, else generated once and persisted in the DB.
+	// ConnectorIssuer is the token `iss` (what a connector's required-issuer must
+	// match). Connectors themselves are added/managed at runtime in the UI.
+	ConnectorJWTPrivateKey string
+	ConnectorJWTKeyFile    string
+	ConnectorIssuer        string
 
 	// Per-user kernel pod resource requests/limits. Strings in k8s quantity
 	// format ("500m", "1Gi"). For docker_per_user mode only the *Limit values
@@ -103,6 +125,15 @@ func Load() *Config {
 		MicrosoftClientID:     getEnv("MICROSOFT_CLIENT_ID", ""),
 		MicrosoftClientSecret: getEnv("MICROSOFT_CLIENT_SECRET", ""),
 
+		OIDCIssuerURL:         getEnv("OIDC_ISSUER_URL", ""),
+		OIDCInternalIssuerURL: getEnv("OIDC_INTERNAL_ISSUER_URL", ""),
+		OIDCClientID:          getEnv("OIDC_CLIENT_ID", ""),
+		OIDCClientSecret:      getEnv("OIDC_CLIENT_SECRET", ""),
+		OIDCScopes:            getEnv("OIDC_SCOPES", "openid email profile"),
+		OIDCProviderName:      getEnv("OIDC_PROVIDER_NAME", "SSO"),
+		OIDCRedirectURL:       getEnv("OIDC_REDIRECT_URL", ""),
+		OIDCPostLoginRedirect: getEnv("OIDC_POST_LOGIN_REDIRECT", "/"),
+
 		AWSProfile:    getEnv("AWS_PROFILE", ""),
 		TFStateBucket: getEnv("TF_STATE_BUCKET", ""),
 		TFStateRegion: getEnv("TF_STATE_REGION", ""),
@@ -126,6 +157,11 @@ func Load() *Config {
 		KernelPodMaxTotal:    getEnvInt("KERNEL_POD_MAX_TOTAL", 50),
 		KernelDockerNetwork:  getEnv("KERNEL_DOCKER_NETWORK", "sparklabx_default"),
 		KernelPullSecret:     getEnv("KERNEL_PULL_SECRET", ""), // empty → no imagePullSecret
+		KernelCallbackURL:    getEnv("KERNEL_CALLBACK_URL", "http://sparklabx-backend:10000"),
+
+		ConnectorJWTPrivateKey: getEnv("CONNECTOR_JWT_PRIVATE_KEY", ""),
+		ConnectorJWTKeyFile:    getEnv("CONNECTOR_JWT_PRIVATE_KEY_FILE", ""),
+		ConnectorIssuer:        getEnv("CONNECTOR_ISSUER", "sparklabx"),
 
 		KernelPodCPURequest:    getEnv("KERNEL_POD_CPU_REQUEST", "500m"),
 		KernelPodMemoryRequest: getEnv("KERNEL_POD_MEMORY_REQUEST", "1Gi"),
@@ -140,6 +176,12 @@ func Load() *Config {
 
 		CORSOrigins: strings.Split(getEnv("CORS_ORIGINS", "http://localhost:3000"), ","),
 	}
+}
+
+// OIDCEnabled reports whether generic OIDC SSO is configured. The login UI shows
+// the SSO button and the /auth/oidc/* routes are active only when this is true.
+func (c *Config) OIDCEnabled() bool {
+	return c.OIDCIssuerURL != "" && c.OIDCClientID != "" && c.OIDCRedirectURL != ""
 }
 
 func getEnv(key, fallback string) string {

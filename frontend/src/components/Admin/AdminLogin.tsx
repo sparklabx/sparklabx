@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { GoogleOAuthProvider, useGoogleLogin } from '@react-oauth/google';
 import { PublicClientApplication } from '@azure/msal-browser';
 import { Card, CardContent, CardHeader } from '../ui/card';
@@ -62,6 +62,14 @@ const MicrosoftIcon = () => (
   </svg>
 );
 
+// Generic SSO icon (enterprise OIDC — Keycloak/Okta/Auth0/Azure AD/...)
+const SSOIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#3c4043" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+  </svg>
+);
+
 interface GoogleSignInButtonProps {
   disabled: boolean;
   onSignIn: (accessToken: string) => Promise<void>;
@@ -89,6 +97,40 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [oidcEnabled, setOidcEnabled] = useState(false);
+  const [oidcName, setOidcName] = useState('SSO');
+
+  useEffect(() => {
+    // Complete a generic-OIDC redirect: the backend hands the app JWT (or an
+    // error message) back in the URL fragment.
+    const hash = window.location.hash.replace(/^#/, '');
+    if (hash) {
+      const params = new URLSearchParams(hash);
+      const token = params.get('oidc_token');
+      const oidcErr = params.get('oidc_error');
+      if (token) {
+        history.replaceState(null, '', window.location.pathname + window.location.search);
+        setLoading(true);
+        authService.loginWithOIDCToken(token)
+          .then(() => onSuccess())
+          .catch(() => setError('SSO login failed'))
+          .finally(() => setLoading(false));
+        return;
+      }
+      if (oidcErr) {
+        history.replaceState(null, '', window.location.pathname + window.location.search);
+        setError(oidcErr);
+      }
+    }
+    // Ask the backend whether the enterprise SSO button should be shown.
+    authService.getAuthConfig()
+      .then((cfg) => {
+        setOidcEnabled(!!cfg.oidc?.enabled);
+        if (cfg.oidc?.provider_name) setOidcName(cfg.oidc.provider_name);
+      })
+      .catch(() => { /* /auth/config is optional — hide the button on failure */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleGoogleLogin = async (accessToken: string) => {
     setError('');
@@ -174,7 +216,16 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
             </button>
           )}
 
-          {(GOOGLE_CLIENT_ID || MICROSOFT_CLIENT_ID) && (
+          {/* Generic enterprise SSO — shown only when the backend reports OIDC
+              is configured (env-driven, no rebuild to toggle). */}
+          {oidcEnabled && (
+            <button onClick={() => { window.location.href = authService.oidcStartUrl(); }} disabled={loading} className={btnClass}>
+              <SSOIcon />
+              <span className={btnTextClass}>Sign in with {oidcName}</span>
+            </button>
+          )}
+
+          {(GOOGLE_CLIENT_ID || MICROSOFT_CLIENT_ID || oidcEnabled) && (
             <div className="relative">
               <div className="absolute inset-0 flex items-center">
                 <span className="w-full border-t" />

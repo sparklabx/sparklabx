@@ -33,6 +33,24 @@ const AdminLayout: React.FC = () => {
   const location = useLocation();
   const isNotebook = location.pathname.startsWith('/notebooks/') && location.pathname !== '/notebooks';
 
+  // Keep the backend's OIDC passthrough tokens fresh so per-kernel Trino/SSO
+  // stays alive without the user ever re-logging in: a hidden-iframe silent renew
+  // (prompt=none) on load and on an interval well inside the IdP's idle window.
+  // No-op when OIDC isn't enabled or the IdP session has genuinely ended — in
+  // that rare case the user logs in again as normal.
+  useEffect(() => {
+    let cancelled = false;
+    let interval: number | undefined;
+    authService.getAuthConfig()
+      .then((cfg) => {
+        if (cancelled || !cfg.oidc?.enabled) return;
+        void authService.silentRenewOIDC();
+        interval = window.setInterval(() => { void authService.silentRenewOIDC(); }, 10 * 60 * 1000);
+      })
+      .catch(() => { /* config unavailable → skip silent renew */ });
+    return () => { cancelled = true; if (interval) window.clearInterval(interval); };
+  }, []);
+
   return (
     <div className="h-screen bg-background overflow-hidden">
       <Sidebar collapsed={collapsed} onCollapse={setCollapsed} />

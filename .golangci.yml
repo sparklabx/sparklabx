@@ -1,0 +1,13 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # `standard` = errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  enable:
+    - gosec      # security: hardcoded creds, weak crypto, SQLi patterns, etc.
+    - bodyclose  # unclosed HTTP response bodies
+    - misspell
+    - unconvert

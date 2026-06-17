@@ -85,6 +85,7 @@ interface PackagePreset {
     label: string;
     description: string;
     packages: string[];
+    group: 'format' | 'driver'; // table formats vs connector drivers
 }
 
 const PACKAGE_PRESETS: PackagePreset[] = [
@@ -93,22 +94,41 @@ const PACKAGE_PRESETS: PackagePreset[] = [
         label: 'Delta',
         description: 'Delta Lake for Spark 3.5 / Scala 2.12',
         packages: ['io.delta:delta-spark_2.12:3.3.2'],
+        group: 'format',
     },
     {
         id: 'iceberg',
         label: 'Iceberg',
         description: 'Iceberg runtime for Spark 3.5 / Scala 2.12',
         packages: ['org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.10.1'],
+        group: 'format',
     },
     {
-        id: 'delta-iceberg',
-        label: 'Delta + Iceberg',
-        description: 'Enable both Delta Lake and Iceberg',
-        packages: [
-            'io.delta:delta-spark_2.12:3.3.2',
-            'org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.10.1',
-        ],
+        id: 'trino',
+        label: 'Trino',
+        description: 'Trino JDBC driver — query external Trino clusters (edit the version to match yours)',
+        packages: ['io.trino:trino-jdbc:481'],
+        group: 'driver',
     },
+    {
+        id: 'postgres',
+        label: 'PostgreSQL',
+        description: 'PostgreSQL JDBC driver — for postgres() / query() data sources',
+        packages: ['org.postgresql:postgresql:42.7.4'],
+        group: 'driver',
+    },
+    {
+        id: 'mysql',
+        label: 'MySQL',
+        description: 'MySQL JDBC driver — for mysql() / query() data sources',
+        packages: ['com.mysql:mysql-connector-j:9.1.0'],
+        group: 'driver',
+    },
+];
+
+const PRESET_GROUPS: { group: PackagePreset['group']; title: string }[] = [
+    { group: 'format', title: 'Table formats' },
+    { group: 'driver', title: 'Connector drivers' },
 ];
 
 function normalizePackageInput(value?: string): string {
@@ -141,7 +161,6 @@ export function KernelConnectionDialog({
     const [loadingKernelSpecs, setLoadingKernelSpecs] = useState(false);
     const [selectedKernelName, setSelectedKernelName] = useState<string>('');
     const [sparkPackages, setSparkPackages] = useState<string>('');
-    const [activePresetId, setActivePresetId] = useState<string | null>(null);
     const [icebergWarehousePath, setIcebergWarehousePath] = useState<string>('');
 
     // Resource sizing (k8s_per_user, issue #41). resourceConfig.enabled gates the
@@ -156,13 +175,35 @@ export function KernelConnectionDialog({
     const [runningSize, setRunningSize] = useState<{ cores: number; memGB: number } | null>(null);
 
     const [isSubmitting, setIsSubmitting] = useState(false);
+    // Connectors configured on this server (from the registry). Their kind maps
+    // to a driver package preset (e.g. trino → io.trino:trino-jdbc), so we can
+    // badge "Configured" and nudge the user to load the driver that query()/the
+    // per-connector helper needs.
+    const [configuredKinds, setConfiguredKinds] = useState<string[]>([]);
     const packageRows = sparkPackages ? sparkPackages.split('\n') : [''];
+
+    // Configured connectors whose JDBC driver isn't in the package list yet —
+    // their helper (e.g. trino()) would fail to resolve the driver class without it.
+    const currentPackages = packageListFromInput(sparkPackages);
+    const missingDriverPresets = configuredKinds
+        .map(kind => PACKAGE_PRESETS.find(p => p.id === kind))
+        .filter((p): p is PackagePreset => !!p)
+        .filter(p => !p.packages.every(pkg => currentPackages.includes(pkg)));
 
     // Fetch kernel specs when dialog opens
     useEffect(() => {
         if (open && Object.keys(kernelSpecs).length === 0) {
             fetchKernelSpecsList();
         }
+    }, [open]);
+
+    // Fetch configured connectors so we can flag which driver presets this
+    // deployment actually needs.
+    useEffect(() => {
+        if (!open) return;
+        axios.get<{ connectors?: { kind: string }[] }>('/api/v1/connectors')
+            .then(r => setConfiguredKinds((r.data?.connectors || []).map(c => c.kind)))
+            .catch(() => setConfiguredKinds([]));
     }, [open]);
 
     // Fetch resource presets when dialog opens. Pick the saved preset, else the
@@ -240,15 +281,6 @@ export function KernelConnectionDialog({
         if (open) {
             setSparkPackages(normalizePackageInput(savedPackages));
             setIcebergWarehousePath(savedIcebergWarehousePath || '');
-            const saved = normalizePackageInput(savedPackages)
-                .split(/[,\n]/)
-                .map(pkg => pkg.trim())
-                .filter(Boolean);
-            const exactPreset = PACKAGE_PRESETS.find((preset) =>
-                preset.packages.length === saved.length &&
-                preset.packages.every((pkg) => saved.includes(pkg))
-            );
-            setActivePresetId(exactPreset?.id || null);
         } else {
             setTimeout(() => {
                 setSelectedKernelName('');
@@ -272,43 +304,32 @@ export function KernelConnectionDialog({
         }
     };
 
+    // Presets are multi-select and additive — each toggles its own coordinates in
+    // and out of the list independently, so you can enable Delta + Iceberg + a
+    // driver together. "Active" is derived from the list (below), so manual edits
+    // stay consistent with the highlighted presets.
     const applyPreset = (preset: PackagePreset) => {
         const current = packageListFromInput(sparkPackages);
-        if (activePresetId === preset.id) {
-            const remaining = current.filter(pkg => !preset.packages.includes(pkg));
-            setSparkPackages(remaining.join('\n'));
-            setActivePresetId(null);
-            return;
-        }
-
-        const nextPreset = PACKAGE_PRESETS.find(item => item.id === preset.id);
-        const withoutPreviousPreset = activePresetId
-            ? current.filter(pkg => {
-                const previousPreset = PACKAGE_PRESETS.find(item => item.id === activePresetId);
-                return !previousPreset?.packages.includes(pkg);
-            })
-            : current;
-        const merged = Array.from(new Set([...(withoutPreviousPreset || []), ...(nextPreset?.packages || [])]));
-        setSparkPackages(merged.join('\n'));
-        setActivePresetId(preset.id);
+        const allPresent = preset.packages.every(pkg => current.includes(pkg));
+        const next = allPresent
+            ? current.filter(pkg => !preset.packages.includes(pkg))
+            : Array.from(new Set([...current, ...preset.packages]));
+        setSparkPackages(next.join('\n'));
     };
 
     const updatePackageRow = (index: number, value: string) => {
         const nextRows = [...packageRows];
         nextRows[index] = value;
         setSparkPackages(normalizePackageInput(nextRows.join('\n')));
-        setActivePresetId(null);
     };
 
     const addPackageRow = () => {
         setSparkPackages(packageRows.filter(Boolean).concat('').join('\n'));
-        setActivePresetId(null);
     };
 
     const removePackageRow = (index: number) => {
         const nextRows = packageRows.filter((_, rowIndex) => rowIndex !== index);
         setSparkPackages(normalizePackageInput(nextRows.join('\n')));
-        setActivePresetId(null);
     };
 
     const handleSubmit = async () => {
@@ -575,33 +596,58 @@ export function KernelConnectionDialog({
                     {/* Spark Packages / JARs */}
                     <div className="space-y-2">
                         <Label className="text-sm font-medium">Spark JARs / Packages (Optional)</Label>
+                        {missingDriverPresets.length > 0 && (
+                            <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-3 py-2">
+                                <p className="text-[11px] text-amber-700 dark:text-amber-300">
+                                    {missingDriverPresets.map(p => p.label).join(', ')} {missingDriverPresets.length === 1 ? 'is' : 'are'} configured on this server.
+                                    Add {missingDriverPresets.length === 1 ? 'its' : 'their'} driver so the connector helper works in this kernel.
+                                </p>
+                                <div className="mt-1.5 flex flex-wrap gap-2">
+                                    {missingDriverPresets.map(p => (
+                                        <Button
+                                            key={`add-${p.id}`}
+                                            type="button"
+                                            size="sm"
+                                            variant="outline"
+                                            className="h-6 px-2 text-[11px]"
+                                            onClick={() => applyPreset(p)}
+                                        >
+                                            <Plus className="mr-1 h-3 w-3" />
+                                            Add {p.label} driver
+                                        </Button>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
                         <Accordion type="single" collapsible defaultValue="package-presets" className="rounded-md border border-border/70 bg-muted/30 px-3">
                             <AccordionItem value="package-presets" className="border-none">
                                 <AccordionTrigger className="py-3 text-xs font-medium hover:no-underline">
                                     Package Presets
                                 </AccordionTrigger>
-                                <AccordionContent className="space-y-2">
-                                    <div className="flex flex-wrap gap-2">
-                                        {PACKAGE_PRESETS.map((preset) => (
-                                            <Button
-                                                key={preset.id}
-                                                type="button"
-                                                variant={activePresetId === preset.id ? 'default' : 'outline'}
-                                                size="sm"
-                                                className="h-7 px-2 text-xs"
-                                                onClick={() => applyPreset(preset)}
-                                            >
-                                                {preset.label}
-                                            </Button>
-                                        ))}
-                                    </div>
-                                    <div className="space-y-1">
-                                        {PACKAGE_PRESETS.map((preset) => (
-                                            <div key={`${preset.id}-hint`} className="text-[10px] text-muted-foreground">
-                                                <span className="font-medium text-foreground">{preset.label}:</span> {preset.description}
+                                <AccordionContent className="space-y-3">
+                                    {PRESET_GROUPS.map(({ group, title }) => (
+                                        <div key={group} className="space-y-1.5">
+                                            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{title}</p>
+                                            <div className="flex flex-wrap gap-2">
+                                                {PACKAGE_PRESETS.filter(p => p.group === group).map((preset) => (
+                                                    <Button
+                                                        key={preset.id}
+                                                        type="button"
+                                                        variant={preset.packages.every(p => currentPackages.includes(p)) ? 'default' : 'outline'}
+                                                        size="sm"
+                                                        className="h-7 px-2 text-xs"
+                                                        onClick={() => applyPreset(preset)}
+                                                        title={preset.description + (configuredKinds.includes(preset.id) ? ' — configured on this server' : '')}
+                                                    >
+                                                        {preset.label}
+                                                        {configuredKinds.includes(preset.id) && (
+                                                            <span className="ml-1.5 inline-block size-1.5 rounded-full bg-emerald-500" aria-label="configured" />
+                                                        )}
+                                                    </Button>
+                                                ))}
                                             </div>
-                                        ))}
-                                    </div>
+                                        </div>
+                                    ))}
                                 </AccordionContent>
                             </AccordionItem>
                         </Accordion>
