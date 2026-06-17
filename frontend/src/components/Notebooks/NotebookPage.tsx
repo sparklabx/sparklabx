@@ -353,6 +353,17 @@ export default function NotebookPage() {
             // new prefix model; old API only returns `path` (legacy = private).
             const publicPath = (pathInfo as any)?.public_path || '';
 
+            // Pin this notebook's Spark UI to a deterministic port — multiple
+            // kernels share one per-user container, so they must not all land on
+            // 4040 (else the proxy shows the wrong notebook's UI). The backend
+            // Spark-UI proxy computes the SAME port from the notebook id (keep the
+            // hash in sync with sparkUIPort() in spark_ui_proxy.go).
+            const sparkUiPort = 4040 + ((() => {
+                let h = 0; const s = notebookId || '';
+                for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+                return h;
+            })() % 200);
+
             if (notebookLanguage === 'python') {
                 // Some packages need extra SparkSession config registered at build time
                 // (not just the JAR on the classpath). Detect common ones and inject.
@@ -384,6 +395,7 @@ export default function NotebookPage() {
                 if (pkgLower.includes('io.dataflint')) {
                     extraConfigs.set('spark.plugins', 'io.dataflint.spark.SparkDataflintPlugin');
                 }
+                extraConfigs.set('spark.ui.port', String(sparkUiPort));
                 const extraConfigLines = Array.from(extraConfigs.entries())
                     .map(([k, v]) => ` \\
         .config("${k}", "${v}")`)
@@ -397,6 +409,7 @@ export default function NotebookPage() {
                     'spark.sql.catalog.iceberg.type',
                     'spark.sql.catalog.iceberg.warehouse',
                     'spark.plugins',
+                    'spark.ui.port',
                 ]);
                 const runtimeConfigLinesPy = Array.from(extraConfigs.entries())
                     .filter(([k]) => !STATIC_SPARK_CONF_KEYS.has(k))
@@ -474,14 +487,14 @@ except Exception as _e:
                 // spark-submit-only). Use Ammonite's `import $ivy.\`…\`` to resolve
                 // the JAR via Coursier and splice it into the running classpath
                 // BEFORE the kernel's lazy `spark` val is first touched.
-                const ivyImports = packages
-                    ? packages
-                        .split(/[,\n]/)
-                        .map(p => p.trim())
-                        .filter(p => p.length > 0)
-                        .map(p => `import $ivy.\`${p}\``)
-                        .join('\n')
-                    : '';
+                // DataFlint (Spark performance UI) is on by default for Scala too —
+                // its jar is pre-warmed in the kernel image so the $ivy import
+                // resolves offline (parity with PySpark).
+                const scalaPackages = [
+                    ...(packages ? packages.split(/[,\n]/).map(p => p.trim()).filter(p => p.length > 0) : []),
+                    'io.dataflint:spark_2.12:0.9.9',
+                ];
+                const ivyImports = scalaPackages.map(p => `import $ivy.\`${p}\``).join('\n');
 
                 // Extensions that must be registered at SparkSession build time.
                 // Set via SparkConfig so the predef.sc builder picks them up when
@@ -506,6 +519,10 @@ except Exception as _e:
                         extraConfigs.set('spark.sql.catalog.iceberg.warehouse', icebergWarehouse);
                     }
                 }
+                // DataFlint plugin (registered at build time — spark.plugins is static).
+                extraConfigs.set('spark.plugins', 'io.dataflint.spark.SparkDataflintPlugin');
+                // Deterministic Spark UI port (see PySpark branch + spark_ui_proxy.go).
+                extraConfigs.set('spark.ui.port', String(sparkUiPort));
                 const extraConfigBlock = Array.from(extraConfigs.entries())
                     .map(([k, v]) => `SparkConfig.set("${k}", "${v}")`)
                     .join('\n');
@@ -518,6 +535,8 @@ except Exception as _e:
                     'spark.sql.catalog.iceberg',
                     'spark.sql.catalog.iceberg.type',
                     'spark.sql.catalog.iceberg.warehouse',
+                    'spark.plugins',
+                    'spark.ui.port',
                 ]);
                 const runtimeConfigBlockScala = Array.from(extraConfigs.entries())
                     .filter(([k]) => !STATIC_SPARK_CONF_KEYS.has(k))

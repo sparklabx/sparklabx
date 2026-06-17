@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httputil"
@@ -28,6 +29,18 @@ import (
 // is on the same host as its Jupyter gateway, just port 4040 instead of 8888.
 
 const sparkProxyCookie = "spark_proxy_token"
+
+// sparkUIPort maps a notebook id to a deterministic Spark UI port so the proxy
+// targets that notebook's own Spark driver (many kernels share one per-user
+// container). MUST match sparkUiPort in frontend NotebookPage.tsx:
+// 4040 + (h % 200), where h folds the id bytes with h = h*31 + b (uint32).
+func sparkUIPort(notebookID string) int {
+	var h uint32
+	for i := 0; i < len(notebookID); i++ {
+		h = h*31 + uint32(notebookID[i])
+	}
+	return 4040 + int(h%200)
+}
 
 // authSparkUI validates the request's token (query → cookie → Authorization
 // header), sets the identity on the context so checkNotebookWriteAccess works,
@@ -120,8 +133,11 @@ func (h *LocalKernelHandler) ProxySparkUI(c *gin.Context) {
 	if !ok {
 		return
 	}
-	// Same host as the Jupyter gateway, Spark UI port instead of 8888.
-	targetURLStr := strings.Replace(gatewayURL, ":8888", ":4040", 1)
+	// Same host as the Jupyter gateway, Spark UI port instead of 8888. Multiple
+	// kernels share one per-user container, so each notebook's Spark binds a
+	// deterministic UI port keyed on its id (see NotebookPage.tsx sparkUiPort) —
+	// targeting a fixed :4040 would always hit whichever kernel started first.
+	targetURLStr := strings.Replace(gatewayURL, ":8888", fmt.Sprintf(":%d", sparkUIPort(notebookID)), 1)
 	targetURL, err := url.Parse(targetURLStr)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid spark ui target"})
