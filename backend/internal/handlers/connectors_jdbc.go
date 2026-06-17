@@ -222,14 +222,14 @@ func jdbcDriverDSN(inst ConnectorInstance, password string) (driver, dsn string,
 
 	switch inst.Type {
 	case "postgres":
-		// lib/pq URL DSN. Honour an explicit sslmode, else disable (internal DBs).
+		// pgx/stdlib URL DSN. Honour an explicit sslmode, else disable (internal DBs).
 		sslmode := u.Query().Get("sslmode")
 		if sslmode == "" {
 			sslmode = "disable"
 		}
 		dsn = fmt.Sprintf("postgres://%s:%s@%s/%s?sslmode=%s",
 			url.QueryEscape(inst.Username), url.QueryEscape(password), u.Host, dbName, url.QueryEscape(sslmode))
-		return "postgres", dsn, nil
+		return "pgx", dsn, nil
 	case "mysql":
 		// go-sql-driver DSN: user:pass@tcp(host:port)/db
 		dsn = fmt.Sprintf("%s:%s@tcp(%s)/%s", inst.Username, password, u.Host, dbName)
