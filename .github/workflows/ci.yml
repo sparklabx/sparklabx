@@ -64,6 +64,13 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
         continue-on-error: true
+      - name: golangci-lint (lint + gosec)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: backend
+          args: --timeout=5m
+        continue-on-error: true
 
   frontend:
     name: Frontend (Vite + TS)
