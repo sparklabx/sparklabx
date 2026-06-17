@@ -746,7 +746,7 @@ func (h *StorageHandler) minioListAllKeys(bucket, prefix string) ([]string, erro
 			Contents []struct {
 				Key string `xml:"Key"`
 			} `xml:"Contents"`
-			IsTruncated        bool   `xml:"IsTruncated"`
+			IsTruncated           bool   `xml:"IsTruncated"`
 			NextContinuationToken string `xml:"NextContinuationToken"`
 		}
 		if err := xml.Unmarshal(body, &result); err != nil {

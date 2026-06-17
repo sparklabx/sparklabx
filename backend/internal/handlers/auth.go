@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/sparklabx/sparklabx/backend/internal/config"
+	"github.com/sparklabx/sparklabx/backend/internal/connectorauth"
 	"github.com/sparklabx/sparklabx/backend/internal/database"
 	"github.com/sparklabx/sparklabx/backend/internal/models"
 	"github.com/sparklabx/sparklabx/backend/internal/services"
@@ -44,13 +46,17 @@ func checkEmailVerified(val interface{}) error {
 }
 
 type AuthHandler struct {
-	cfg *config.Config
-	iam *services.MinIOIAM // nil if MinIO not configured — provisioning skipped
+	cfg  *config.Config
+	iam  *services.MinIOIAM  // nil if MinIO not configured — provisioning skipped
+	keys *connectorauth.Keys // signs app-minted connector tokens; nil → app-jwt disabled
 }
 
 func NewAuthHandler(cfg *config.Config, iam *services.MinIOIAM) *AuthHandler {
 	return &AuthHandler{cfg: cfg, iam: iam}
 }
+
+// SetConnectorKeys wires the connector-token signing key (set once at startup).
+func (h *AuthHandler) SetConnectorKeys(k *connectorauth.Keys) { h.keys = k }
 
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req models.LoginRequest
@@ -152,53 +158,19 @@ func (h *AuthHandler) GoogleLogin(c *gin.Context) {
 		return
 	}
 
-	db := database.GetDB()
-	email := googleUser.Email
-	name := googleUser.Name
-
-	// Allowlist check — block before any DB write so spam emails don't create accounts.
-	if allowed, anyRule := IsEmailAllowed(db, email); !allowed {
-		if !anyRule {
-			c.JSON(http.StatusForbidden, gin.H{"error": "OAuth login is not configured. Contact an administrator."})
-		} else {
-			c.JSON(http.StatusForbidden, gin.H{"error": "this email is not permitted to login"})
-		}
-		return
-	}
-
-	// Lookup or auto-provision admin. In notebook-lite mode every authenticated
-	// user is an admin — first login auto-creates a row with role=admin.
-	adminID, adminUsername, adminRole, err := upsertOAuthAdmin(db, email, name)
+	tokenString, adminID, _, adminRole, err := h.completeOAuthLogin(googleUser.Email, googleUser.Name)
 	if err != nil {
-		log.Error().Err(err).Str("email", email).Msg("OAuth admin upsert failed")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create account"})
+		writeOAuthError(c, err, "Google")
 		return
 	}
 
-	claims := jwt.MapClaims{
-		"admin_id":       adminID,
-		"admin_username": adminUsername,
-		"admin_role":     adminRole,
-		"email":          email,
-		"name":           name,
-		"role":           "admin",
-		"exp":            time.Now().Add(time.Duration(h.cfg.JWTExpireMinutes) * time.Minute).Unix(),
-		"iat":            time.Now().Unix(),
-	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString([]byte(h.cfg.JWTSecretKey))
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
-		return
-	}
-
-	log.Info().Str("email", email).Str("admin_role", adminRole).Msg("Google login successful")
+	log.Info().Str("email", googleUser.Email).Str("admin_role", adminRole).Msg("Google login successful")
 	c.JSON(http.StatusOK, gin.H{
 		"token": tokenString,
 		"user": gin.H{
 			"id":         adminID,
-			"email":      email,
-			"name":       name,
+			"email":      googleUser.Email,
+			"name":       googleUser.Name,
 			"role":       "admin",
 			"picture":    googleUser.Picture,
 			"is_admin":   true,
@@ -309,24 +281,56 @@ func (h *AuthHandler) MicrosoftLogin(c *gin.Context) {
 		return
 	}
 
-	db := database.GetDB()
-	email := msUser.Email
-	name := msUser.DisplayName
-
-	if allowed, anyRule := IsEmailAllowed(db, email); !allowed {
-		if !anyRule {
-			c.JSON(http.StatusForbidden, gin.H{"error": "OAuth login is not configured. Contact an administrator."})
-		} else {
-			c.JSON(http.StatusForbidden, gin.H{"error": "this email is not permitted to login"})
-		}
+	tokenString, adminID, _, adminRole, err := h.completeOAuthLogin(msUser.Email, msUser.DisplayName)
+	if err != nil {
+		writeOAuthError(c, err, "Microsoft")
 		return
 	}
 
-	adminID, adminUsername, adminRole, err := upsertOAuthAdmin(db, email, name)
+	log.Info().Str("email", msUser.Email).Str("admin_role", adminRole).Msg("Microsoft login successful")
+	c.JSON(http.StatusOK, gin.H{
+		"token": tokenString,
+		"user": gin.H{
+			"id":         adminID,
+			"email":      msUser.Email,
+			"name":       msUser.DisplayName,
+			"role":       "admin",
+			"is_admin":   true,
+			"admin_role": adminRole,
+		},
+	})
+}
+
+// OAuth allowlist sentinels — completeOAuthLogin returns these so each caller
+// maps them to its own response style (JSON for Google/Microsoft, redirect for
+// generic OIDC).
+var (
+	errOAuthNotConfigured = errors.New("oauth allowlist not configured")
+	errOAuthNotPermitted  = errors.New("email not permitted by allowlist")
+)
+
+// completeOAuthLogin is the shared tail of every OAuth/OIDC login once an
+// identity (email/name) has been resolved from the provider: enforce the email
+// allowlist, auto-provision the admin, and mint the SparkLabX app JWT. The
+// front half — how the provider token is obtained (JS-SDK popup for
+// Google/Microsoft, the server-side code flow for generic OIDC) — differs per
+// provider and stays in the individual handlers. This keeps the three login
+// paths consistent and makes adding a code flow for any provider a matter of
+// wiring its front half to this same helper.
+func (h *AuthHandler) completeOAuthLogin(email, name string) (token, adminID, adminUsername, adminRole string, err error) {
+	db := database.GetDB()
+
+	// Block before any DB write so disallowed emails never create an account.
+	if allowed, anyRule := IsEmailAllowed(db, email); !allowed {
+		if !anyRule {
+			return "", "", "", "", errOAuthNotConfigured
+		}
+		return "", "", "", "", errOAuthNotPermitted
+	}
+
+	adminID, adminUsername, adminRole, err = upsertOAuthAdmin(db, email, name)
 	if err != nil {
-		log.Error().Err(err).Str("email", email).Msg("OAuth admin upsert failed")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create account"})
-		return
+		return "", "", "", "", fmt.Errorf("admin upsert: %w", err)
 	}
 
 	claims := jwt.MapClaims{
@@ -339,25 +343,25 @@ func (h *AuthHandler) MicrosoftLogin(c *gin.Context) {
 		"exp":            time.Now().Add(time.Duration(h.cfg.JWTExpireMinutes) * time.Minute).Unix(),
 		"iat":            time.Now().Unix(),
 	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString([]byte(h.cfg.JWTSecretKey))
+	token, err = jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(h.cfg.JWTSecretKey))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
-		return
+		return "", "", "", "", fmt.Errorf("sign token: %w", err)
 	}
+	return token, adminID, adminUsername, adminRole, nil
+}
 
-	log.Info().Str("email", email).Str("admin_role", adminRole).Msg("Microsoft login successful")
-	c.JSON(http.StatusOK, gin.H{
-		"token": tokenString,
-		"user": gin.H{
-			"id":         adminID,
-			"email":      email,
-			"name":       name,
-			"role":       "admin",
-			"is_admin":   true,
-			"admin_role": adminRole,
-		},
-	})
+// writeOAuthError maps a completeOAuthLogin error to a JSON response for the
+// token-POST providers (Google, Microsoft).
+func writeOAuthError(c *gin.Context, err error, provider string) {
+	switch {
+	case errors.Is(err, errOAuthNotConfigured):
+		c.JSON(http.StatusForbidden, gin.H{"error": "OAuth login is not configured. Contact an administrator."})
+	case errors.Is(err, errOAuthNotPermitted):
+		c.JSON(http.StatusForbidden, gin.H{"error": "this email is not permitted to login"})
+	default:
+		log.Error().Err(err).Str("provider", provider).Msg("OAuth login failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "login failed"})
+	}
 }
 
 // upsertOAuthAdmin returns (adminID, username, role) for the email. Auto-creates
@@ -524,4 +528,3 @@ type MicrosoftUserInfo struct {
 	Email             string `json:"mail"`
 	UserPrincipalName string `json:"userPrincipalName"`
 }
-

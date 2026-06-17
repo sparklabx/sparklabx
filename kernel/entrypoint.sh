@@ -133,6 +133,48 @@ print(f"kernel.json patched: {len(jvm_props)} JVM -D props (mode={mode})")
 PYEOF
 fi
 
+# ── 3b. Ensure the Spark-on-Java-17 --add-opens on the Scala (Almond) kernel ──
+# PySpark gets these automatically via spark-class; Almond launches its own JVM,
+# so without the full set, date/time ops fail with "cannot access
+# sun.util.calendar.ZoneInfo". Idempotent — only adds what's missing.
+if [ -f "$SCALA_KERNEL_JSON" ]; then
+  python3 - "$SCALA_KERNEL_JSON" <<'PYEOF'
+import json, sys
+p = sys.argv[1]
+needed = [
+    "--add-opens=java.base/java.lang=ALL-UNNAMED",
+    "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+    "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+    "--add-opens=java.base/java.io=ALL-UNNAMED",
+    "--add-opens=java.base/java.net=ALL-UNNAMED",
+    "--add-opens=java.base/java.nio=ALL-UNNAMED",
+    "--add-opens=java.base/java.util=ALL-UNNAMED",
+    "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+    "--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED",
+    "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+    "--add-opens=java.base/sun.nio.cs=ALL-UNNAMED",
+    "--add-opens=java.base/sun.security.action=ALL-UNNAMED",
+    "--add-opens=java.base/sun.util.calendar=ALL-UNNAMED",
+    "--add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED",
+]
+try:
+    with open(p) as f:
+        k = json.load(f)
+except Exception as e:
+    print(f"scala kernel.json add-opens skipped: {e}")
+    raise SystemExit(0)
+argv = k.get("argv", [])
+have = set(argv)
+missing = [o for o in needed if o not in have]
+if missing:
+    argv[1:1] = missing  # insert right after the java binary
+    k["argv"] = argv
+    with open(p, "w") as f:
+        json.dump(k, f, indent=2)
+print(f"scala kernel.json: +{len(missing)} add-opens (Java 17 Spark)")
+PYEOF
+fi
+
 # ── 4. Patch predef.sc for lazy val spark (Almond Scala kernel) ───────────────
 PREDEF_FILE="/root/predef.sc"
 if [ -f "$PREDEF_FILE" ] && [ -n "$AWS_ACCESS_KEY_ID" ]; then
@@ -185,6 +227,37 @@ with open(predef_path, "w") as f:
     f.write(content)
 print(f"predef.sc patched (mode={mode})")
 PYEOF
+fi
+
+# ── 4b. Notebook helpers (trino(), DataFrame display) for Python + Scala ─────
+# Helpers are committed source files (kernel/helpers/) COPY'd into the image and
+# installed here — see those files for the per-helper docs. Python files (*.py)
+# become IPython startup scripts; Scala files (*.sc) are appended to the Almond
+# predef. Drop a new file in kernel/helpers/ to add another helper — no edits
+# here. The Trino driver is NOT bundled (orgs pick their own version): add the
+# "Trino" connector preset (io.trino:trino-jdbc:<ver>) when connecting.
+HELPERS_DIR="${HELPERS_DIR:-/home/exam/helpers}"
+
+# Python: copy every helper into this user's IPython startup dir (HOME-derived so
+# it works whatever user the kernel runs as). Overwrite each start = no drift.
+IPY_STARTUP="${HOME:-/root}/.ipython/profile_default/startup"
+if ls "$HELPERS_DIR"/*.py >/dev/null 2>&1; then
+  mkdir -p "$IPY_STARTUP"
+  cp "$HELPERS_DIR"/*.py "$IPY_STARTUP/"
+  echo "Python notebook helpers installed: $(ls "$HELPERS_DIR"/*.py | wc -l | tr -d ' ') file(s)"
+fi
+
+# Scala: concatenate every *.sc into ONE managed block on the Almond predef.
+# Strip the previous block first so a rebuilt image refreshes the helpers even
+# on a persisted predef.sc (update-safe, unlike an append-once guard).
+if [ -f "$PREDEF_FILE" ] && ls "$HELPERS_DIR"/*.sc >/dev/null 2>&1; then
+  sed -i '/SPARKLABX-HELPERS-START/,/SPARKLABX-HELPERS-END/d' "$PREDEF_FILE"
+  {
+    echo "// SPARKLABX-HELPERS-START (auto — managed by entrypoint.sh, do not edit)"
+    cat "$HELPERS_DIR"/*.sc
+    echo "// SPARKLABX-HELPERS-END"
+  } >> "$PREDEF_FILE"
+  echo "Scala notebook helpers installed: $(ls "$HELPERS_DIR"/*.sc | wc -l | tr -d ' ') file(s)"
 fi
 
 # ── 5. Start Jupyter Kernel Gateway ───────────────────────────────────────────

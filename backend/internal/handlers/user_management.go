@@ -213,4 +213,3 @@ func (h *UserManagementHandler) ResetPassword(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "password reset"})
 }
-

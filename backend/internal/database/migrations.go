@@ -29,6 +29,12 @@ func MigrateAndSeed(cfg *config.Config) error {
 		// the kernel pod can only access their own users/<slug>/* prefix +
 		// public/*. Empty until first login post-IAM-rollout — backfilled lazily.
 		`ALTER TABLE admins ADD COLUMN IF NOT EXISTS minio_secret_enc TEXT NOT NULL DEFAULT ''`,
+		// Encrypted OIDC tokens from SSO login, retained so the kernel can
+		// authenticate to external services (e.g. Trino) as the logged-in user
+		// via token passthrough. Empty unless the user logged in via OIDC SSO.
+		`ALTER TABLE admins ADD COLUMN IF NOT EXISTS oidc_access_token_enc TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE admins ADD COLUMN IF NOT EXISTS oidc_refresh_token_enc TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE admins ADD COLUMN IF NOT EXISTS oidc_token_expires_at TIMESTAMPTZ`,
 
 		`CREATE TABLE IF NOT EXISTS notebooks (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -70,6 +76,40 @@ func MigrateAndSeed(cfg *config.Config) error {
 			CONSTRAINT allowed_email_rules_unique UNIQUE (rule_type, value)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_allowed_email_rules_lookup ON allowed_email_rules(enabled, rule_type, value)`,
+
+		// Admin-managed data connectors (Trino, Postgres, MySQL, …). The TRINO_URL
+		// env still seeds a non-deletable "trino" connector; these are the ones
+		// added from the UI. password_enc is AES-GCM (services.MinIOIAM key) for
+		// broker-mapped (user/password) sources; empty for app-jwt/idp-passthrough.
+		`CREATE TABLE IF NOT EXISTS connectors (
+			id VARCHAR(64) PRIMARY KEY,
+			type VARCHAR(32) NOT NULL,
+			label VARCHAR(128) NOT NULL,
+			url TEXT NOT NULL,
+			auth VARCHAR(32) NOT NULL,
+			username VARCHAR(255) NOT NULL DEFAULT '',
+			password_enc TEXT NOT NULL DEFAULT '',
+			added_by VARCHAR(255) NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ DEFAULT NOW()
+		)`,
+		// Connector scope: owner_id = '' is a shared (org-wide) source; a non-empty
+		// admin id makes it personal (visible only to that user). Existing rows
+		// default to shared.
+		`ALTER TABLE connectors ADD COLUMN IF NOT EXISTS owner_id VARCHAR(64) NOT NULL DEFAULT ''`,
+		// Connectors are personal (owned by their creator). The id is the notebook
+		// helper name and must be unique PER OWNER — so two users can each have a
+		// "trino" — not globally. Swap the global PK on id for UNIQUE(owner_id, id).
+		`DO $$ BEGIN
+			IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'connectors_pkey') THEN
+				ALTER TABLE connectors DROP CONSTRAINT connectors_pkey;
+			END IF;
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'connectors_owner_id_id_key') THEN
+				ALTER TABLE connectors ADD CONSTRAINT connectors_owner_id_id_key UNIQUE (owner_id, id);
+			END IF;
+		END $$`,
+		// Generic app-managed secrets (e.g. the connector signing key) — persisted
+		// in the DB so they survive restarts without a dedicated volume.
+		`CREATE TABLE IF NOT EXISTS app_secrets (key VARCHAR(64) PRIMARY KEY, value TEXT NOT NULL)`,
 
 		// K8s per-user pod tracking
 		`CREATE TABLE IF NOT EXISTS user_kernel_pods (

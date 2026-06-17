@@ -7,7 +7,7 @@ import {
   LogOut,
   Settings,
   Users,
-  Database,
+  HardDrive,
 } from 'lucide-react';
 import authService from '@/services/authService';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
@@ -80,7 +80,7 @@ export function Sidebar({ collapsed, onCollapse }: SidebarProps) {
               collapsed && "justify-center"
             )}
           >
-            <Database className="size-4" />
+            <HardDrive className="size-4" />
             {!collapsed && <span className="flex-1 text-left">Storage</span>}
           </button>
 

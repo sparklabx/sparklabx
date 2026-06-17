@@ -270,19 +270,19 @@ func (h *NotebookHandler) GetNotebook(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"id":              nb.ID,
-		"name":            nb.Name,
-		"description":     nb.Description,
-		"language":        strings.ToLower(nb.Language),
-		"owner_id":        nb.OwnerID,
-		"owner_type":      nb.OwnerType,
-		"user_id":         nb.OwnerID,
-		"is_public":       nb.IsPublic,
-		"cluster_config":  json.RawMessage(nb.ClusterConfig),
-		"tags":            []string{},
-		"created_at":      nb.CreatedAt,
-		"updated_at":      nb.UpdatedAt,
-		"cells":           cells,
+		"id":             nb.ID,
+		"name":           nb.Name,
+		"description":    nb.Description,
+		"language":       strings.ToLower(nb.Language),
+		"owner_id":       nb.OwnerID,
+		"owner_type":     nb.OwnerType,
+		"user_id":        nb.OwnerID,
+		"is_public":      nb.IsPublic,
+		"cluster_config": json.RawMessage(nb.ClusterConfig),
+		"tags":           []string{},
+		"created_at":     nb.CreatedAt,
+		"updated_at":     nb.UpdatedAt,
+		"cells":          cells,
 	})
 }
 
