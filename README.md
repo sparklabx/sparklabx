@@ -14,7 +14,12 @@ Each authenticated user gets their own private Spark kernel (Python / PySpark /
 Scala) and their own S3 storage prefix, enforced by real MinIO IAM (not just
 app-layer checks).
 
-![SparkLabX notebook with PySpark/Scala kernel and DataFrame output](docs/screenshots/notebook.png)
+<p>
+  <img src="docs/screenshots/notebook.png" width="49%" alt="SparkLabX notebook — light theme" />
+  <img src="docs/screenshots/notebook-darkmode.png" width="49%" alt="SparkLabX notebook — dark theme" />
+</p>
+
+<sub>SparkLabX notebook (PySpark / Scala) — light & dark themes.</sub>
 
 ---
 
@@ -46,6 +51,14 @@ to login via username/password only.
   editing code.
 
   ![Libraries dialog — add Maven coordinates, kernel restarts to apply](docs/screenshots/libraries.png)
+- **Embedded Spark UI + DataFlint** — open the kernel's Spark Web UI (DAGs,
+  stages, SQL plans, metrics) in-app, no port-forward. **DataFlint** (a Spark
+  performance plugin) is on by default for PySpark and Scala, adding a
+  performance tab that flags slow stages, skew, and oversized scans.
+
+  ![Embedded Spark UI — DAG, stages, SQL plans](docs/screenshots/sparkui.png)
+
+  ![DataFlint performance tab in the Spark UI](docs/screenshots/dataflint.png)
 - **Per-user isolation, end-to-end**
   - Single MinIO bucket; each user owns a private prefix `users/<username>/`.
   - On first login, the backend provisions a dedicated MinIO IAM account
@@ -55,8 +68,18 @@ to login via username/password only.
   - User secrets are AES-GCM encrypted at rest.
 - **Three kernel deployment modes** — pick the right cost / isolation point
   for your stage. See **[KERNEL_MODE](#kernel_mode)** below.
-- **OAuth (Google / Microsoft) + email allowlist** — only invited domains or
-  exact emails can sign in.
+- **OAuth (Google / Microsoft / generic OIDC) + email allowlist** — only
+  invited domains or exact emails can sign in.
+- **Data connectors (Trino / Postgres / MySQL)** — add a source from the UI
+  (host / port / SSL — no JDBC string to memorize), browse its catalog →
+  schema → table → columns, and query it from any notebook with one helper:
+  `query("<id>", "SELECT ...")`. Each connector is **personal** and
+  authenticates as **your** SSO identity — the app mints a short-lived RS256
+  JWT that the source validates via the app's JWKS (app-as-issuer), so Trino's
+  own access control keys off the real user. Optional broker-mapped
+  username/password (AES-GCM encrypted) for sources without SSO.
+
+  ![Data Sources panel — add a connector and browse its catalog](docs/screenshots/data-sources.png)
 - **Shared "Public" workspace** — drop datasets everyone can read.
 - **Postgres-backed state** — kernel ↔ notebook mappings, idle reaper,
   spawn-phase progress. Restartable backend, no in-memory loss.
@@ -93,6 +116,11 @@ Backend (Go + Gin) responsibilities:
 - Kernel pod / container lifecycle: spawn on demand, reap on idle,
   buffered "last used" touches.
 - Notebook persistence, cell execution proxy to Jupyter Kernel Gateway.
+- Connector registry + **app-as-issuer** JWT: mints short-lived RS256 tokens
+  per user and serves the JWKS at `/api/v1/.well-known/jwks.json` so sources
+  (Trino, …) authenticate the real user. Per-query credentials are handed to
+  the kernel via a scoped callback token; see
+  [`docs/connectors-design.md`](docs/connectors-design.md).
 
 Frontend (React + Vite + Monaco):
 
@@ -100,6 +128,8 @@ Frontend (React + Vite + Monaco):
   HTML tables via the kernel-side `display()` / patched `df.show()`).
 - File browser sidebar with two scopes: **My Space** (private) and
   **Public** (shared).
+- **Data Sources** panel: add/edit/delete connectors, browse the catalog tree,
+  copy a ready-made `query("<id>", …)` call.
 - Spark cluster connection dialog (driver/executor memory, package list).
 
 ---
@@ -318,6 +348,23 @@ username/password login only. To enable Google or Microsoft SSO:
    VITE_MICROSOFT_CLIENT_ID=<application-client-id>
    VITE_MICROSOFT_TENANT_ID=<tenant-id>   # use "common" for multi-tenant
    ```
+
+### Generic OIDC (Keycloak, Okta, Auth0, …)
+
+Any standards-compliant OIDC provider works via a server-side code flow — no
+`VITE_*` rebuild needed (the button just redirects to the backend). Set in `.env`:
+
+```bash
+OIDC_ISSUER_URL=https://your-idp/realms/yourrealm   # discovery base
+OIDC_CLIENT_ID=<client-id>
+OIDC_CLIENT_SECRET=<client-secret>
+OIDC_PROVIDER_NAME=SSO                               # button label
+OIDC_REDIRECT_URL=http://localhost:3000/api/v1/auth/oidc/callback
+# OIDC_INTERNAL_ISSUER_URL=  # set if the IdP's in-cluster URL differs from the public issuer
+```
+
+Register `OIDC_REDIRECT_URL` as an allowed redirect URI at the IdP. Leaving
+`OIDC_ISSUER_URL` / `OIDC_CLIENT_ID` blank hides the button.
 
 ### Apply the changes
 
