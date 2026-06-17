@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -66,10 +65,9 @@ func jwtPreferredUsername(token string) string {
 // (POST /v1/statement, then follow nextUri) and returns the first column as a
 // string list. Authenticated as the user via their OIDC access token.
 func trinoShow(base string, insecure bool, authHeader, user, sql string) ([]string, error) {
-	client := &http.Client{Timeout: 20 * time.Second}
-	if insecure {
-		client.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
-	}
+	// Guarded client: blocks link-local / cloud-metadata peers (SSRF); keeps the
+	// insecure-TLS option for self-signed dev certs.
+	client := guardedConnectorHTTPClient(20*time.Second, insecure)
 	setHeaders := func(r *http.Request) {
 		if authHeader != "" {
 			r.Header.Set("Authorization", authHeader)

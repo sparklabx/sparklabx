@@ -107,9 +107,11 @@ func (h *LocalKernelHandler) ProxySparkUI(c *gin.Context) {
 
 	// Persist the token (from the iframe's ?token=) in a path-scoped cookie so
 	// the UI's own asset/XHR requests — which carry no query param — authenticate.
+	// HttpOnly (JS never needs to read it) and Secure when served over TLS.
 	if token := c.Query("token"); token != "" {
+		secure := c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https")
 		c.SetSameSite(http.SameSiteLaxMode)
-		c.SetCookie(sparkProxyCookie, token, 3600, "/api/v1/notebooks", "", false, false)
+		c.SetCookie(sparkProxyCookie, token, 3600, "/api/v1/notebooks", "", secure, true)
 	}
 
 	userID := userIDString(c)

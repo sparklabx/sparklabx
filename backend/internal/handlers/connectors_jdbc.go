@@ -40,6 +40,9 @@ func (h *AuthHandler) jdbcMetadata(inst ConnectorInstance, path []string) (items
 	if err != nil {
 		return nil, "", err
 	}
+	if err := ssrfCheckConnectorURL(inst.URL); err != nil {
+		return nil, "", err
+	}
 	db, err := sql.Open(driver, dsn)
 	if err != nil {
 		return nil, "", fmt.Errorf("open %s: %w", inst.Type, err)
@@ -145,6 +148,10 @@ func (h *AuthHandler) TestConnector(c *gin.Context) {
 		}
 		driver, dsn, err := jdbcDriverDSN(inst, pw)
 		if err != nil {
+			c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
+			return
+		}
+		if err := ssrfCheckConnectorURL(inst.URL); err != nil {
 			c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
 			return
 		}
