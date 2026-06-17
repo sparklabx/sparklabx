@@ -1,0 +1,42 @@
+version: 2
+updates:
+  # Go backend
+  - package-ecosystem: gomod
+    directory: /backend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      go-deps:
+        patterns: ["*"]
+
+  # Frontend (npm)
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      npm-deps:
+        patterns: ["*"]
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Container base images
+  - package-ecosystem: docker
+    directories:
+      - /backend
+      - /frontend
+      - /kernel
+    schedule:
+      interval: weekly
+    groups:
+      docker:
+        patterns: ["*"]
