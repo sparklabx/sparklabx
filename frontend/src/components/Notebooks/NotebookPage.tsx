@@ -1897,7 +1897,7 @@ try {
                             doesn't exist yet while booting, and showing it then
                             collides with the wide "Booting Spark…" status). */}
                         {connectionStatus === 'connected' && notebookId && !sparkInitPending && !sparkFailed && !runningCells.has(INIT_CELL_ID) && (
-                            <SparkUIDialog notebookId={notebookId} compact={compactToolbar} />
+                            <SparkUIDialog notebookId={notebookId} />
                         )}
 
                         {/* Libraries button */}

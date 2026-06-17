@@ -57,21 +57,6 @@ func (h *AuthHandler) KernelOIDCToken(c *gin.Context) {
 	})
 }
 
-// IsOIDCUser reports whether the admin has ever stored OIDC tokens (i.e. logged
-// in via SSO). Used to decide whether to wire SSO passthrough into their kernel
-// — true even when the stored token is currently expired, so the kernel can
-// reach the backend and report an expired session clearly.
-func (h *AuthHandler) IsOIDCUser(adminID string) bool {
-	if h.iam == nil {
-		return false
-	}
-	var present bool
-	err := database.GetDB().QueryRow(
-		`SELECT oidc_access_token_enc <> '' FROM admins WHERE id = $1`, adminID,
-	).Scan(&present)
-	return err == nil && present
-}
-
 // OIDC token broker — retains the IdP access/refresh tokens from an SSO login
 // (encrypted at rest, reusing the same AES-GCM key as the MinIO secrets) so the
 // kernel can authenticate to external services (e.g. Trino) as the logged-in

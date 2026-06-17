@@ -9,7 +9,7 @@ import authService from '@/services/authService';
 // authenticates via the ?token= query param (an iframe can't send an auth
 // header), then sets a path-scoped cookie so the UI's own asset/XHR requests
 // work too. The iframe only mounts while open, so we don't proxy when unused.
-export const SparkUIDialog: React.FC<{ notebookId: string; disabled?: boolean; compact?: boolean }> = ({ notebookId, disabled }) => {
+export const SparkUIDialog: React.FC<{ notebookId: string; disabled?: boolean }> = ({ notebookId, disabled }) => {
     const [open, setOpen] = useState(false);
     const token = authService.getToken() || '';
     const src = `/api/v1/notebooks/${notebookId}/kernel/spark-ui/?token=${encodeURIComponent(token)}`;
