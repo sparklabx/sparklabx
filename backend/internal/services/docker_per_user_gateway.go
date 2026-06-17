@@ -50,12 +50,15 @@ type cachedUsage struct {
 const usageTTL = 2 * time.Second
 
 type DockerPerUserConfig struct {
-	Image         string            // kernel image to run
-	Network       string            // docker network name backend is on (default: "sparklabx_default")
-	IdleTimeout   time.Duration     // reap container after this long idle
-	MaxContainers int               // hard cap; rejects spawn beyond
-	MinIOEndpoint string            // injected as S3_ENDPOINT env so kernel reaches MinIO
-	CredsResolver UserCredsResolver // nil → fall back to root creds via env passthrough
+	Image                      string                     // kernel image to run
+	Network                    string                     // docker network name backend is on (default: "sparklabx_default")
+	IdleTimeout                time.Duration              // reap container after this long idle
+	MaxContainers              int                        // hard cap; rejects spawn beyond
+	MinIOEndpoint              string                     // injected as S3_ENDPOINT env so kernel reaches MinIO
+	CredsResolver              UserCredsResolver          // nil → fall back to root creds via env passthrough
+	OIDCTokenResolver          UserOIDCTokenResolver      // returns the kernel callback token (SPARKLABX_KERNEL_TOKEN); nil → no SSO passthrough
+	KernelAPIURL               string                     // injected as SPARKLABX_API_URL so the kernel can fetch a fresh OIDC token
+	ConnectorsManifestProvider func(userID string) string // live per-user manifest at spawn time; nil → use ConnectorsManifest
 
 	// Per-container limits in k8s quantity format ("500m", "1Gi"). Docker
 	// doesn't have a separate "request" concept, so only the limit values
@@ -122,8 +125,8 @@ func NewDockerPerUserGateway(cfg DockerPerUserConfig) (*DockerPerUserGateway, er
 	return g, nil
 }
 
-func (g *DockerPerUserGateway) Mode() string                  { return "docker_per_user" }
-func (g *DockerPerUserGateway) IdleTimeout() time.Duration    { return g.cfg.IdleTimeout }
+func (g *DockerPerUserGateway) Mode() string               { return "docker_per_user" }
+func (g *DockerPerUserGateway) IdleTimeout() time.Duration { return g.cfg.IdleTimeout }
 
 // dockerContainerName returns a deterministic, DNS-safe container name for a
 // user. Truncated SHA1 keeps it short; backend restart still finds it.
@@ -336,6 +339,26 @@ func (g *DockerPerUserGateway) EnsureSpawning(userID string, spec *ResourceSpec)
 		"S3_ENDPOINT=" + g.cfg.MinIOEndpoint,
 	}
 
+	// SSO token passthrough: inject a short-lived callback token + the backend
+	// URL so the notebook data helpers can fetch a FRESH OIDC token per query
+	// (the refresh token stays server-side). Absent for non-SSO logins.
+	if g.cfg.OIDCTokenResolver != nil {
+		if tok, err := g.cfg.OIDCTokenResolver(userID); err != nil {
+			log.Warn().Err(err).Str("user", userID).Msg("OIDCTokenResolver failed; no SSO passthrough")
+		} else if tok != "" {
+			env = append(env, "SPARKLABX_KERNEL_TOKEN="+tok)
+			if g.cfg.KernelAPIURL != "" {
+				env = append(env, "SPARKLABX_API_URL="+g.cfg.KernelAPIURL)
+			}
+		}
+	}
+	// Default Trino endpoint for the trino() notebook helper (operator-configured).
+	// Connector manifest ([{id,driver,url}]) for the generic data helpers; each
+	// connector gets an alias that fetches a fresh credential per query.
+	if m := resolveConnectorsManifest(g.cfg.ConnectorsManifestProvider, userID); m != "" {
+		env = append(env, "SPARKLABX_CONNECTORS="+m)
+	}
+
 	// Per-spawn limits: user-picked spec wins over the configured defaults.
 	// The spec was already validated by the handler, so a parse failure here
 	// just falls back to the defaults instead of failing the spawn.
@@ -368,7 +391,7 @@ func (g *DockerPerUserGateway) EnsureSpawning(userID string, spec *ResourceSpec)
 			"sparklabx.user":   userID,
 		},
 		"ExposedPorts": map[string]any{"8888/tcp": map[string]any{}},
-		"HostConfig": hostConfig(g.cfg, nanoCPUs, memoryBytes),
+		"HostConfig":   hostConfig(g.cfg, nanoCPUs, memoryBytes),
 	}
 	if err := g.containerCreate(ctx, name, cfg); err != nil {
 		g.updatePhase(userID, PhaseFailed, err.Error())
@@ -783,12 +806,12 @@ func (g *DockerPerUserGateway) setReadyURL(userID, url, name string) {
 // ============================================================
 
 // reaperLoop does three things every 5 minutes:
-//   1. reapIdle      — Destroy containers that have been idle past IdleTimeout.
-//   2. reapDead      — Destroy DB rows whose container is in a dead state
-//                      (exited / dead / removing / vanished) so the next
-//                      connect-kernel call spawns fresh instead of looping.
-//   3. sweepOrphans  — Remove containers labeled sparklabx.kernel=1 that
-//                      have no DB row (left behind by crashes or manual rm).
+//  1. reapIdle      — Destroy containers that have been idle past IdleTimeout.
+//  2. reapDead      — Destroy DB rows whose container is in a dead state
+//     (exited / dead / removing / vanished) so the next
+//     connect-kernel call spawns fresh instead of looping.
+//  3. sweepOrphans  — Remove containers labeled sparklabx.kernel=1 that
+//     have no DB row (left behind by crashes or manual rm).
 func (g *DockerPerUserGateway) reaperLoop() {
 	tick := time.NewTicker(5 * time.Minute)
 	defer tick.Stop()

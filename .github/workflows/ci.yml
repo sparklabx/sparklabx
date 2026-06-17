@@ -64,6 +64,13 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
         continue-on-error: true
+      - name: golangci-lint (lint + gosec)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: backend
+          args: --timeout=5m
+        continue-on-error: true
 
   frontend:
     name: Frontend (Vite + TS)
@@ -81,6 +88,9 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci --legacy-peer-deps
+      - name: npm audit (CVE scan)
+        run: npm audit --audit-level=high
+        continue-on-error: true
       - name: ESLint
         run: npx eslint src/
         continue-on-error: true

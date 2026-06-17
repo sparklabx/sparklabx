@@ -27,6 +27,7 @@ import (
 // it's a fixed URL (docker-compose), for K8sPerUserGateway it's the per-user
 // pod IP (spawned on demand).
 type LocalKernelHandler struct {
+	cfg      *config.Config
 	gateway  services.KernelGateway
 	upgrader websocket.Upgrader
 
@@ -46,6 +47,7 @@ func NewLocalKernelHandler(cfg *config.Config, gateway services.KernelGateway) *
 		allowedOrigins[o] = true
 	}
 	return &LocalKernelHandler{
+		cfg:                   cfg,
 		gateway:               gateway,
 		resourcePresets:       cfg.KernelResourcePresets,
 		resourceDefaultPreset: cfg.KernelResourceDefaultPreset,
@@ -358,13 +360,12 @@ func parseKernelKey(key string) (notebookID, userID string) {
 	return "", ""
 }
 
-
 // Connect creates or reuses a kernel session on the user's gateway.
 //
 // Async-friendly contract:
 //   - 200 + {kernel_id}        — pod ready, kernel session created. FE opens WS.
 //   - 202 + {phase, message}   — pod still spawning. FE polls /spawn-status and
-//                                 retries this endpoint when phase reaches 'ready'.
+//     retries this endpoint when phase reaches 'ready'.
 //   - 503 + {error}            — hard failure (capacity, K8s API down). FE shows error.
 //
 // SharedGateway never returns 202 (EnsureSpawning is no-op, Status is always

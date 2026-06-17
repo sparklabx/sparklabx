@@ -12,12 +12,34 @@ import (
 	"github.com/sparklabx/sparklabx/backend/internal/config"
 )
 
+// isSessionToken reports whether the JWT is a normal login session token, as
+// opposed to a special-purpose token (the kernel callback token, typ="kernel",
+// or the OIDC state token, typ="oidc_state"). Those must only be accepted by
+// their dedicated guards — never by the session guards below — so a leaked
+// kernel token can't reach the full admin API.
+func isSessionToken(claims jwt.MapClaims) bool {
+	typ, _ := claims["typ"].(string)
+	return typ == "" || typ == "session"
+}
+
+func rejectNonSessionToken(c *gin.Context, claims jwt.MapClaims) bool {
+	if isSessionToken(claims) {
+		return false
+	}
+	c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+	c.Abort()
+	return true
+}
+
 // RequireAdmin validates JWT and requires admin_id claim.
 func RequireAdmin(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, err := parseJWT(c, cfg)
 		if err != nil {
 			return // already aborted
+		}
+		if rejectNonSessionToken(c, claims) {
+			return
 		}
 
 		adminID, ok := claims["admin_id"].(string)
@@ -43,11 +65,40 @@ func RequireAdmin(cfg *config.Config) gin.HandlerFunc {
 	}
 }
 
+// RequireKernelToken authenticates the short-lived callback token minted for a
+// user's kernel (typ="kernel"). It is deliberately separate from RequireAdmin so
+// this token — which sits in the kernel pod's environment — can ONLY reach the
+// endpoints it's meant for (the OIDC token callback), not the full admin API.
+func RequireKernelToken(cfg *config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims, err := parseJWT(c, cfg)
+		if err != nil {
+			return
+		}
+		if typ, _ := claims["typ"].(string); typ != "kernel" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "kernel token required"})
+			c.Abort()
+			return
+		}
+		adminID, ok := claims["admin_id"].(string)
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid kernel token"})
+			c.Abort()
+			return
+		}
+		c.Set("admin_id", adminID)
+		c.Next()
+	}
+}
+
 // RequireStudent validates JWT and requires user_id claim WITHOUT admin_id.
 func RequireStudent(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, err := parseJWT(c, cfg)
 		if err != nil {
+			return
+		}
+		if rejectNonSessionToken(c, claims) {
 			return
 		}
 
@@ -78,6 +129,9 @@ func RequireAuth(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, err := parseJWT(c, cfg)
 		if err != nil {
+			return
+		}
+		if rejectNonSessionToken(c, claims) {
 			return
 		}
 

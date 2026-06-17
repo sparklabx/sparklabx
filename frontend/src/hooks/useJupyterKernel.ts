@@ -249,9 +249,15 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
             const executionState = msg.content?.execution_state;
             devLog(`[JupyterKernel][${notebookId}] Kernel status: ${executionState}`);
 
-            // When kernel becomes idle for the first time, it's ready
-            if (executionState === 'idle' && session.status === 'starting') {
-                devLog(`[JupyterKernel][${notebookId}] ✅ Kernel ready (status=idle), marking as connected`);
+            // Any status message while 'starting' means the kernel is alive and
+            // talking to us — flip to 'connected'. We accept 'busy' too, not just
+            // 'idle': reloading the page WHILE Spark init is still running
+            // reconnects to a busy kernel that won't emit 'idle' for a while, so
+            // gating only on 'idle' left the badge stuck on "starting" until the
+            // 30s fallback. 'busy' is an accurate "connected" signal — the running
+            // cell (e.g. Spark init) then drives the "Booting Spark…" display.
+            if ((executionState === 'idle' || executionState === 'busy') && session.status === 'starting') {
+                devLog(`[JupyterKernel][${notebookId}] ✅ Kernel responsive (status=${executionState}), marking as connected`);
                 // Clear pod phase too — once kernel is talking to us the spawn
                 // progress message is no longer useful and we want the UI to
                 // show "Connected" cleanly.

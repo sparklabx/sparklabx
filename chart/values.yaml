@@ -188,6 +188,39 @@ backend:
   logLevel: info
 
 # ─────────────────────────────────────────────────────────────
+# Generic OIDC SSO (optional). Any enterprise IdP via OpenID Connect
+# (Keycloak, Okta, Auth0, Azure AD, Google, ...). Leave issuerUrl + clientId
+# blank to disable — login falls back to the seed admin / Google / Microsoft.
+# The login button is driven at runtime via /api/v1/auth/config (no rebuild).
+# clientSecret is written into the chart-managed Secret; the rest into the
+# ConfigMap. redirectUrl / postLoginRedirect default to the ingress host.
+# ─────────────────────────────────────────────────────────────
+sso:
+  issuerUrl: ""           # e.g. https://keycloak.corp/realms/company
+  clientId: ""
+  clientSecret: ""
+  scopes: "openid email profile"
+  providerName: "SSO"     # label on the "Sign in with …" button
+  redirectUrl: ""         # default: https://<ingress.host>/api/v1/auth/oidc/callback
+  postLoginRedirect: ""   # default: https://<ingress.host>
+  # ONLY for split-horizon setups where the backend can't reach the browser
+  # issuer URL (e.g. internal vs external DNS). Leave blank in production.
+  internalIssuerUrl: ""
+
+# ─────────────────────────────────────────────────────────────
+# Connector auth (app-as-issuer). The app signs connector tokens with an RSA key
+# and publishes the public half at /api/v1/.well-known/jwks.json. Data sources
+# (Trino, Postgres, MySQL) are added/managed at runtime in the notebook UI and
+# stored in the database — there's no connector config to declare here.
+# ─────────────────────────────────────────────────────────────
+connector:
+  issuer: "sparklabx"     # token `iss`; must equal each connector's required-issuer
+  # RSA signing key (PEM). Leave blank — the backend generates one on first boot
+  # and persists it in Postgres (stable across restarts, shared by all replicas).
+  # Set only to pin your own key.
+  jwtPrivateKey: ""
+
+# ─────────────────────────────────────────────────────────────
 # Frontend
 # ─────────────────────────────────────────────────────────────
 frontend:
