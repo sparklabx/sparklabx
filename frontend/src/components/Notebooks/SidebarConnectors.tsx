@@ -36,11 +36,15 @@ async function fetchMeta(id: string, path: string[]): Promise<MetaResp> {
 
 // Glyph for a connector kind — each keeps its on-brand monochrome mark
 // (currentColor, so it tints muted/primary like the surrounding line icons).
+// Centered in a fixed-width box so labels line up regardless of each mark's
+// aspect ratio (Trino is portrait, the SQL marks are square).
 const ConnectorIcon: React.FC<{ kind: string }> = ({ kind }) => {
-    if (kind === 'trino') return <TrinoIcon className="h-3.5 w-auto shrink-0" />;
-    if (kind === 'postgres') return <PostgresIcon className="size-3.5 shrink-0" />;
-    if (kind === 'mysql') return <MysqlIcon className="size-3.5 shrink-0" />;
-    return <Database className="size-3.5 shrink-0" />;
+    const glyph =
+        kind === 'trino' ? <TrinoIcon className="h-3.5 w-auto" /> :
+        kind === 'postgres' ? <PostgresIcon className="size-3.5" /> :
+        kind === 'mysql' ? <MysqlIcon className="size-3.5" /> :
+        <Database className="size-3.5" />;
+    return <span className="inline-flex w-4 shrink-0 items-center justify-center">{glyph}</span>;
 };
 
 // One node in the lazy tree. catalog/schema/table nodes expand (load children);
