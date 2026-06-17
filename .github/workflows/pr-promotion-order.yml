@@ -25,14 +25,13 @@ jobs:
           case "$BASE" in
             main)
               if [ "$HEAD" != "test" ]; then
-                echo "::error::PR vào main chỉ được phép từ 'test'. Đang là '$HEAD'."
-                echo "Promote theo thứ tự: $HEAD → dev → test → main."
+                echo "::error::PRs into main may only come from 'test' (got '$HEAD'). Promote in order: $HEAD → dev → test → main."
                 exit 1
               fi
               ;;
             test)
               if [ "$HEAD" != "dev" ]; then
-                echo "::error::PR vào test chỉ được phép từ 'dev'. Đang là '$HEAD'."
+                echo "::error::PRs into test may only come from 'dev' (got '$HEAD')."
                 exit 1
               fi
               ;;
