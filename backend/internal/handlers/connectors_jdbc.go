@@ -138,7 +138,7 @@ func (h *AuthHandler) TestConnector(c *gin.Context) {
 			// Edit with blank password → test with the stored credential.
 			var enc string
 			_ = database.GetDB().QueryRow(
-				`SELECT password_enc FROM connectors WHERE id = $1 AND (owner_id = '' OR owner_id = $2)`,
+				`SELECT password_enc FROM connectors WHERE id = $1 AND owner_id = $2`,
 				req.ID, c.GetString("admin_id")).Scan(&enc)
 			if enc != "" {
 				if p, err := h.iam.DecryptSecret(enc); err == nil {
@@ -176,7 +176,7 @@ func (h *AuthHandler) TestConnector(c *gin.Context) {
 			if pw == "" && req.ID != "" && h.iam != nil { // edit, blank pw → stored
 				var enc string
 				_ = database.GetDB().QueryRow(
-					`SELECT password_enc FROM connectors WHERE id = $1 AND (owner_id = '' OR owner_id = $2)`,
+					`SELECT password_enc FROM connectors WHERE id = $1 AND owner_id = $2`,
 					req.ID, c.GetString("admin_id")).Scan(&enc)
 				if enc != "" {
 					if p, e := h.iam.DecryptSecret(enc); e == nil {

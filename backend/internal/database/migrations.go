@@ -96,6 +96,17 @@ func MigrateAndSeed(cfg *config.Config) error {
 		// admin id makes it personal (visible only to that user). Existing rows
 		// default to shared.
 		`ALTER TABLE connectors ADD COLUMN IF NOT EXISTS owner_id VARCHAR(64) NOT NULL DEFAULT ''`,
+		// Connectors are personal (owned by their creator). The id is the notebook
+		// helper name and must be unique PER OWNER — so two users can each have a
+		// "trino" — not globally. Swap the global PK on id for UNIQUE(owner_id, id).
+		`DO $$ BEGIN
+			IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'connectors_pkey') THEN
+				ALTER TABLE connectors DROP CONSTRAINT connectors_pkey;
+			END IF;
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'connectors_owner_id_id_key') THEN
+				ALTER TABLE connectors ADD CONSTRAINT connectors_owner_id_id_key UNIQUE (owner_id, id);
+			END IF;
+		END $$`,
 		// Generic app-managed secrets (e.g. the connector signing key) — persisted
 		// in the DB so they survive restarts without a dedicated volume.
 		`CREATE TABLE IF NOT EXISTS app_secrets (key VARCHAR(64) PRIMARY KEY, value TEXT NOT NULL)`,

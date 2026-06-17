@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { Database, ChevronRight, ChevronDown, Table2, Loader2, RefreshCw, ShieldAlert, Plus, Trash2, Pencil, Terminal, Globe, Lock } from 'lucide-react';
+import { Database, ChevronRight, ChevronDown, Table2, Loader2, RefreshCw, ShieldAlert, Plus, Trash2, Pencil, Terminal } from 'lucide-react';
 import { TrinoIcon } from './parts/TrinoIcon';
 import { PostgresIcon } from './parts/PostgresIcon';
 import { MysqlIcon } from './parts/MysqlIcon';
@@ -21,7 +21,6 @@ export type Connector = {
     auth: string;
     browsable?: boolean;
     deletable?: boolean;
-    scope?: 'shared' | 'personal';
 };
 
 type MetaResp = { enabled: boolean; level?: string; items?: string[]; needs_sso?: boolean; sso_expired?: boolean };
@@ -48,7 +47,7 @@ const ConnectorIcon: React.FC<{ kind: string }> = ({ kind }) => {
 // a table node ALSO copies a helper snippet on click (chevron expands it to
 // columns). column nodes are leaves rendered as "name (type)" and copy the bare
 // column name.
-const MetaNode: React.FC<{ connectorId: string; alias: string; path: string[]; level: string }> = ({ connectorId, alias, path, level }) => {
+const MetaNode: React.FC<{ connectorId: string; path: string[]; level: string }> = ({ connectorId, path, level }) => {
     const expandable = level !== 'column';
     const copyable = level === 'table';
     const [open, setOpen] = useState(false);
@@ -69,7 +68,7 @@ const MetaNode: React.FC<{ connectorId: string; alias: string; path: string[]; l
         }
     };
     const copySnippet = () => {
-        const snippet = `${alias}("${path.join('.')}")`;
+        const snippet = `query("${connectorId}", "${path.join('.')}")`;
         navigator.clipboard.writeText(snippet);
         toast.success(`Copied: ${snippet}`);
     };
@@ -83,7 +82,7 @@ const MetaNode: React.FC<{ connectorId: string; alias: string; path: string[]; l
         <div>
             <div className="group/row flex items-center gap-1 py-1 pr-1 rounded hover:bg-muted cursor-pointer"
                 style={indent}
-                title={copyable ? `Copy ${alias}("${path.join('.')}")` : (level === 'column' ? `Copy ${colName}` : undefined)}
+                title={copyable ? `Copy query("${connectorId}", "${path.join('.')}")` : (level === 'column' ? `Copy ${colName}` : undefined)}
                 onClick={onRow}>
                 {expandable
                     ? <span onClick={(e) => { e.stopPropagation(); void expand(); }} className="shrink-0">
@@ -97,7 +96,7 @@ const MetaNode: React.FC<{ connectorId: string; alias: string; path: string[]; l
                 {busy && <Loader2 className="size-3 animate-spin ml-auto" />}
             </div>
             {open && children && children.items.map(child => (
-                <MetaNode key={child} connectorId={connectorId} alias={alias} path={[...path, child]} level={children.level} />
+                <MetaNode key={child} connectorId={connectorId} path={[...path, child]} level={children.level} />
             ))}
             {open && children && children.items.length === 0 && (
                 <p className="py-1 text-[11px] text-muted-foreground" style={{ paddingLeft: `${path.length * 0.75 + 0.25}rem` }}>empty</p>
@@ -118,7 +117,7 @@ const Hint: React.FC<{ icon: React.ElementType; title: string; sub: string }> = 
 
 // The catalog tree for one browsable connector: loads the root level, then nodes
 // expand lazily. Remounted (via key) to refresh or switch connectors.
-const MetaTree: React.FC<{ connectorId: string; alias: string; label: string; onRefresh: () => void }> = ({ connectorId, alias, label, onRefresh }) => {
+const MetaTree: React.FC<{ connectorId: string; label: string; onRefresh: () => void }> = ({ connectorId, label, onRefresh }) => {
     const [status, setStatus] = useState<Status>('loading');
     const [roots, setRoots] = useState<string[]>([]);
     const [rootLevel, setRootLevel] = useState('table');
@@ -147,9 +146,9 @@ const MetaTree: React.FC<{ connectorId: string; alias: string; label: string; on
     if (roots.length === 0) return <p className="py-2 text-muted-foreground">Nothing visible.</p>;
     return (
         <>
-            {roots.map(r => <MetaNode key={r} connectorId={connectorId} alias={alias} path={[r]} level={rootLevel} />)}
+            {roots.map(r => <MetaNode key={r} connectorId={connectorId} path={[r]} level={rootLevel} />)}
             <p className="mt-2 pt-1.5 border-t border-border/50 text-[10px] text-muted-foreground">
-                Click a table to copy <code className="text-[10px]">{`${alias}("…")`}</code>.
+                Click a table to copy <code className="text-[10px]">{`query("${connectorId}", "…")`}</code>.
             </p>
         </>
     );
@@ -161,10 +160,6 @@ export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: (
     const [editId, setEditId] = useState<string | null>(null);
     const [reloadKey, setReloadKey] = useState(0); // bump to remount the tree (refresh)
 
-    // The notebook helper name: the connector's kind when it's the sole one of
-    // that kind (postgres()/trino()), else its id — mirrors the kernel's aliases.
-    const aliasFor = (c: Connector) => (connectors.filter(x => x.kind === c.kind).length === 1 ? c.kind : c.id);
-
     // If the selected connector disappears (deleted), collapse to none — but
     // leave an intentional empty selection (collapsed) alone so toggling works.
     useEffect(() => {
@@ -172,7 +167,7 @@ export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: (
     }, [connectors, activeId]);
 
     const deleteConnector = async (c: Connector) => {
-        if (!window.confirm(`Remove data source "${c.label}"? Notebooks using ${aliasFor(c)}() will stop working.`)) return;
+        if (!window.confirm(`Remove data source "${c.label}"? Notebooks using query("${c.id}", …) will stop working.`)) return;
         try {
             await axios.delete(`/api/v1/connectors/${c.id}`);
             toast.success(`Removed "${c.label}"`);
@@ -209,9 +204,6 @@ export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: (
                                 <RefreshCw className="size-3" />
                             </button>
                         )}
-                        {c.scope === 'shared'
-                            ? <Globe className="size-3 shrink-0 text-muted-foreground/70" />
-                            : <Lock className="size-3 shrink-0 text-muted-foreground/70" />}
                         {c.deletable && (
                             <button className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-muted-foreground/10"
                                 title="Edit" onClick={(e) => { e.stopPropagation(); setEditId(c.id); setAddOpen(true); }}>
@@ -229,11 +221,11 @@ export const SidebarConnectors: React.FC<{ connectors: Connector[]; onChanged: (
                     {c.id === activeId && (
                         <div className="ml-1 mt-0.5 mb-1 border-l border-border/60 pl-2">
                             {c.browsable
-                                ? <MetaTree key={`${c.id}:${reloadKey}`} connectorId={c.id} alias={aliasFor(c)} label={c.label} onRefresh={() => setReloadKey(k => k + 1)} />
+                                ? <MetaTree key={`${c.id}:${reloadKey}`} connectorId={c.id} label={c.label} onRefresh={() => setReloadKey(k => k + 1)} />
                                 : (
                                     <div className="py-1 text-[11px] text-muted-foreground">
                                         <p className="flex items-center gap-1"><Terminal className="size-3" /> No catalog browser yet.</p>
-                                        <p className="mt-1">Use <code className="text-[11px]">{`${aliasFor(c)}("schema.table")`}</code> or <code className="text-[11px]">{`${aliasFor(c)}("SELECT …")`}</code> in a cell.</p>
+                                        <p className="mt-1">Use <code className="text-[11px]">{`query("${c.id}", "schema.table")`}</code> or <code className="text-[11px]">{`query("${c.id}", "SELECT …")`}</code> in a cell.</p>
                                     </div>
                                 )}
                         </div>

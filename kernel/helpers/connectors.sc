@@ -1,5 +1,6 @@
 // SparkLabX: data connectors for Scala notebooks.
-//   query("trino", "SELECT ...")   or the trino(...) alias.
+//   query("<connector-id>", "SELECT ...")   — e.g. query("trino", "SELECT 1")
+//   query("<connector-id>", "schema.table") — a bare table name reads the whole table
 // Each call fetches a FRESH per-query credential from the backend tied to your
 // SSO identity (no passwords in the notebook). Python twin: 00-sparklabx-connectors.py.
 
@@ -22,31 +23,6 @@ val _spxConnectors: Map[String, (String, String)] = {
     } catch { case _: Throwable => }
   }
   m.toMap
-}
-
-// connector id -> kind (trino|postgres|mysql), for the type helpers below.
-val _spxKinds: Map[String, String] = {
-  val m = mutable.Map[String, String]()
-  sys.env.get("SPARKLABX_CONNECTORS").foreach { raw =>
-    try {
-      val it = _spxMapper.readTree(raw).elements()
-      while (it.hasNext) {
-        val n = it.next()
-        m(n.path("id").asText("")) = n.path("kind").asText("")
-      }
-    } catch { case _: Throwable => }
-  }
-  m.toMap
-}
-
-// The single connector id of a given kind, or a clear error when none / several.
-def _spxKindId(kind: String): String = {
-  _spxKinds.collect { case (id, k) if k == kind => id }.toList match {
-    case one :: Nil => one
-    case Nil        => throw new RuntimeException(s"SparkLabX: no '$kind' connector configured")
-    case many       => throw new RuntimeException(
-      s"""SparkLabX: several '$kind' connectors (${many.mkString(", ")}) - call one by id: query("${many.head}", ...)""")
-  }
 }
 
 // connector id -> (scheme, token, user, password, expiresAtEpochSec)
@@ -104,11 +80,3 @@ def query(connector: String, sql: String, url: String = null): org.apache.spark.
   r = if (q.exists(_.isWhitespace)) r.option("query", q) else r.option("dbtable", q)
   r.load()
 }
-
-// Type helpers — call the sole connector of a kind by its type name (the tidy
-// common case). With several of a kind these throw "call it by id". Scala can't
-// define a top-level def per connector id dynamically, so use query("id", ...)
-// for a specific instance among many.
-def trino(sql: String, url: String = null): org.apache.spark.sql.DataFrame = query("trino", sql, url)
-def postgres(sql: String, url: String = null): org.apache.spark.sql.DataFrame = query(_spxKindId("postgres"), sql, url)
-def mysql(sql: String, url: String = null): org.apache.spark.sql.DataFrame = query(_spxKindId("mysql"), sql, url)

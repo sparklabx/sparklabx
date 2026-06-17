@@ -90,7 +90,7 @@ func (h *AuthHandler) connectorInstances(userID string) []ConnectorInstance {
 	var out []ConnectorInstance
 	rows, err := database.GetDB().Query(
 		`SELECT id, type, label, url, auth, username, password_enc, owner_id
-		 FROM connectors WHERE owner_id = '' OR owner_id = $1 ORDER BY created_at`, userID)
+		 FROM connectors WHERE owner_id = $1 ORDER BY created_at`, userID)
 	if err != nil {
 		log.Warn().Err(err).Msg("list connectors failed")
 		return out
@@ -182,22 +182,15 @@ func (h *AuthHandler) ConnectorJWKS(c *gin.Context) {
 // picker, connect dialog). RequireAdmin.
 func (h *AuthHandler) ListConnectors(c *gin.Context) {
 	adminID := c.GetString("admin_id")
-	isSuper := c.GetString("admin_role") == "superadmin"
 	insts := h.connectorInstances(adminID)
 	out := make([]gin.H, 0, len(insts))
 	for _, inst := range insts {
-		scope := "personal"
-		if inst.Shared() {
-			scope = "shared"
-		}
-		// You can delete your own personal source; a superadmin can delete shared ones.
-		deletable := inst.OwnerID == adminID || (inst.Shared() && isSuper)
+		// All connectors are personal (owned by the caller), so always editable/deletable.
 		out = append(out, gin.H{
 			"id": inst.ID, "label": inst.Label, "icon": inst.icon(),
 			"kind": inst.Type, "auth": inst.Auth,
 			"browsable": connectorTypes[inst.Type].Browsable(),
-			"scope":     scope,
-			"deletable": deletable,
+			"deletable": true,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"connectors": out})

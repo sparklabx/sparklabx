@@ -1,12 +1,10 @@
 """SparkLabX data connectors — auto-loaded into every Python (PySpark) kernel.
 
-The backend injects the configured connectors (SPARKLABX_CONNECTORS). For each
-one a helper named after the connector is created, e.g.:
+The backend injects the configured connectors (SPARKLABX_CONNECTORS). Query any
+of them by id with the single helper:
 
-    trino("catalog.schema.table")     trino("SELECT ...")
-    postgres("public.users")          postgres("SELECT ...")
-
-or use the generic form: query("trino", "SELECT ...").
+    query("<connector-id>", "SELECT ...")    e.g. query("trino", "SELECT 1")
+    query("<connector-id>", "schema.table")  a bare table name reads the table
 
 Each call fetches a FRESH per-query credential from the backend tied to the
 user's SSO identity (the app mints/forwards the right token) — no passwords in
@@ -95,40 +93,3 @@ def query(connector, sql, url=None):
     else:
         reader = reader.option("dbtable", q)
     return reader.load()
-
-
-def _make_alias(cid):
-    def fn(sql, url=None):
-        return query(cid, sql, url=url)
-    fn.__name__ = cid
-    fn.__doc__ = f"Query the '{cid}' connector as your SSO identity. {cid}('catalog.schema.table') or {cid}('SELECT ...')."
-    return fn
-
-
-def _make_ambiguous(kind, ids):
-    def fn(*_args, **_kwargs):
-        raise RuntimeError(
-            f"SparkLabX: there are several '{kind}' connectors ({', '.join(ids)}) — "
-            f"call one by id, e.g. {ids[0]}('schema.table'), or query('{ids[0]}', 'SELECT ...').")
-    fn.__name__ = kind
-    return fn
-
-
-# Per-connector helper named after its id (e.g. trino, analytics_pg).
-for _cid in _CONNECTORS:
-    globals()[_cid] = _make_alias(_cid)
-
-# Type helpers (postgres(), mysql(), trino()): when a kind has exactly one
-# connector, call it by the kind name too — the common, tidy case. With several
-# of a kind, the type name raises a helpful "call it by id" error instead.
-_by_kind = {}
-for _c in _CONNECTORS.values():
-    _by_kind.setdefault(_c.get("kind") or "", []).append(_c["id"])
-for _kind, _ids in _by_kind.items():
-    if not _kind or _kind in _CONNECTORS:
-        continue  # no kind, or an instance already owns that exact name
-    globals()[_kind] = _make_alias(_ids[0]) if len(_ids) == 1 else _make_ambiguous(_kind, _ids)
-
-# trino() is always defined for back-compat even before a manifest is injected.
-if "trino" not in globals():
-    globals()["trino"] = _make_alias("trino")

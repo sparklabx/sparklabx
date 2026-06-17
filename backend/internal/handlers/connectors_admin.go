@@ -101,26 +101,17 @@ func (h *AuthHandler) CreateConnector(c *gin.Context) {
 		}
 	}
 
-	// Scope: personal (default) is owned by the creator; shared is org-wide and
-	// superadmin-only.
+	// Connectors are personal — owned by their creator and visible only to them.
 	adminID := c.GetString("admin_id")
-	ownerID := adminID
-	if req.Scope == "shared" {
-		if c.GetString("admin_role") != "superadmin" {
-			c.JSON(http.StatusForbidden, gin.H{"error": "only a superadmin can create a shared data source"})
-			return
-		}
-		ownerID = ""
-	}
 
 	_, err := database.GetDB().Exec(
 		`INSERT INTO connectors (id, type, label, url, auth, username, password_enc, added_by, owner_id)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		req.ID, req.Type, req.Label, req.URL, req.Auth, username, passwordEnc, adminID, ownerID,
+		req.ID, req.Type, req.Label, req.URL, req.Auth, username, passwordEnc, adminID, adminID,
 	)
 	if err != nil {
 		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
-			c.JSON(http.StatusConflict, gin.H{"error": "a connector with this id already exists"})
+			c.JSON(http.StatusConflict, gin.H{"error": "you already have a data source with this name"})
 			return
 		}
 		log.Error().Err(err).Msg("create connector failed")
@@ -139,13 +130,9 @@ func (h *AuthHandler) GetConnector(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "unknown connector"})
 		return
 	}
-	scope := "personal"
-	if inst.Shared() {
-		scope = "shared"
-	}
 	c.JSON(http.StatusOK, gin.H{
 		"id": inst.ID, "type": inst.Type, "label": inst.Label, "url": inst.URL,
-		"auth": inst.Auth, "username": inst.Username, "scope": scope,
+		"auth": inst.Auth, "username": inst.Username,
 		"has_password": inst.PasswordEnc != "", "editable": true,
 	})
 }
@@ -154,15 +141,10 @@ func (h *AuthHandler) GetConnector(c *gin.Context) {
 // id and type are immutable; a blank password keeps the stored one.
 func (h *AuthHandler) UpdateConnector(c *gin.Context) {
 	id := c.Param("id")
-	var owner, typ string
-	if err := database.GetDB().QueryRow(`SELECT owner_id, type FROM connectors WHERE id = $1`, id).Scan(&owner, &typ); err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "connector not found"})
-		return
-	}
 	adminID := c.GetString("admin_id")
-	isSuper := c.GetString("admin_role") == "superadmin"
-	if !((owner != "" && owner == adminID) || (owner == "" && isSuper)) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "you can only edit your own data sources"})
+	var typ string
+	if err := database.GetDB().QueryRow(`SELECT type FROM connectors WHERE id = $1 AND owner_id = $2`, id, adminID).Scan(&typ); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "connector not found"})
 		return
 	}
 
@@ -186,19 +168,6 @@ func (h *AuthHandler) UpdateConnector(c *gin.Context) {
 		return
 	}
 
-	// Scope change (optional): keep current unless specified; shared needs super.
-	newOwner := owner
-	switch req.Scope {
-	case "shared":
-		if !isSuper {
-			c.JSON(http.StatusForbidden, gin.H{"error": "only a superadmin can make a source shared"})
-			return
-		}
-		newOwner = ""
-	case "personal":
-		newOwner = adminID
-	}
-
 	username := ""
 	if req.Auth == "broker-mapped" {
 		if strings.TrimSpace(req.Username) == "" {
@@ -220,8 +189,8 @@ func (h *AuthHandler) UpdateConnector(c *gin.Context) {
 			return
 		}
 		_, err = database.GetDB().Exec(
-			`UPDATE connectors SET label=$1, url=$2, auth=$3, username=$4, password_enc=$5, owner_id=$6 WHERE id=$7`,
-			req.Label, req.URL, req.Auth, username, enc, newOwner, id)
+			`UPDATE connectors SET label=$1, url=$2, auth=$3, username=$4, password_enc=$5 WHERE id=$6 AND owner_id=$7`,
+			req.Label, req.URL, req.Auth, username, enc, id, adminID)
 		if err != nil {
 			log.Error().Err(err).Str("id", id).Msg("update connector failed")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update connector"})
@@ -229,8 +198,8 @@ func (h *AuthHandler) UpdateConnector(c *gin.Context) {
 		}
 	} else {
 		_, err := database.GetDB().Exec(
-			`UPDATE connectors SET label=$1, url=$2, auth=$3, username=$4, owner_id=$5 WHERE id=$6`,
-			req.Label, req.URL, req.Auth, username, newOwner, id)
+			`UPDATE connectors SET label=$1, url=$2, auth=$3, username=$4 WHERE id=$5 AND owner_id=$6`,
+			req.Label, req.URL, req.Auth, username, id, adminID)
 		if err != nil {
 			log.Error().Err(err).Str("id", id).Msg("update connector failed")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update connector"})
@@ -240,25 +209,18 @@ func (h *AuthHandler) UpdateConnector(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"id": id})
 }
 
-// DeleteConnector removes a connector. The owner may delete their personal
-// source; a superadmin may delete a shared one.
+// DeleteConnector removes one of the caller's own connectors.
 func (h *AuthHandler) DeleteConnector(c *gin.Context) {
 	id := c.Param("id")
-	var owner string
-	if err := database.GetDB().QueryRow(`SELECT owner_id FROM connectors WHERE id = $1`, id).Scan(&owner); err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "connector not found"})
-		return
-	}
 	adminID := c.GetString("admin_id")
-	isSuper := c.GetString("admin_role") == "superadmin"
-	allowed := (owner != "" && owner == adminID) || (owner == "" && isSuper)
-	if !allowed {
-		c.JSON(http.StatusForbidden, gin.H{"error": "you can only remove your own data sources"})
-		return
-	}
-	if _, err := database.GetDB().Exec(`DELETE FROM connectors WHERE id = $1`, id); err != nil {
+	res, err := database.GetDB().Exec(`DELETE FROM connectors WHERE id = $1 AND owner_id = $2`, id, adminID)
+	if err != nil {
 		log.Error().Err(err).Str("id", id).Msg("delete connector failed")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete connector"})
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "connector not found"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"deleted": id})
