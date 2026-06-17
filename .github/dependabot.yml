@@ -1,8 +1,12 @@
 version: 2
+# Dependabot opens PRs against `dev` (not the default branch `main`): the
+# promotion-order rule only allows test → main, so dependency bumps must enter
+# the chain at dev and promote up like any other change.
 updates:
   # Go backend
   - package-ecosystem: gomod
     directory: /backend
+    target-branch: dev
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -13,6 +17,7 @@ updates:
   # Frontend (npm)
   - package-ecosystem: npm
     directory: /frontend
+    target-branch: dev
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -23,6 +28,7 @@ updates:
   # GitHub Actions
   - package-ecosystem: github-actions
     directory: /
+    target-branch: dev
     schedule:
       interval: weekly
     groups:
@@ -35,6 +41,7 @@ updates:
       - /backend
       - /frontend
       - /kernel
+    target-branch: dev
     schedule:
       interval: weekly
     groups:
