@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/rs/zerolog/log"
 
 	"github.com/sparklabx/sparklabx/backend/internal/config"
@@ -59,7 +59,7 @@ func Init(cfg *config.Config) error {
 	var initErr error
 	once.Do(func() {
 		var err error
-		db, err = sql.Open("postgres", cfg.DatabaseURL)
+		db, err = sql.Open("pgx", cfg.DatabaseURL)
 		if err != nil {
 			initErr = fmt.Errorf("failed to open database: %w", err)
 			return

@@ -1,13 +1,14 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/rs/zerolog/log"
 
 	"github.com/sparklabx/sparklabx/backend/internal/database"
@@ -110,7 +111,8 @@ func (h *AuthHandler) CreateConnector(c *gin.Context) {
 		req.ID, req.Type, req.Label, req.URL, req.Auth, username, passwordEnc, adminID, adminID,
 	)
 	if err != nil {
-		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			c.JSON(http.StatusConflict, gin.H{"error": "you already have a data source with this name"})
 			return
 		}
