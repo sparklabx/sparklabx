@@ -21,7 +21,6 @@ val _spxConnectors: Map[String, (String, String)] = {
       }
     } catch { case _: Throwable => }
   }
-  if (m.isEmpty) sys.env.get("TRINO_URL").foreach(u => m("trino") = ("io.trino.jdbc.TrinoDriver", u))
   m.toMap
 }
 
@@ -37,7 +36,6 @@ val _spxKinds: Map[String, String] = {
       }
     } catch { case _: Throwable => }
   }
-  if (m.isEmpty && sys.env.contains("TRINO_URL")) m("trino") = "trino"
   m.toMap
 }
 
@@ -47,7 +45,7 @@ def _spxKindId(kind: String): String = {
     case one :: Nil => one
     case Nil        => throw new RuntimeException(s"SparkLabX: no '$kind' connector configured")
     case many       => throw new RuntimeException(
-      s"SparkLabX: several '$kind' connectors (${many.mkString(", ")}) — call one by id: query(\"${many.head}\", ...)")
+      s"""SparkLabX: several '$kind' connectors (${many.mkString(", ")}) - call one by id: query("${many.head}", ...)""")
   }
 }
 

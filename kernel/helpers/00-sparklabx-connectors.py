@@ -29,9 +29,6 @@ try:
         _CONNECTORS[_c["id"]] = _c
 except Exception:
     pass
-# Back-compat: no manifest but a default TRINO_URL → synthesize a trino connector.
-if not _CONNECTORS and _os.environ.get("TRINO_URL"):
-    _CONNECTORS["trino"] = {"id": "trino", "kind": "trino", "driver": "io.trino.jdbc.TrinoDriver", "url": _os.environ["TRINO_URL"]}
 
 _cred_cache = {}  # id -> {scheme, token, user, password, exp}
 
