@@ -61,6 +61,18 @@ var connectorTypes = map[string]ConnectorType{
 		MetaStrategy:  "jdbc-information-schema", DefaultAuth: "broker-mapped",
 		AuthOptions: []string{"broker-mapped"},
 	},
+	"athena": {
+		ID: "athena", Label: "AWS Athena", Icon: "athena",
+		DriverClass:   "com.amazon.athena.jdbc.AthenaDriver",
+		DriverPackage: "com.amazonaws:athena-jdbc:2025.15.1",
+		// No catalog browser: there's no Go Athena driver for the
+		// information_schema path, so the sidebar shows a query() hint.
+		MetaStrategy: "none", DefaultAuth: "broker-mapped",
+		// broker-mapped username/password → the Athena JDBC driver reads them
+		// as User=AccessKeyId / Password=SecretAccessKey. (IAM-role / DefaultChain
+		// auth — leave creds blank, put CredentialsProvider=DefaultChain in the URL.)
+		AuthOptions: []string{"broker-mapped"},
+	},
 	// bigquery / snowflake / … land here as each connector is added.
 }
 
