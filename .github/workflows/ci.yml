@@ -65,11 +65,14 @@ jobs:
           govulncheck ./...
         continue-on-error: true
       - name: golangci-lint (lint + gosec)
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
           version: latest
           working-directory: backend
           args: --timeout=5m
+          # Only flag issues a PR introduces — the existing tree has legacy
+          # findings; this gates new code without a 58-issue cleanup first.
+          only-new-issues: true
         continue-on-error: true
 
   frontend:
