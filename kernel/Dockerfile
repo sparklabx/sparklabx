@@ -29,6 +29,16 @@ RUN python3 -c "from pyspark.sql import SparkSession; SparkSession.builder.maste
  && coursier fetch "io.trino:trino-jdbc:${TRINO_JDBC_VERSION}" > /dev/null \
  && echo "pre-warmed Trino JDBC ${TRINO_JDBC_VERSION} (ivy + coursier)"
 
+# Pre-warm the AWS Athena JDBC 3.x driver (self-contained uber-jar on Maven
+# Central) the same way as Trino — warms Ivy + coursier caches so the first
+# query("athena", …) resolves offline instead of a slow Maven round-trip. Does
+# NOT bake the jar onto the classpath. Keep ATHENA_JDBC_VERSION in sync with the
+# "AWS Athena" preset (connectorTypes DriverPackage in backend connectors.go).
+ENV ATHENA_JDBC_VERSION=2025.15.1
+RUN python3 -c "from pyspark.sql import SparkSession; SparkSession.builder.master('local[1]').config('spark.jars.packages','com.amazonaws:athena-jdbc:${ATHENA_JDBC_VERSION}').getOrCreate().stop()" \
+ && coursier fetch "com.amazonaws:athena-jdbc:${ATHENA_JDBC_VERSION}" > /dev/null \
+ && echo "pre-warmed Athena JDBC ${ATHENA_JDBC_VERSION} (ivy + coursier)"
+
 # DataFlint (Spark performance UI) is ON BY DEFAULT for PySpark AND Scala —
 # pre-warm both resolver caches: Ivy (/root/.ivy2) for PySpark's
 # spark.jars.packages, coursier (/root/.cache/coursier) for Almond's $ivy — so

@@ -124,6 +124,13 @@ const PACKAGE_PRESETS: PackagePreset[] = [
         packages: ['com.mysql:mysql-connector-j:9.1.0'],
         group: 'driver',
     },
+    {
+        id: 'athena',
+        label: 'AWS Athena',
+        description: 'Athena JDBC 3.x driver — for query() Athena data sources',
+        packages: ['com.amazonaws:athena-jdbc:2025.15.1'],
+        group: 'driver',
+    },
 ];
 
 const PRESET_GROUPS: { group: PackagePreset['group']; title: string }[] = [
