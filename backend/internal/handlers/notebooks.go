@@ -9,7 +9,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/lib/pq"
 	"github.com/rs/zerolog/log"
 
 	"github.com/sparklabx/sparklabx/backend/internal/database"
@@ -624,7 +623,7 @@ func (h *NotebookHandler) ReorderCells(c *gin.Context) {
 			UPDATE notebook_cells SET cell_order = data.new_order
 			FROM unnest($1::uuid[], $2::int[]) AS data(cell_id, new_order)
 			WHERE notebook_cells.id = data.cell_id AND notebook_cells.notebook_id = $3
-		`, pq.Array(ids), pq.Array(orders), notebookID)
+		`, ids, orders, notebookID)
 		if err != nil {
 			log.Error().Err(err).Msg("failed to reorder cells")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to reorder cells"})

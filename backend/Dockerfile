@@ -15,7 +15,7 @@ RUN go mod tidy
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -o /out/sparklabx-backend ./cmd/server
 
-FROM alpine:3.20
+FROM alpine:3.24
 
 # notebook-lite: no terraform / crane needed (no cloud provisioning, no
 # container image push to per-session ECRs). Just a tiny runtime image.

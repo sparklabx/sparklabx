@@ -15,7 +15,7 @@ import (
 	"github.com/sparklabx/sparklabx/backend/internal/connectorauth"
 	"github.com/sparklabx/sparklabx/backend/internal/database"
 	"github.com/sparklabx/sparklabx/backend/internal/handlers"
-	"github.com/sparklabx/sparklabx/backend/internal/middleware"
+	"github.com/sparklabx/sparklabx/backend/internal/routes"
 	"github.com/sparklabx/sparklabx/backend/internal/services"
 )
 
@@ -189,134 +189,14 @@ func main() {
 
 	router.Use(cors.New(corsConfig))
 
-	router.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "ok", "service": cfg.ServiceName, "time": time.Now().UTC()})
+	routes.Register(router, cfg, routes.Handlers{
+		Auth:          authHandler,
+		Storage:       storageHandler,
+		Notebook:      notebookHandler,
+		LocalKernel:   localKernelHandler,
+		User:          userHandler,
+		AllowedDomain: allowedDomainHandler,
 	})
-
-	v1 := router.Group("/api/v1")
-	{
-		// Auth — admin only (no student flow in notebook-lite)
-		authLimiter := middleware.RateLimit(10, time.Minute)
-		v1.POST("/admin/login", authLimiter, authHandler.Login)
-		v1.POST("/auth/google", authLimiter, authHandler.GoogleLogin)
-		v1.POST("/auth/microsoft", authLimiter, authHandler.MicrosoftLogin)
-		// Generic OIDC SSO (enterprise IdP via env). /auth/config tells the login
-		// page whether to show the SSO button; /auth/oidc/* is the code flow.
-		v1.GET("/auth/config", authHandler.AuthConfig)
-		v1.GET("/auth/oidc/start", authLimiter, authHandler.OIDCStart)
-		v1.GET("/auth/oidc/callback", authLimiter, authHandler.OIDCCallback)
-
-		admin := v1.Group("")
-		admin.Use(middleware.RequireAdmin(cfg))
-		{
-			admin.GET("/admin/me", authHandler.Me)
-
-			// User management
-			admin.GET("/admin/users", userHandler.ListAdmins)
-			admin.POST("/admin/users", userHandler.CreateAdmin)
-			admin.DELETE("/admin/users/:id", userHandler.DeleteAdmin)
-			admin.PUT("/admin/users/:id/password", userHandler.ResetPassword)
-			admin.PUT("/admin/users/:id/role", userHandler.UpdateRole)
-
-			// MinIO browser
-			admin.GET("/minio/buckets", storageHandler.MinIOListBuckets)
-			admin.PUT("/minio/buckets/:bucket", storageHandler.MinIOCreateBucket)
-			admin.DELETE("/minio/buckets/:bucket", storageHandler.MinIODeleteBucket)
-			admin.GET("/minio/buckets/:bucket/objects", storageHandler.MinIOListObjects)
-			admin.POST("/minio/buckets/:bucket/upload", storageHandler.MinIOUploadObject)
-			admin.POST("/minio/buckets/:bucket/folder", storageHandler.MinIOCreateFolder)
-			admin.GET("/minio/buckets/:bucket/download", storageHandler.MinIODownloadObject)
-			admin.DELETE("/minio/buckets/:bucket/objects", storageHandler.MinIODeleteObject)
-
-			// OAuth allowlist — superadmin writes only
-			admin.GET("/allowed-domains", allowedDomainHandler.List)
-			admin.POST("/allowed-domains", middleware.RequireSuperAdmin(), allowedDomainHandler.Create)
-			admin.PATCH("/allowed-domains/:id", middleware.RequireSuperAdmin(), allowedDomainHandler.Update)
-			admin.DELETE("/allowed-domains/:id", middleware.RequireSuperAdmin(), allowedDomainHandler.Delete)
-		}
-
-		// Notebooks — admin only in this lite build
-		nb := v1.Group("/notebooks")
-		nb.Use(middleware.RequireAdmin(cfg))
-		{
-			nb.GET("/kernel/specs", notebookHandler.KernelSpecs)
-
-			// Per-user storage (each admin has their own users/<adminID>/ prefix)
-			nb.GET("/storage/path", storageHandler.GetUserDataPath)
-			nb.GET("/storage/files", storageHandler.ListUserFiles)
-			nb.POST("/storage/upload", storageHandler.UploadUserFile)
-			nb.POST("/storage/create-folder", storageHandler.CreateUserFolder)
-			nb.DELETE("/storage/files/:filename", storageHandler.DeleteUserFile)
-			nb.GET("/storage/files/:filename/download", storageHandler.DownloadUserFile)
-
-			nb.GET("", notebookHandler.ListNotebooks)
-			nb.POST("", notebookHandler.CreateNotebook)
-			nb.POST("/import", notebookHandler.ImportNotebook)
-			nb.GET("/:id", notebookHandler.GetNotebook)
-			nb.PUT("/:id", notebookHandler.UpdateNotebook)
-			nb.DELETE("/:id", notebookHandler.DeleteNotebook)
-			nb.GET("/:id/export/html", notebookHandler.ExportNotebookHTML)
-			nb.POST("/:id/cells", notebookHandler.CreateCell)
-			nb.PUT("/:id/cells/:cellId", notebookHandler.UpdateCell)
-			nb.DELETE("/:id/cells/:cellId", notebookHandler.DeleteCell)
-			nb.POST("/:id/cells/reorder", notebookHandler.ReorderCells)
-
-			// Local kernel proxy
-			nb.POST("/:id/kernel/connect", localKernelHandler.Connect)
-			nb.GET("/:id/kernel/status", localKernelHandler.Status)
-			nb.POST("/:id/kernel/interrupt", localKernelHandler.Interrupt)
-			nb.GET("/:id/kernel/active-executions", localKernelHandler.ActiveExecutions)
-			nb.DELETE("/:id/kernel/disconnect", localKernelHandler.Disconnect)
-			nb.DELETE("/:id/kernel/shutdown", localKernelHandler.Shutdown)
-			nb.Any("/:id/kernel/ws/:kernelId/*path", localKernelHandler.WebSocket)
-			nb.Any("/:id/kernel/api/*path", localKernelHandler.ProxyHTTP)
-		}
-
-		// Spark UI proxy — loaded in an iframe, so it authenticates via ?token=
-		// (then a path-scoped cookie for the UI's own asset/XHR requests), NOT the
-		// header-only RequireAdmin guard above. The notebook owner check runs
-		// inside the handler. Registered on v1 (not the nb group) for that reason.
-		v1.GET("/notebooks/:id/kernel/spark-ui/*path", localKernelHandler.ProxySparkUI)
-
-		// Per-user pod spawn progress (polled by FE)
-		kernelMeta := v1.Group("/kernel")
-		kernelMeta.Use(middleware.RequireAdmin(cfg))
-		{
-			kernelMeta.GET("/spawn-status", localKernelHandler.SpawnStatus)
-			kernelMeta.GET("/usage", localKernelHandler.Usage)
-			kernelMeta.GET("/resource-presets", localKernelHandler.ResourcePresets)
-			kernelMeta.GET("/library-errors", localKernelHandler.LibraryErrors)
-		}
-		// Kernel fetches a fresh OIDC token here (in-session refresh for SSO token
-		// passthrough to external services like Trino). Authenticated by the
-		// short-lived kernel token (typ="kernel"), NOT a full admin session — so
-		// the token living in the kernel pod's env can only reach this endpoint.
-		v1.GET("/kernel/oidc-token", middleware.RequireKernelToken(cfg), authHandler.KernelOIDCToken)
-
-		// Trino catalog browser for the notebook sidebar — lists catalogs/schemas/
-		// tables of the user's connected Trino, queried as the user via their OIDC
-		// token (same passthrough as the trino() helper). Read-only metadata.
-		// (Back-compat alias; the generic /connectors/:id/metadata supersedes it.)
-		v1.GET("/trino/metadata", middleware.RequireAdmin(cfg), authHandler.TrinoMetadata)
-
-		// Generic data-connector layer (docs/connectors-design.md):
-		//   - JWKS so connectors can validate app-minted (app-jwt) tokens (public)
-		//   - list configured connectors for the notebook UI (admin)
-		//   - browse catalogs/schemas/tables, as the user (admin)
-		//   - mint/resolve a per-query credential, called by the kernel (kernel token)
-		v1.GET("/.well-known/jwks.json", authHandler.ConnectorJWKS)
-		v1.GET("/connectors", middleware.RequireAdmin(cfg), authHandler.ListConnectors)
-		v1.GET("/connector-types", middleware.RequireAdmin(cfg), authHandler.ConnectorTypes)
-		v1.GET("/connectors/:id/metadata", middleware.RequireAdmin(cfg), authHandler.ConnectorMetadata)
-		v1.GET("/connectors/:id/credentials", middleware.RequireKernelToken(cfg), authHandler.ConnectorCredentials)
-		// Add/remove connectors. Any admin manages their own personal sources;
-		// shared (org-wide) ones are superadmin-only — enforced in the handlers.
-		v1.POST("/connectors", middleware.RequireAdmin(cfg), authHandler.CreateConnector)
-		v1.POST("/connectors/test", middleware.RequireAdmin(cfg), authHandler.TestConnector)
-		v1.GET("/connectors/:id", middleware.RequireAdmin(cfg), authHandler.GetConnector)
-		v1.PUT("/connectors/:id", middleware.RequireAdmin(cfg), authHandler.UpdateConnector)
-		v1.DELETE("/connectors/:id", middleware.RequireAdmin(cfg), authHandler.DeleteConnector)
-	}
 
 	addr := ":" + cfg.ServicePort
 	log.Info().Str("addr", addr).Msg("server listening")
