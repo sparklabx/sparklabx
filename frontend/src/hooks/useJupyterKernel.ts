@@ -713,7 +713,12 @@ export function useJupyterKernel(rawNotebookId: string, kernelProxyUrl?: string)
                 // devLog(`[JupyterKernel][${notebookId}] 📨 Parsed message type:`, msg.header?.msg_type || msg.msg_type);
                 handleKernelMessage(msg);
             } catch (e) {
-                console.error(`[JupyterKernel][${notebookId}] ❌ Failed to parse message:`, e, String(event.data ?? '').substring(0, 500).replace(/[\r\n]+/g, ' '));
+                // Constant format string (no interpolation) + CR/LF-stripped
+                // dynamic args, so neither the kernel payload nor the parse
+                // error can inject a format directive or forge a log line.
+                console.error('[JupyterKernel][%s] Failed to parse message:', notebookId,
+                    String(e).replace(/[\r\n]+/g, ' '),
+                    String(event.data ?? '').substring(0, 500).replace(/[\r\n]+/g, ' '));
             }
         };
 
