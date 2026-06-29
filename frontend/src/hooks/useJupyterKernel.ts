@@ -367,7 +367,7 @@ export function useJupyterKernel(rawNotebookId: string, kernelProxyUrl?: string)
         if (msgType === 'kernel_dead') {
             const reason = msg.content?.reason || 'Kernel died unexpectedly';
             const kernelId = msg.content?.kernel_id;
-            console.error(`[JupyterKernel][${notebookId}] 💀 Kernel dead:`, { reason, kernelId });
+            console.error('[JupyterKernel][%s] 💀 Kernel dead:', notebookId, { reason, kernelId });
 
             // Update session status to 'dead' with reason
             sessionManager.updateSession(notebookId, {
@@ -882,7 +882,7 @@ export function useJupyterKernel(rawNotebookId: string, kernelProxyUrl?: string)
                 sessionManager.updateSession(notebookId, { status: 'disconnected' });
             }
         } catch (error) {
-            console.error(`[JupyterKernel][${notebookId}] Failed to check status:`, error);
+            console.error('[JupyterKernel][%s] Failed to check status:', notebookId, error);
             sessionManager.updateSession(notebookId, { status: 'disconnected' });
         }
     }, [notebookId, kernelProxyUrl, setupWebSocket]);
@@ -944,7 +944,7 @@ export function useJupyterKernel(rawNotebookId: string, kernelProxyUrl?: string)
                 }
             }, 15000);
         } catch (e) {
-            console.error(`[JupyterKernel][${notebookId}] restart failed`, e);
+            console.error('[JupyterKernel][%s] restart failed', notebookId, e);
             throw e;
         }
     }, [notebookId, kernelProxyUrl]);
@@ -1020,7 +1020,7 @@ export function useJupyterKernel(rawNotebookId: string, kernelProxyUrl?: string)
                         return;
                     }
                 } catch (err: any) {
-                    console.error(`[JupyterKernel][${notebookId}] Failed to create kernel:`, err?.response?.data || err);
+                    console.error('[JupyterKernel][%s] Failed to create kernel:', notebookId, err?.response?.data || err);
                 }
 
                 sessionManager.updateSession(notebookId, { status: 'error' });
@@ -1066,7 +1066,7 @@ export function useJupyterKernel(rawNotebookId: string, kernelProxyUrl?: string)
                         { timeout: 30_000 },
                     );
                 } catch (apiError: any) {
-                    console.error(`[JupyterKernel][${notebookId}] Backend API failed:`, apiError?.response?.data || apiError);
+                    console.error('[JupyterKernel][%s] Backend API failed:', notebookId, apiError?.response?.data || apiError);
                     sessionManager.updateSession(notebookId, { status: 'error' });
                     return;
                 }
@@ -1099,7 +1099,7 @@ export function useJupyterKernel(rawNotebookId: string, kernelProxyUrl?: string)
                     continue; // retry POST /connect — should hit 200 path now
                 }
 
-                console.error(`[JupyterKernel][${notebookId}] Invalid response from backend:`, response?.data);
+                console.error('[JupyterKernel][%s] Invalid response from backend:', notebookId, response?.data);
                 sessionManager.updateSession(notebookId, { status: 'error' });
                 return;
             }
@@ -1110,7 +1110,7 @@ export function useJupyterKernel(rawNotebookId: string, kernelProxyUrl?: string)
             setupWebSocket(kernel_id);
 
         } catch (error) {
-            console.error(`[JupyterKernel][${notebookId}] Connection failed:`, error);
+            console.error('[JupyterKernel][%s] Connection failed:', notebookId, error);
             sessionManager.updateSession(notebookId, { status: 'error' });
         }
     }, [notebookId, kernelProxyUrl, setupWebSocket]);
@@ -1155,7 +1155,7 @@ export function useJupyterKernel(rawNotebookId: string, kernelProxyUrl?: string)
                     minVisible,
                 ]);
             } catch (e) {
-                console.warn(`[JupyterKernel][${notebookId}] Failed to notify backend of disconnect:`, e);
+                console.warn('[JupyterKernel][%s] Failed to notify backend of disconnect:', notebookId, e);
                 await minVisible;
             }
 
@@ -1175,7 +1175,7 @@ export function useJupyterKernel(rawNotebookId: string, kernelProxyUrl?: string)
             devLog(`[JupyterKernel][${notebookId}] Disconnected`);
 
         } catch (error) {
-            console.error(`[JupyterKernel][${notebookId}] Disconnect failed:`, error);
+            console.error('[JupyterKernel][%s] Disconnect failed:', notebookId, error);
         }
     }, [notebookId]);
 
@@ -1226,7 +1226,7 @@ export function useJupyterKernel(rawNotebookId: string, kernelProxyUrl?: string)
 
             if (!policyResult.success && policyResult.status === 'denied') {
                 // Access denied by policy - show error without executing
-                console.warn(`[JupyterKernel][${notebookId}] Policy denied for cell ${cellId}:`, policyResult.error);
+                console.warn('[JupyterKernel][%s] Policy denied for cell %s:', notebookId, cellId, policyResult.error);
 
                 const errorOutput = [{
                     type: 'error' as const,
