@@ -175,7 +175,11 @@ const sessionManager = new KernelSessionManager();
 // kernelProxyUrl: optional, e.g. "/api/v1/kernel/{sessionId}/{token}"
 // When provided, connects directly to Jupyter Kernel Gateway via proxy
 // instead of using the standard /api/v1/notebooks/{id}/kernel/* endpoints
-export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
+export function useJupyterKernel(rawNotebookId: string, kernelProxyUrl?: string) {
+    // Sanitize once: notebook IDs are UUIDs ([\w-]), so stripping anything else
+    // is a no-op for valid ids while neutralizing format-string / log-injection
+    // in the many console logs below (and in URLs built from this id).
+    const notebookId = (rawNotebookId ?? '').replace(/[^\w-]/g, '');
     const [, forceUpdate] = useState({});
     const pageHiddenRef = useRef(typeof document !== 'undefined' ? document.hidden : false);
     const lastHiddenAtRef = useRef(0);
@@ -206,8 +210,9 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
             sessionManager.updateSession(notebookId, { podPhase: phase, podMessage: message });
 
             // Resume polling until the in-flight transition completes — stop on
-            // 'ready', 'failed', or (row gone after seeing a non-empty phase).
-            let sawNonEmpty = true; // initial phase was non-empty by the guard above
+            // 'ready', 'failed', or (row gone, i.e. phase empty — the initial
+            // phase was non-empty by the guard above, so an empty phase here
+            // means the spawn-status row disappeared).
             const deadline = Date.now() + 5 * 60 * 1000;
             while (!cancelled && Date.now() < deadline) {
                 await new Promise(r => setTimeout(r, 1500));
@@ -217,10 +222,9 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
                 phase = tick.data?.phase || '';
                 message = tick.data?.message || '';
                 sessionManager.updateSession(notebookId, { podPhase: phase, podMessage: message });
-                if (phase) sawNonEmpty = true;
                 if (phase === 'failed') return;
                 if (phase === 'ready') return;
-                if (phase === '' && sawNonEmpty) return;
+                if (phase === '') return;
             }
         })();
         return () => { cancelled = true; };
@@ -709,7 +713,7 @@ export function useJupyterKernel(notebookId: string, kernelProxyUrl?: string) {
                 // devLog(`[JupyterKernel][${notebookId}] 📨 Parsed message type:`, msg.header?.msg_type || msg.msg_type);
                 handleKernelMessage(msg);
             } catch (e) {
-                console.error(`[JupyterKernel][${notebookId}] ❌ Failed to parse message:`, e, event.data?.substring(0, 500));
+                console.error(`[JupyterKernel][${notebookId}] ❌ Failed to parse message:`, e, String(event.data ?? '').substring(0, 500).replace(/[\r\n]+/g, ' '));
             }
         };
 
