@@ -912,6 +912,14 @@ func (h *LocalKernelHandler) userHasOtherKernels(userID string) bool {
 	return false
 }
 
+// validKernelID matches Jupyter kernel UUIDs (hex + hyphens); validKernelWSPath
+// matches a single safe WS path segment. Both guard the proxied WebSocket
+// target URL against request forgery via a crafted kernel id or path.
+var (
+	validKernelID     = regexp.MustCompile(`^[a-zA-Z0-9-]{1,64}$`)
+	validKernelWSPath = regexp.MustCompile(`^/[a-zA-Z0-9_-]+$`)
+)
+
 // WebSocket proxies WebSocket connections to the user's kernel gateway.
 // ANY /api/v1/notebooks/:id/kernel/ws/:kernelId/*path
 func (h *LocalKernelHandler) WebSocket(c *gin.Context) {
@@ -920,6 +928,10 @@ func (h *LocalKernelHandler) WebSocket(c *gin.Context) {
 		return
 	}
 	kernelID := c.Param("kernelId")
+	if !validKernelID.MatchString(kernelID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid kernel id"})
+		return
+	}
 
 	// Update lastUsed for idle timeout tracking
 	userID := userIDString(c)
@@ -944,8 +956,14 @@ func (h *LocalKernelHandler) WebSocket(c *gin.Context) {
 	wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
 
 	jupyterPath := c.Param("path")
-	if jupyterPath == "" {
+	if jupyterPath == "" || jupyterPath == "/" {
 		jupyterPath = "/channels"
+	}
+	// Restrict to a single safe path segment so a crafted *path can't redirect
+	// the proxied WebSocket to another host/endpoint (request forgery).
+	if !validKernelWSPath.MatchString(jupyterPath) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid kernel path"})
+		return
 	}
 	targetURL := fmt.Sprintf("%s/api/kernels/%s%s", wsURL, kernelID, jupyterPath)
 

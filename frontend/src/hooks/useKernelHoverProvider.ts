@@ -36,11 +36,15 @@ export function useKernelHoverProvider(
             } else if (data['text/plain']?.trim()) {
                 body = '```text\n' + stripAnsi(data['text/plain']).trim() + '\n```';
             } else if (data['text/html']?.trim()) {
-                const stripped = data['text/html']
+                // Keep block breaks, then let the DOM strip every tag — a single
+                // tag-stripping regex is incomplete (e.g. "<scr<script>ipt>") and
+                // can leave executable markup behind.
+                const withBreaks = data['text/html']
                     .replace(/<br\s*\/?>/gi, '\n')
-                    .replace(/<p>/gi, '\n')
-                    .replace(/<[^>]+>/g, '')
-                    .trim();
+                    .replace(/<\/?p>/gi, '\n');
+                const stripped = (new DOMParser()
+                    .parseFromString(withBreaks, 'text/html')
+                    .body.textContent || '').trim();
                 if (stripped) body = '```text\n' + stripAnsi(stripped) + '\n```';
             }
             if (!body) return null;
