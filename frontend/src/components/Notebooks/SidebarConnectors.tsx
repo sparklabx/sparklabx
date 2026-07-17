@@ -5,6 +5,7 @@ import { Database, ChevronRight, ChevronDown, Table2, Loader2, RefreshCw, Shield
 import { TrinoIcon } from './parts/TrinoIcon';
 import { PostgresIcon } from './parts/PostgresIcon';
 import { MysqlIcon } from './parts/MysqlIcon';
+import { AthenaIcon } from './parts/AthenaIcon';
 import { AddConnectorDialog } from './AddConnectorDialog';
 
 // Data-source manager. Lists the configured connectors (Trino, Postgres, …) and,
@@ -43,6 +44,7 @@ const ConnectorIcon: React.FC<{ kind: string }> = ({ kind }) => {
         kind === 'trino' ? <TrinoIcon className="h-3.5 w-auto" /> :
         kind === 'postgres' ? <PostgresIcon className="size-3.5" /> :
         kind === 'mysql' ? <MysqlIcon className="size-3.5" /> :
+        kind === 'athena' ? <AthenaIcon className="size-3.5" /> :
         <Database className="size-3.5" />;
     return <span className="inline-flex w-4 shrink-0 items-center justify-center">{glyph}</span>;
 };
