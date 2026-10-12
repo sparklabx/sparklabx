@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader } from '../ui/card';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Button } from '../ui/button';
+import { Textarea } from '../ui/textarea';
 import authService from '../../services/authService';
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
@@ -104,7 +105,7 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
   const [signupEnabled, setSignupEnabled] = useState(false);
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [info, setInfo] = useState('');
-  const [reg, setReg] = useState({ username: '', email: '', password: '', confirm: '', note: '' });
+  const [reg, setReg] = useState({ email: '', note: '' });
 
   useEffect(() => {
     // Why the previous session ended (trial expired, pending approval, ...).
@@ -178,11 +179,9 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
     setInfo('');
     setLoading(true);
     try {
-      const message = await authService.register({
-        username: reg.username, email: reg.email, password: reg.password, note: reg.note,
-      });
-      setInfo(message || 'Registration received. An administrator will review it.');
-      setReg({ username: '', email: '', password: '', confirm: '', note: '' });
+      const message = await authService.register({ email: reg.email, note: reg.note });
+      setInfo(message || 'Registration received. Once approved, sign in with Google using this email.');
+      setReg({ email: '', note: '' });
       setMode('login');
     } catch (err) {
       const e = err as { response?: { data?: { error?: string } } };
@@ -238,37 +237,23 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
           {mode === 'register' ? (
             <form onSubmit={handleRegister} className="space-y-3">
               <div className="text-sm font-medium">Request trial access</div>
+              <p className="text-xs text-muted-foreground">
+                Enter the Google account you will sign in with. No password needed: once an administrator
+                approves the request, use “Sign in with Google”.
+              </p>
               <div className="space-y-1.5">
-                <Label htmlFor="reg-username" className="text-xs">Username</Label>
-                <Input id="reg-username" value={reg.username} autoFocus className="h-9"
-                  placeholder="lowercase letters, digits, . _ -"
-                  onChange={(e) => setReg({ ...reg, username: e.target.value })} />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="reg-email" className="text-xs">Email</Label>
-                <Input id="reg-email" type="email" value={reg.email} className="h-9"
+                <Label htmlFor="reg-email" className="text-xs">Google account email</Label>
+                <Input id="reg-email" type="email" value={reg.email} autoFocus className="h-9"
+                  placeholder="you@gmail.com"
                   onChange={(e) => setReg({ ...reg, email: e.target.value })} />
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="reg-password" className="text-xs">Password (min. 8 characters)</Label>
-                <Input id="reg-password" type="password" value={reg.password} className="h-9"
-                  onChange={(e) => setReg({ ...reg, password: e.target.value })} />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="reg-confirm" className="text-xs">Confirm password</Label>
-                <Input id="reg-confirm" type="password" value={reg.confirm} className="h-9"
-                  onChange={(e) => setReg({ ...reg, confirm: e.target.value })} />
-                {reg.confirm && reg.confirm !== reg.password && (
-                  <p className="text-xs text-destructive">Passwords do not match</p>
-                )}
-              </div>
-              <div className="space-y-1.5">
                 <Label htmlFor="reg-note" className="text-xs">What will you use it for? (optional)</Label>
-                <Input id="reg-note" value={reg.note} className="h-9"
+                <Textarea id="reg-note" value={reg.note} rows={3}
                   onChange={(e) => setReg({ ...reg, note: e.target.value })} />
               </div>
               <Button type="submit" className="w-full h-9"
-                disabled={loading || !reg.username || !reg.email || reg.password.length < 8 || reg.password !== reg.confirm}>
+                disabled={loading || !reg.email.includes('@')}>
                 {loading ? 'Submitting...' : 'Request access'}
               </Button>
               <button type="button" onClick={() => { setMode('login'); setError(''); }}

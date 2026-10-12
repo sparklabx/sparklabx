@@ -21,21 +21,23 @@ req POST /admin/login "" '{"username":"admin","password":"'"${ADMIN_PASSWORD:?se
 ADMIN=$(echo "$BODY" | j "['token']")
 req GET /auth/config ""; check "auth config" 200; [ "$(echo "$BODY" | j "['signup_enabled']")" = "True" ] && echo "PASS signup_enabled" || { echo "FAIL signup_enabled"; fail=1; }
 
-req POST /auth/register "" '{"username":"Bad Name","email":"x@y.z","password":"Password123"}'; check "register rejects bad username" 400
-req POST /auth/register "" '{"username":"'$U'","email":"'$U'@ex.com","password":"short"}'; check "register rejects short password" 400
-req POST /auth/register "" '{"username":"'$U'","email":"'$U'@ex.com","password":"Password123","note":"demo"}'; check "register" 201
-req POST /auth/register "" '{"username":"'$U'","email":"'$U'@ex.com","password":"Password123"}'; check "register duplicate" 409
-req POST /admin/login "" '{"username":"'$U'","password":"Password123"}'; check "pending user cannot log in" 403 pending_approval
-req POST /admin/login "" '{"username":"'$U'","password":"wrong-pass"}'; check "wrong password stays generic" 401
-
+# Sign-up: Google email only, no password -> pending, can never password-login.
+req POST /auth/register "" '{"email":"not-an-email"}'; check "register rejects bad email" 400
+req POST /auth/register "" '{"email":"'$U'@ex.com","note":"demo"}'; check "register (email only)" 201
+req POST /auth/register "" '{"email":"'$U'@EX.com"}'; check "register duplicate (case-insensitive)" 409
 req GET /admin/users "$ADMIN"; check "admin lists users" 200
-ID=$(echo "$BODY" | python3 -c "import json,sys; print([u['id'] for u in json.load(sys.stdin) if u['username']=='$U'][0])")
-STATUS=$(echo "$BODY" | python3 -c "import json,sys; print([u['status'] for u in json.load(sys.stdin) if u['username']=='$U'][0])")
-[ "$STATUS" = pending ] && echo "PASS listed as pending" || { echo "FAIL status=$STATUS"; fail=1; }
+RID=$(echo "$BODY" | python3 -c "import json,sys; print([u['id'] for u in json.load(sys.stdin) if u['email']=='$U@ex.com'][0])")
+ROW=$(echo "$BODY" | python3 -c "import json,sys; u=[u for u in json.load(sys.stdin) if u['email']=='$U@ex.com'][0]; print(u['status'], u['signup_note'])")
+[ "$ROW" = "pending demo" ] && echo "PASS listed as pending with note" || { echo "FAIL row=$ROW"; fail=1; }
+req PUT /admin/users/$RID/access "$ADMIN" '{}'; check "approve registration (default 4h)" 200
+req POST /admin/login "" '{"username":"'$U'","password":"Password123"}'; check "registered user has no password login" 401
 
+# Time-boxed session: a password user created by the superadmin (Google login can't run headless).
+req POST /admin/users "$ADMIN" '{"username":"t'$U'","email":"t'$U'@ex.com","password":"Password123"}'; check "superadmin creates user" 201
+ID=$(echo "$BODY" | j "['id']")
 req PUT /admin/users/$ID/access "$ADMIN" '{"hours":-1}'; check "negative hours rejected" 400
-req PUT /admin/users/$ID/access "$ADMIN" '{"hours":0.003}'; check "approve for ~11s" 200
-req POST /admin/login "" '{"username":"'$U'","password":"Password123"}'; check "approved user logs in" 200
+req PUT /admin/users/$ID/access "$ADMIN" '{"hours":0.003}'; check "time-box to ~11s" 200
+req POST /admin/login "" '{"username":"t'$U'","password":"Password123"}'; check "approved user logs in" 200
 T=$(echo "$BODY" | j "['token']")
 req GET /admin/me "$T"; check "me" 200; [ -n "$(echo "$BODY" | j "['access_expires_at']")" ] && echo "PASS me has access_expires_at" || { echo "FAIL no access_expires_at"; fail=1; }
 req GET /notebooks "$T"; check "trial user lists notebooks" 200
@@ -47,10 +49,11 @@ T2=$(echo "$BODY" | j "['token']"); req GET /notebooks "$T2"; check "refreshed t
 sleep 12
 req GET /notebooks "$T2"; check "expired trial is cut off mid-session" 401 access_expired
 req POST /auth/refresh "$T2"; check "expired trial cannot refresh" 401 access_expired
-req POST /admin/login "" '{"username":"'$U'","password":"Password123"}'; check "expired trial cannot log in" 403 access_expired
+req POST /admin/login "" '{"username":"t'$U'","password":"wrong-pass"}'; check "wrong password stays generic" 401
+req POST /admin/login "" '{"username":"t'$U'","password":"Password123"}'; check "expired trial cannot log in" 403 access_expired
 
 req PUT /admin/users/$ID/access "$ADMIN" '{"hours":0}'; check "set no limit" 200
-req POST /admin/login "" '{"username":"'$U'","password":"Password123"}'; check "unlimited user logs in again" 200
+req POST /admin/login "" '{"username":"t'$U'","password":"Password123"}'; check "unlimited user logs in again" 200
 req GET /notebooks "bogus.jwt.token"; check "bad token gets session_expired code" 401 session_expired
 req DELETE /admin/users/$ID "$ADMIN"; check "delete user" 200
 req GET /notebooks "$T2"; check "deleted user's session is cut off" 401 account_removed

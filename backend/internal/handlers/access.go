@@ -8,9 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
-	"golang.org/x/crypto/bcrypt"
 
 	"github.com/sparklabx/sparklabx/backend/internal/database"
 	"github.com/sparklabx/sparklabx/backend/internal/middleware"
@@ -21,9 +19,11 @@ import (
 
 const defaultTrialHours = 4
 
-var usernamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{2,31}$`)
+var emailPattern = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
 
-// Register creates a pending account from the public sign-up form.
+// Register queues a Google account for approval. No password: trial users must sign in
+// with Google using this email once approved (password_hash stays empty, so the
+// password login can never succeed for these accounts).
 // POST /api/v1/auth/register
 func (h *AuthHandler) Register(c *gin.Context) {
 	if !h.cfg.SignupEnabled {
@@ -31,47 +31,43 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Username string `json:"username" binding:"required"`
-		Email    string `json:"email" binding:"required"`
-		Password string `json:"password" binding:"required"`
-		Note     string `json:"note"`
+		Email string `json:"email" binding:"required"`
+		Note  string `json:"note"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "username, email and password are required"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "email is required"})
 		return
 	}
-	username := strings.ToLower(strings.TrimSpace(req.Username))
 	email := strings.ToLower(strings.TrimSpace(req.Email))
 	switch {
-	case !usernamePattern.MatchString(username):
-		c.JSON(http.StatusBadRequest, gin.H{"error": "username: 3-32 chars, lowercase letters, digits, . _ -"})
-		return
-	case !strings.Contains(email, "@") || len(email) > 255:
+	case !emailPattern.MatchString(email) || len(email) > 255:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid email"})
-		return
-	case len(req.Password) < 8 || len(req.Password) > 72: // bcrypt ignores bytes past 72
-		c.JSON(http.StatusBadRequest, gin.H{"error": "password must be 8-72 characters"})
 		return
 	case len(req.Note) > 1000:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "note is too long"})
 		return
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to hash password"})
+	db := database.GetDB()
+	var exists bool
+	if err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM admins WHERE LOWER(email) = $1)", email).Scan(&exists); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "registration failed"})
 		return
 	}
-	_, err = database.GetDB().Exec(
-		`INSERT INTO admins (id, username, email, password_hash, role, status, signup_note)
-		 VALUES ($1, $2, $3, $4, 'admin', 'pending', $5)`,
-		uuid.New(), username, email, string(hash), strings.TrimSpace(req.Note),
-	)
-	if err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "username or email already registered"})
+	if exists {
+		c.JSON(http.StatusConflict, gin.H{"error": "this email is already registered"})
 		return
+	}
+	// Same username/insert path as a first Google login, as a pending account.
+	id, username, _, err := upsertOAuthAdmin(db, email, "", "pending")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "registration failed"})
+		return
+	}
+	if _, err := db.Exec("UPDATE admins SET signup_note = $1 WHERE id = $2", strings.TrimSpace(req.Note), id); err != nil {
+		log.Warn().Err(err).Msg("failed to store signup note")
 	}
 	log.Info().Str("username", username).Str("email", email).Msg("trial registration received")
-	c.JSON(http.StatusCreated, gin.H{"message": "registration received; an administrator will review it"})
+	c.JSON(http.StatusCreated, gin.H{"message": "registration received; once approved, sign in with Google using this email"})
 }
 
 // RefreshToken re-issues the session JWT with a fresh expiry (sliding session),

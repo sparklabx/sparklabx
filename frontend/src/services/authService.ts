@@ -119,8 +119,8 @@ class AuthService {
     return { user };
   }
 
-  // Public trial sign-up; the account stays pending until a superadmin approves it.
-  async register(form: { username: string; email: string; password: string; note: string }): Promise<string> {
+  // Public trial sign-up (Google email, no password); pending until a superadmin approves it.
+  async register(form: { email: string; note: string }): Promise<string> {
     const response = await axios.post(`${API_BASE}/auth/register`, form);
     return response.data.message;
   }
