@@ -23,6 +23,11 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
+  # Storage "Local files": list/read/write the running kernel's local-file folder
+  # (kubectl-cp style exec into the user's own kernel pod).
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["get", "list", "create", "delete"]

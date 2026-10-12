@@ -151,6 +151,9 @@ func main() {
 		log.Fatal().Err(err).Msg("failed to initialize kernel gateway")
 	}
 	localKernelHandler := handlers.NewLocalKernelHandler(cfg, kernelGateway)
+	if lf, ok := kernelGateway.(services.LocalFileStore); ok {
+		storageHandler.SetLocalFiles(lf) // "local" scope reads/writes the running kernel directly
+	}
 	handlers.LoadKernelMapFromDB()
 	notebookHandler := handlers.NewNotebookHandler()
 	userHandler := handlers.NewUserManagementHandler()

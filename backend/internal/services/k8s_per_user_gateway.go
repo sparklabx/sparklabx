@@ -112,6 +112,7 @@ type PodStatus struct {
 type K8sPerUserGateway struct {
 	cfg      K8sPerUserConfig
 	client   *kubernetes.Clientset
+	restCfg  *rest.Config // for pods/exec (local-file browser)
 	touchMu  sync.Mutex
 	touchBuf map[string]time.Time
 	stopCh   chan struct{}
@@ -167,6 +168,7 @@ func NewK8sPerUserGateway(cfg K8sPerUserConfig) (*K8sPerUserGateway, error) {
 	gw := &K8sPerUserGateway{
 		cfg:        cfg,
 		client:     client,
+		restCfg:    restCfg,
 		touchBuf:   make(map[string]time.Time),
 		stopCh:     make(chan struct{}),
 		usageCache: make(map[string]cachedUsage),

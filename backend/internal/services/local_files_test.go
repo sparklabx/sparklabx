@@ -74,3 +74,34 @@ func TestUserPolicyCoversLocalFiles(t *testing.T) {
 		t.Fatal("policy must not grant other users' local files")
 	}
 }
+
+func TestLocalPathStaysInRoot(t *testing.T) {
+	root := "/workspace/alice/local-file"
+	for rel, want := range map[string]string{
+		"":                 root,
+		"/":                root,
+		"data/x.csv":       root + "/data/x.csv",
+		"data/":            root + "/data",
+		"../../etc/passwd": root + "/etc/passwd",
+		"a/../../../bob/s": root + "/bob/s",
+		"./notes.txt":      root + "/notes.txt",
+	} {
+		got, err := localPath(root, rel)
+		if err != nil || got != want {
+			t.Fatalf("localPath(%q) = %q, %v; want %q", rel, got, err, want)
+		}
+	}
+	if _, err := localPath(root, "a\x00b"); err == nil {
+		t.Fatal("NUL byte must be rejected")
+	}
+}
+
+func TestParseFindOutput(t *testing.T) {
+	got := parseFindOutput("d\t4096\t1700000000.5\tdata\nf\t12\t1700000001.0\tnote.txt\n")
+	if len(got) != 2 || !got[0].IsDir || got[0].Name != "data" || got[1].IsDir || got[1].Size != 12 || got[1].ModTime.Unix() != 1700000001 {
+		t.Fatalf("parse: %+v", got)
+	}
+	if len(parseFindOutput("")) != 0 {
+		t.Fatal("empty output must give no entries")
+	}
+}
