@@ -145,6 +145,9 @@ func (m *MinIOIAM) RemoveUser(ctx context.Context, slug string) error {
 	return m.client.RemoveUser(ctx, slug)
 }
 
+// LocalFilesPrefix is where each kernel's /workspace/<slug>/local-file is persisted.
+const LocalFilesPrefix = "local-files/"
+
 func userPolicyName(slug string) string {
 	return "user-" + slug + "-policy"
 }
@@ -152,7 +155,10 @@ func userPolicyName(slug string) string {
 // buildUserPolicy creates an inline policy JSON granting:
 //   - full R/W on bucket/users/<slug>/*
 //   - full R/W on bucket/public/*  (free-for-all share space)
-//   - list bucket scoped to those two prefixes (so navigation works)
+//   - full R/W on bucket/local-files/<slug>/* (persisted copy of the kernel's
+//     /workspace/<slug>/local-file; not browsable in the UI, which only shows
+//     users/<slug>/ and public/)
+//   - list bucket scoped to those prefixes (so navigation and sync work)
 //
 // Everything outside those prefixes is implicitly denied. Bucket-level ops
 // (create/delete bucket) are not granted.
@@ -173,6 +179,7 @@ func buildUserPolicy(bucket, slug string) ([]byte, error) {
 				"Resource": []string{
 					fmt.Sprintf("arn:aws:s3:::%s/users/%s/*", bucket, slug),
 					fmt.Sprintf("arn:aws:s3:::%s/public/*", bucket),
+					fmt.Sprintf("arn:aws:s3:::%s/%s%s/*", bucket, LocalFilesPrefix, slug),
 				},
 			},
 			{
@@ -188,6 +195,8 @@ func buildUserPolicy(bucket, slug string) ([]byte, error) {
 							fmt.Sprintf("users/%s", slug),
 							"public/*",
 							"public",
+							fmt.Sprintf("%s%s/*", LocalFilesPrefix, slug),
+							fmt.Sprintf("%s%s", LocalFilesPrefix, slug),
 						},
 					},
 				},

@@ -28,6 +28,12 @@ image:
 kernelMode: k8s_per_user
 
 kernel:
+  # Persistent /workspace/<user>/local-file in each kernel pod (k8s_per_user): a
+  # pod-local emptyDir restored from / mirrored to MinIO local-files/<user>/ with the
+  # user's own creds (no PVC, no privileged container). syncImage "" disables it.
+  localFiles:
+    syncImage: bitnamilegacy/minio-client:2025.7.21
+    size: 5Gi
   # How long an idle kernel survives before the reaper deletes it.
   idleMinutes: 30
   # Cluster-wide cap. Prevents one runaway notebook from exhausting nodes.

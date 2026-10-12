@@ -80,6 +80,13 @@ type K8sPerUserConfig struct {
 	MemoryRequest string
 	CPULimit      string
 	MemoryLimit   string
+
+	// Persistent /workspace/<slug>/local-file: a pod-local emptyDir mirrored to
+	// <Bucket>/local-files/<slug>/ with the user's own MinIO creds (restored by an
+	// init container, kept in sync by a sidecar). Empty SyncImage = feature off.
+	SyncImage      string // MinIO client image (mc), e.g. bitnamilegacy/minio-client
+	Bucket         string // workspace bucket
+	LocalFilesSize string // emptyDir sizeLimit, e.g. "5Gi"
 }
 
 // PodStatus is the spawn progress snapshot returned to FE for live UI updates.
@@ -742,7 +749,7 @@ func (g *K8sPerUserGateway) buildPodSpec(userID, podName string, res podSizes) *
 		awsEnv = append(awsEnv, corev1.EnvVar{Name: "SPARKLABX_CONNECTORS", Value: m})
 	}
 
-	return &corev1.Pod{
+	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      podName,
 			Namespace: g.cfg.Namespace,
@@ -804,6 +811,81 @@ func (g *K8sPerUserGateway) buildPodSpec(userID, podName string, res podSizes) *
 			},
 		},
 	}
+	if usePerUserCreds {
+		g.addLocalFiles(pod, userAccessKey) // the per-user MinIO access key is the user's slug
+	}
+	return pod
+}
+
+// addLocalFiles gives the kernel a persistent /workspace/<slug>/local-file and makes
+// /workspace/<slug> its working directory. No PVC and no privileged container: the
+// directory is a pod-local emptyDir, restored from <bucket>/local-files/<slug>/ by an
+// init container and mirrored back on every change by a native sidecar (mc mirror
+// --watch, inotify). Both use the user's own MinIO creds, so the per-user IAM policy
+// keeps users apart. The sidecar stops after the kernel, and its preStop does a last
+// full mirror, so a normal shutdown (idle reap, revoke, restart) loses nothing; a hard
+// node loss can drop writes still in flight.
+func (g *K8sPerUserGateway) addLocalFiles(pod *corev1.Pod, slug string) {
+	if g.cfg.SyncImage == "" || g.cfg.Bucket == "" || slug == "" {
+		return
+	}
+	home := "/workspace/" + slug
+	local := home + "/local-file/"
+	remote := "s3/" + g.cfg.Bucket + "/" + LocalFilesPrefix + slug + "/"
+	const alias = `export MC_CONFIG_DIR=/tmp/.mc; mc alias set s3 "$S3_ENDPOINT" "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" >/dev/null && `
+	push := "mc mirror --overwrite --remove " + local + " " + remote
+
+	kernel := &pod.Spec.Containers[0]
+	syncEnv := append([]corev1.EnvVar(nil), kernel.Env...) // AWS_* (user creds) + S3_ENDPOINT
+	mount := []corev1.VolumeMount{{Name: "workspace", MountPath: "/workspace"}}
+	root := &corev1.SecurityContext{RunAsUser: ptrInt64(0)} // write files the root kernel can use
+	always := corev1.ContainerRestartPolicyAlways
+
+	var sizeLimit *resource.Quantity
+	if g.cfg.LocalFilesSize != "" {
+		q := resource.MustParse(g.cfg.LocalFilesSize)
+		sizeLimit = &q
+	}
+	pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
+		Name:         "workspace",
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: sizeLimit}},
+	})
+	pod.Spec.InitContainers = append(pod.Spec.InitContainers,
+		corev1.Container{
+			Name:            "local-file-restore",
+			Image:           g.cfg.SyncImage,
+			ImagePullPolicy: corev1.PullIfNotPresent,
+			// Must succeed before the sidecar (mirror --remove) starts: syncing an empty dir
+			// after a failed restore would delete the user's saved files. Nothing saved yet
+			// (empty listing) is fine; any MinIO error fails the init container -> retried.
+			Command: []string{"sh", "-c", alias + "mkdir -p " + local + " && out=$(mc ls " + remote + ") && " +
+				"{ [ -z \"$out\" ] || mc mirror --overwrite " + remote + " " + local + "; }"},
+			Env:             syncEnv,
+			VolumeMounts:    mount,
+			SecurityContext: root,
+		},
+		corev1.Container{
+			Name:            "local-file-sync",
+			Image:           g.cfg.SyncImage,
+			ImagePullPolicy: corev1.PullIfNotPresent,
+			RestartPolicy:   &always, // native sidecar: runs alongside the kernel, stops after it
+			Command:         []string{"sh", "-c", alias + "exec " + push + " --watch"},
+			Env:             syncEnv,
+			VolumeMounts:    mount,
+			SecurityContext: root,
+			Lifecycle: &corev1.Lifecycle{PreStop: &corev1.LifecycleHandler{
+				Exec: &corev1.ExecAction{Command: []string{"sh", "-c", alias + push}},
+			}},
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("10m"), corev1.ResourceMemory: resource.MustParse("32Mi")},
+				Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")},
+			},
+		},
+	)
+	kernel.VolumeMounts = append(kernel.VolumeMounts, mount...)
+	kernel.WorkingDir = home
+	// Room for the sidecar's final mirror (the kernel itself has nothing to drain).
+	pod.Spec.TerminationGracePeriodSeconds = ptrInt64(30)
 }
 
 // podHealthy returns true only when the pod is actually serving — not just

@@ -143,6 +143,9 @@ func main() {
 		PodMemoryRequest:           cfg.KernelPodMemoryRequest,
 		PodCPULimit:                cfg.KernelPodCPULimit,
 		PodMemoryLimit:             cfg.KernelPodMemoryLimit,
+		SyncImage:                  cfg.KernelSyncImage,
+		Bucket:                     cfg.MinIOWorkspaceBucket,
+		LocalFilesSize:             cfg.KernelLocalFilesSize,
 	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to initialize kernel gateway")
