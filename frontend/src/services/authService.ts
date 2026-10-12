@@ -62,6 +62,7 @@ class AuthService {
   }
 
   private setUser(user: Record<string, unknown>) {
+    try { sessionStorage.removeItem(LOGOUT_REASON_KEY); } catch { /* noop */ } // signed in again
     safeSetItem(USER_KEY, JSON.stringify(user));
     notifyAuthChange();
   }
@@ -133,15 +134,11 @@ class AuthService {
     safeSetItem(TOKEN_KEY, response.data.token);
   }
 
-  // One-shot: the reason the previous session was ended, if any.
+  // Why the previous session ended, if any. Kept until the next successful login:
+  // the login page can mount once before the interceptor's reload, and a read-and-
+  // delete here would lose the message on that reload.
   takeLogoutReason(): string | null {
-    try {
-      const reason = sessionStorage.getItem(LOGOUT_REASON_KEY);
-      sessionStorage.removeItem(LOGOUT_REASON_KEY);
-      return reason;
-    } catch {
-      return null;
-    }
+    try { return sessionStorage.getItem(LOGOUT_REASON_KEY); } catch { return null; }
   }
 
   async checkAuthStatus(): Promise<boolean> {
