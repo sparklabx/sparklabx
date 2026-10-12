@@ -1,5 +1,6 @@
 # ---- Stage 1: Build React App with Vite ----
-FROM node:26-alpine AS builder
+# Static assets are arch-independent: build natively, only the nginx stage targets TARGETPLATFORM.
+FROM --platform=$BUILDPLATFORM node:26-alpine AS builder
 
 WORKDIR /app
 COPY package*.json ./
@@ -11,6 +12,7 @@ ENV NODE_ENV=production
 ARG VITE_GOOGLE_CLIENT_ID
 ARG VITE_MICROSOFT_CLIENT_ID
 ARG VITE_MICROSOFT_TENANT_ID
+ARG VITE_SUPPORT_EMAIL
 RUN npm run build
 
 # ---- Stage 2: Serve with Nginx (root, port 80) ----

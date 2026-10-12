@@ -10,6 +10,8 @@ import authService from '../../services/authService';
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 const MICROSOFT_CLIENT_ID = import.meta.env.VITE_MICROSOFT_CLIENT_ID || '';
 const MICROSOFT_TENANT_ID = import.meta.env.VITE_MICROSOFT_TENANT_ID || '';
+// Shown under the login/sign-up card: where trial users ask for help or more time.
+const SUPPORT_EMAIL = import.meta.env.VITE_SUPPORT_EMAIL || 'support@sparklabx.com';
 
 // MSAL throws ClientConfigurationError when constructed with an empty
 // clientId. Skip instantiation entirely when Microsoft login isn't
@@ -358,6 +360,13 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
             </button>
           )}
           </>)}
+
+          {SUPPORT_EMAIL && (
+            <p className="pt-1 text-center text-xs text-muted-foreground">
+              Need help or more time?{' '}
+              <a href={`mailto:${SUPPORT_EMAIL}`} className="text-primary hover:underline">{SUPPORT_EMAIL}</a>
+            </p>
+          )}
         </CardContent>
       </Card>
     </div>

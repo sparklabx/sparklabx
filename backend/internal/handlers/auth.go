@@ -148,8 +148,12 @@ func (h *AuthHandler) GoogleLogin(c *gin.Context) {
 	var err error
 
 	if req.AccessToken != "" {
-		// Verify via Google userinfo API (from useGoogleLogin hook)
-		googleUser, err = verifyGoogleAccessToken(req.AccessToken)
+		// Verify via Google userinfo API (from useGoogleLogin hook), after checking
+		// the token was issued to THIS app's client: userinfo alone accepts a token
+		// minted for any other app, letting it impersonate its user here.
+		if err = verifyGoogleAccessTokenAudience(req.AccessToken, h.cfg.GoogleClientID); err == nil {
+			googleUser, err = verifyGoogleAccessToken(req.AccessToken)
+		}
 	} else if req.Credential != "" {
 		// Verify via tokeninfo (from GoogleLogin component)
 		googleUser, err = verifyGoogleToken(req.Credential, h.cfg.GoogleClientID)
@@ -227,6 +231,33 @@ type GoogleUserInfo struct {
 	Picture       string      `json:"picture"`
 	Aud           string      `json:"aud"`
 	Sub           string      `json:"sub"`
+}
+
+// verifyGoogleAccessTokenAudience requires the access token's aud/azp to be our
+// OAuth client ID (tokeninfo endpoint).
+func verifyGoogleAccessTokenAudience(accessToken, clientID string) error {
+	if clientID == "" {
+		return fmt.Errorf("GOOGLE_CLIENT_ID not configured")
+	}
+	resp, err := httpClient.Get("https://oauth2.googleapis.com/tokeninfo?access_token=" + url.QueryEscape(accessToken))
+	if err != nil {
+		return fmt.Errorf("failed to call Google tokeninfo: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Google access token invalid (%d)", resp.StatusCode)
+	}
+	var info struct {
+		Aud string `json:"aud"`
+		Azp string `json:"azp"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return fmt.Errorf("failed to decode Google tokeninfo: %w", err)
+	}
+	if info.Aud != clientID && info.Azp != clientID {
+		return fmt.Errorf("access token was issued to another client")
+	}
+	return nil
 }
 
 // verifyGoogleAccessToken calls Google's userinfo endpoint with an access token.
@@ -331,15 +362,22 @@ var (
 func (h *AuthHandler) completeOAuthLogin(email, name string) (token, adminID, adminUsername, adminRole string, err error) {
 	db := database.GetDB()
 
-	// Block before any DB write so disallowed emails never create an account.
-	if allowed, anyRule := IsEmailAllowed(db, email); !allowed {
+	// Allowlisted emails get an active account. With sign-up enabled, anyone else
+	// becomes a pending account (same approval queue as the sign-up form);
+	// otherwise block before any DB write so disallowed emails never create one.
+	allowed, anyRule := IsEmailAllowed(db, email)
+	if !allowed && !h.cfg.SignupEnabled {
 		if !anyRule {
 			return "", "", "", "", errOAuthNotConfigured
 		}
 		return "", "", "", "", errOAuthNotPermitted
 	}
+	newStatus := "active"
+	if !allowed {
+		newStatus = "pending"
+	}
 
-	adminID, adminUsername, adminRole, err = upsertOAuthAdmin(db, email, name)
+	adminID, adminUsername, adminRole, err = upsertOAuthAdmin(db, email, name, newStatus)
 	if err != nil {
 		return "", "", "", "", fmt.Errorf("admin upsert: %w", err)
 	}
@@ -395,7 +433,7 @@ func writeOAuthError(c *gin.Context, err error, provider string) {
 func upsertOAuthAdmin(db interface {
 	QueryRow(string, ...interface{}) *sql.Row
 	Exec(string, ...interface{}) (sql.Result, error)
-}, email, name string) (id, username, role string, err error) {
+}, email, name, newStatus string) (id, username, role string, err error) {
 	emailLower := strings.ToLower(strings.TrimSpace(email))
 	err = db.QueryRow(
 		"SELECT id, username, COALESCE(role, 'admin') FROM admins WHERE LOWER(email) = $1",
@@ -410,16 +448,12 @@ func upsertOAuthAdmin(db interface {
 	id = uuid.New().String()
 	role = "admin"
 	username = usernameSlugFromEmail(emailLower)
-	_, err = db.Exec(
-		"INSERT INTO admins (id, username, email, password_hash, role) VALUES ($1, $2, $3, '', $4)",
-		id, username, emailLower, role,
-	)
+	// newStatus applies only to a brand-new row; existing accounts keep theirs.
+	const insert = "INSERT INTO admins (id, username, email, password_hash, role, status) VALUES ($1, $2, $3, '', $4, $5)"
+	_, err = db.Exec(insert, id, username, emailLower, role, newStatus)
 	if err != nil {
 		username = username + "-" + randHex(4)
-		if _, err = db.Exec(
-			"INSERT INTO admins (id, username, email, password_hash, role) VALUES ($1, $2, $3, '', $4)",
-			id, username, emailLower, role,
-		); err != nil {
+		if _, err = db.Exec(insert, id, username, emailLower, role, newStatus); err != nil {
 			return "", "", "", err
 		}
 	}
