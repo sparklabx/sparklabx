@@ -150,7 +150,14 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
       await authService.loginWithGoogle(accessToken);
       onSuccess();
     } catch (err) {
-      const e = err as { response?: { data?: { error?: string } } };
+      const e = err as { response?: { data?: { error?: string; code?: string } } };
+      if (e.response?.data?.code === 'signup_required') {
+        // Unknown Google account: trial access starts with the request form.
+        setMode('register');
+        setInfo('');
+        setError('No trial request for this Google account yet. Request access below, then sign in with Google once approved.');
+        return;
+      }
       setError(e.response?.data?.error || 'Google login failed');
     } finally {
       setLoading(false);

@@ -349,6 +349,8 @@ func (e *accessDeniedError) Error() string { return e.Message }
 var (
 	errOAuthNotConfigured = errors.New("oauth allowlist not configured")
 	errOAuthNotPermitted  = errors.New("email not permitted by allowlist")
+	// Unknown email while sign-up is open: request access through the form first.
+	errOAuthSignupRequired = errors.New("no trial request for this email; use \"Request trial access\" first")
 )
 
 // completeOAuthLogin is the shared tail of every OAuth/OIDC login once an
@@ -362,22 +364,27 @@ var (
 func (h *AuthHandler) completeOAuthLogin(email, name string) (token, adminID, adminUsername, adminRole string, err error) {
 	db := database.GetDB()
 
-	// Allowlisted emails get an active account. With sign-up enabled, anyone else
-	// becomes a pending account (same approval queue as the sign-up form);
-	// otherwise block before any DB write so disallowed emails never create one.
-	allowed, anyRule := IsEmailAllowed(db, email)
-	if !allowed && !h.cfg.SignupEnabled {
-		if !anyRule {
-			return "", "", "", "", errOAuthNotConfigured
+	// Allowlisted emails get an active account on first login. Anyone else must
+	// already have an account: requested through the sign-up form (pending until
+	// approved) or created by a superadmin. Block before any DB write so an
+	// unknown email never creates one here.
+	if allowed, anyRule := IsEmailAllowed(db, email); !allowed {
+		var exists bool
+		if err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM admins WHERE LOWER(email) = LOWER($1))", strings.TrimSpace(email)).Scan(&exists); err != nil {
+			return "", "", "", "", err
 		}
-		return "", "", "", "", errOAuthNotPermitted
-	}
-	newStatus := "active"
-	if !allowed {
-		newStatus = "pending"
+		switch {
+		case exists: // pending/expired/active is decided by CheckAccess below
+		case h.cfg.SignupEnabled:
+			return "", "", "", "", errOAuthSignupRequired
+		case !anyRule:
+			return "", "", "", "", errOAuthNotConfigured
+		default:
+			return "", "", "", "", errOAuthNotPermitted
+		}
 	}
 
-	adminID, adminUsername, adminRole, err = upsertOAuthAdmin(db, email, name, newStatus)
+	adminID, adminUsername, adminRole, err = upsertOAuthAdmin(db, email, name, "active")
 	if err != nil {
 		return "", "", "", "", fmt.Errorf("admin upsert: %w", err)
 	}
@@ -412,6 +419,8 @@ func writeOAuthError(c *gin.Context, err error, provider string) {
 	switch {
 	case errors.As(err, &denied):
 		c.JSON(http.StatusForbidden, gin.H{"error": denied.Message, "code": denied.Code})
+	case errors.Is(err, errOAuthSignupRequired):
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error(), "code": "signup_required"})
 	case errors.Is(err, errOAuthNotConfigured):
 		c.JSON(http.StatusForbidden, gin.H{"error": "OAuth login is not configured. Contact an administrator."})
 	case errors.Is(err, errOAuthNotPermitted):

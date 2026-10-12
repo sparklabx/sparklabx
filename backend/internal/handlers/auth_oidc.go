@@ -360,6 +360,8 @@ func (h *AuthHandler) OIDCCallback(c *gin.Context) {
 		switch {
 		case errors.As(err, &denied):
 			h.oidcRespond(c, silent, "", denied.Message)
+		case errors.Is(err, errOAuthSignupRequired):
+			h.oidcRespond(c, silent, "", err.Error())
 		case errors.Is(err, errOAuthNotConfigured):
 			h.oidcRespond(c, silent, "", "SSO login is not configured. Contact an administrator.")
 		case errors.Is(err, errOAuthNotPermitted):
