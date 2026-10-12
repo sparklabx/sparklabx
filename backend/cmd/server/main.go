@@ -155,6 +155,7 @@ func main() {
 		log.Info().Msg("SMTP not configured; approve/reject mails are disabled")
 	}
 	userHandler := handlers.NewUserManagementHandler(kernelGateway, mailer, cfg.AppURL)
+	handlers.StartExpiredKernelSweeper(kernelGateway)
 	allowedDomainHandler := handlers.NewAllowedDomainHandler()
 
 	if cfg.Environment == "production" {

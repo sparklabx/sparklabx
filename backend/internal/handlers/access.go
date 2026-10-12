@@ -14,6 +14,7 @@ import (
 
 	"github.com/sparklabx/sparklabx/backend/internal/database"
 	"github.com/sparklabx/sparklabx/backend/internal/middleware"
+	"github.com/sparklabx/sparklabx/backend/internal/services"
 )
 
 // Trial access: self-service registration (pending until a superadmin approves),
@@ -202,4 +203,41 @@ func (h *UserManagementHandler) Reject(c *gin.Context) {
 		"Hello,\n\nThank you for your interest in SparkLabX. Unfortunately we cannot approve your trial request at this time.\n\n"+
 			"Questions? Reply to support@sparklabx.com.\n\nThe SparkLabX team\n")
 	c.JSON(http.StatusOK, gin.H{"message": "request rejected"})
+}
+
+// StartExpiredKernelSweeper stops the kernels of accounts whose access ran out on
+// its own (the time limit, not a revoke): every minute, any kernel row whose owner
+// has expired is destroyed, so it stops consuming the node within ~1 minute
+// instead of lingering until the idle reaper. Revoke/delete stop kernels at once.
+func StartExpiredKernelSweeper(kernels services.KernelGateway) {
+	if kernels == nil {
+		return
+	}
+	go func() {
+		for range time.Tick(time.Minute) {
+			rows, err := database.GetDB().Query(`
+				SELECT p.user_id FROM user_kernel_pods p
+				JOIN admins a ON a.id::text = p.user_id
+				WHERE a.access_expires_at <= NOW() AND COALESCE(a.role, 'admin') <> 'superadmin'`)
+			if err != nil {
+				log.Warn().Err(err).Msg("expired-kernel sweep query failed")
+				continue
+			}
+			var ids []string
+			for rows.Next() {
+				var id string
+				if rows.Scan(&id) == nil {
+					ids = append(ids, id)
+				}
+			}
+			rows.Close()
+			for _, id := range ids {
+				if err := kernels.Destroy(id); err != nil {
+					log.Warn().Err(err).Str("admin_id", id).Msg("failed to stop kernel of expired user")
+				} else {
+					log.Info().Str("admin_id", id).Msg("stopped kernel of expired trial user")
+				}
+			}
+		}
+	}()
 }
