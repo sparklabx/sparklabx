@@ -192,6 +192,7 @@ class AuthService {
     safeSetItem(TOKEN_KEY, token);
     safeSetItem(ROLE_KEY, 'admin');
     this.setUser({ ...user, role: 'admin' });
+    await this.checkAuthStatus(); // picks up access_expires_at for the countdown
     return { user: { ...user, role: 'admin' } };
   }
 
@@ -202,6 +203,7 @@ class AuthService {
     safeSetItem(TOKEN_KEY, token);
     safeSetItem(ROLE_KEY, 'admin');
     this.setUser({ ...user, role: 'admin' });
+    await this.checkAuthStatus(); // picks up access_expires_at for the countdown
     return { user: { ...user, role: 'admin' } };
   }
 

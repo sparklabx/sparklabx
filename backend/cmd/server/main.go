@@ -150,7 +150,7 @@ func main() {
 	localKernelHandler := handlers.NewLocalKernelHandler(cfg, kernelGateway)
 	handlers.LoadKernelMapFromDB()
 	notebookHandler := handlers.NewNotebookHandler()
-	userHandler := handlers.NewUserManagementHandler()
+	userHandler := handlers.NewUserManagementHandler(kernelGateway)
 	allowedDomainHandler := handlers.NewAllowedDomainHandler()
 
 	if cfg.Environment == "production" {

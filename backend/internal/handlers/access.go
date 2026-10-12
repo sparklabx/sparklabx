@@ -142,3 +142,24 @@ func (h *UserManagementHandler) SetAccess(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "access updated", "access_expires_at": expires})
 }
+
+// Revoke ends a user's access immediately: access_expires_at = now, so every
+// request (checked live) is refused from here on, and their kernel is stopped.
+// The account and its data stay; "Set access time" grants access again.
+// POST /api/v1/admin/users/:id/revoke   (superadmin)
+func (h *UserManagementHandler) Revoke(c *gin.Context) {
+	id := c.Param("id")
+	res, err := database.GetDB().Exec(
+		"UPDATE admins SET access_expires_at = NOW() WHERE id = $1 AND COALESCE(role, 'admin') <> 'superadmin'", id,
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to revoke access"})
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found (a superadmin cannot be revoked; demote first)"})
+		return
+	}
+	h.stopKernel(id)
+	c.JSON(http.StatusOK, gin.H{"message": "access revoked"})
+}

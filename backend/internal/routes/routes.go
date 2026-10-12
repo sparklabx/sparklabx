@@ -55,8 +55,8 @@ func registerAuth(v1 *gin.RouterGroup, cfg *config.Config, h Handlers) {
 	v1.GET("/auth/oidc/callback", authLimiter, h.Auth.OIDCCallback)
 }
 
-// registerAdmin — admin session: profile, own password; everything that shows or
-// changes other users or global config (user management, MinIO browser, OAuth
+// registerAdmin — admin session: profile, own password, own storage; everything
+// that shows or changes other users or global config (user management, OAuth
 // allowlist) is superadmin-only, enforced here and hidden in the UI.
 func registerAdmin(v1 *gin.RouterGroup, cfg *config.Config, h Handlers) {
 	admin := v1.Group("")
@@ -65,6 +65,17 @@ func registerAdmin(v1 *gin.RouterGroup, cfg *config.Config, h Handlers) {
 	admin.GET("/admin/me", h.Auth.Me)
 	// Own password for anyone; other users' passwords checked in the handler.
 	admin.PUT("/admin/users/:id/password", h.User.ResetPassword)
+
+	// MinIO browser — scoped per caller ("my" = users/<username>/, "public"),
+	// the same isolation the user's MinIO IAM policy enforces in the kernel.
+	admin.GET("/minio/buckets", h.Storage.MinIOListBuckets)
+	admin.PUT("/minio/buckets/:bucket", h.Storage.MinIOCreateBucket)
+	admin.DELETE("/minio/buckets/:bucket", h.Storage.MinIODeleteBucket)
+	admin.GET("/minio/buckets/:bucket/objects", h.Storage.MinIOListObjects)
+	admin.POST("/minio/buckets/:bucket/upload", h.Storage.MinIOUploadObject)
+	admin.POST("/minio/buckets/:bucket/folder", h.Storage.MinIOCreateFolder)
+	admin.GET("/minio/buckets/:bucket/download", h.Storage.MinIODownloadObject)
+	admin.DELETE("/minio/buckets/:bucket/objects", h.Storage.MinIODeleteObject)
 
 	super := admin.Group("")
 	super.Use(middleware.RequireSuperAdmin())
@@ -75,16 +86,7 @@ func registerAdmin(v1 *gin.RouterGroup, cfg *config.Config, h Handlers) {
 	super.DELETE("/admin/users/:id", h.User.DeleteAdmin)
 	super.PUT("/admin/users/:id/role", h.User.UpdateRole)
 	super.PUT("/admin/users/:id/access", h.User.SetAccess)
-
-	// MinIO browser (whole bucket, every user's prefix)
-	super.GET("/minio/buckets", h.Storage.MinIOListBuckets)
-	super.PUT("/minio/buckets/:bucket", h.Storage.MinIOCreateBucket)
-	super.DELETE("/minio/buckets/:bucket", h.Storage.MinIODeleteBucket)
-	super.GET("/minio/buckets/:bucket/objects", h.Storage.MinIOListObjects)
-	super.POST("/minio/buckets/:bucket/upload", h.Storage.MinIOUploadObject)
-	super.POST("/minio/buckets/:bucket/folder", h.Storage.MinIOCreateFolder)
-	super.GET("/minio/buckets/:bucket/download", h.Storage.MinIODownloadObject)
-	super.DELETE("/minio/buckets/:bucket/objects", h.Storage.MinIODeleteObject)
+	super.POST("/admin/users/:id/revoke", h.User.Revoke)
 
 	// OAuth allowlist (settings)
 	super.GET("/allowed-domains", h.AllowedDomain.List)

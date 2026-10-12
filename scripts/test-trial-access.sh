@@ -41,7 +41,10 @@ req POST /admin/login "" '{"username":"t'$U'","password":"Password123"}'; check 
 T=$(echo "$BODY" | j "['token']")
 req GET /admin/me "$T"; check "me" 200; [ -n "$(echo "$BODY" | j "['access_expires_at']")" ] && echo "PASS me has access_expires_at" || { echo "FAIL no access_expires_at"; fail=1; }
 req GET /notebooks "$T"; check "trial user lists notebooks" 200
-for p in /admin/users /allowed-domains /minio/buckets; do req GET $p "$T"; check "trial user blocked from $p" 403; done
+for p in /admin/users /allowed-domains; do req GET $p "$T"; check "trial user blocked from $p" 403; done
+req GET /minio/buckets "$T"; check "trial user lists own storage scopes" 200
+req GET /notebooks/storage/files "$T"; check "trial user lists notebook files" 200
+req GET /connectors "$T"; check "trial user lists data sources" 200
 req PUT /admin/users/$ID/access "$T" '{"hours":100}'; check "trial user cannot extend itself" 403
 req POST /auth/refresh "$T"; check "refresh" 200
 T2=$(echo "$BODY" | j "['token']"); req GET /notebooks "$T2"; check "refreshed token works" 200
@@ -54,6 +57,14 @@ req POST /admin/login "" '{"username":"t'$U'","password":"Password123"}'; check 
 
 req PUT /admin/users/$ID/access "$ADMIN" '{"hours":0}'; check "set no limit" 200
 req POST /admin/login "" '{"username":"t'$U'","password":"Password123"}'; check "unlimited user logs in again" 200
+T3=$(echo "$BODY" | j "['token']")
+req POST /admin/users/$ID/revoke "$T3"; check "user cannot revoke anyone" 403
+ADMIN_ID=$(curl -s "$B/admin/me" -H "Authorization: Bearer $ADMIN" | j "['id']")
+req POST /admin/users/$ADMIN_ID/revoke "$ADMIN"; check "superadmin cannot be revoked" 404
+req POST /admin/users/$ID/revoke "$ADMIN"; check "revoke" 200
+req GET /notebooks "$T3"; check "revoked user is cut off immediately" 401 access_expired
+req PUT /admin/users/$ID/access "$ADMIN" '{"hours":1}'; check "re-grant after revoke" 200
+req POST /admin/login "" '{"username":"t'$U'","password":"Password123"}'; check "re-granted user logs in" 200
 req GET /notebooks "bogus.jwt.token"; check "bad token gets session_expired code" 401 session_expired
 req DELETE /admin/users/$ID "$ADMIN"; check "delete user" 200
 req GET /notebooks "$T2"; check "deleted user's session is cut off" 401 account_removed

@@ -6,7 +6,7 @@ import { Card, CardContent } from '../ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from '../ui/dialog';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
-import { Trash2, Plus, Key, Search, Eye, EyeOff, Users, ShieldCheck, ShieldOff, Clock, UserCheck } from 'lucide-react';
+import { Trash2, Plus, Key, Search, Eye, EyeOff, Users, ShieldCheck, ShieldOff, Clock, UserCheck, Ban } from 'lucide-react';
 import { AccessCountdown } from './AccessCountdown';
 import { toast } from 'sonner';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
@@ -73,6 +73,18 @@ const UserManagement: React.FC = () => {
       setAccessTarget(null);
     },
   });
+  // Revoke: access ends now (checked live on every request) and the kernel is stopped.
+  const [revokeTarget, setRevokeTarget] = useState<Admin | null>(null);
+  const revokeMutation = useMutation({
+    mutationFn: async (id: string) => { await axios.post(`/api/v1/admin/users/${id}/revoke`); },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admins'] });
+      toast.success(`Access revoked for ${revokeTarget?.username}`);
+      setRevokeTarget(null);
+    },
+  });
+  const isExpired = (a: Admin) => !!a.access_expires_at && new Date(a.access_expires_at).getTime() <= Date.now();
+
   const hoursValue = Number(accessHours);
   const hoursValid = noLimit || (Number.isFinite(hoursValue) && hoursValue > 0 && hoursValue <= 8760);
 
@@ -218,6 +230,8 @@ const UserManagement: React.FC = () => {
                     <td className="py-3 px-4">
                       {admin.status === 'pending'
                         ? <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-600 font-semibold uppercase">pending</span>
+                        : isExpired(admin)
+                        ? <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/15 text-red-600 font-semibold uppercase">expired</span>
                         : <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600 font-semibold uppercase">active</span>}
                     </td>
                     <td className="py-3 px-4 font-mono text-xs">
@@ -234,9 +248,17 @@ const UserManagement: React.FC = () => {
                               <UserCheck className="size-3.5 mr-1" /> Approve
                             </Button>
                           ) : (
-                            <Button size="sm" variant="ghost" className="h-7 w-7 p-0" title="Set access time" onClick={() => openAccess(admin)}>
-                              <Clock className="size-3.5" />
-                            </Button>
+                            <>
+                              <Button size="sm" variant="ghost" className="h-7 w-7 p-0" title="Set access time" onClick={() => openAccess(admin)}>
+                                <Clock className="size-3.5" />
+                              </Button>
+                              {!isExpired(admin) ? (
+                                <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-destructive hover:text-destructive" title="Revoke access now"
+                                  onClick={() => setRevokeTarget(admin)}>
+                                  <Ban className="size-3.5" />
+                                </Button>
+                              ) : <div className="w-7" />}
+                            </>
                           )
                         )}
                         {isSuperAdmin && (
@@ -346,6 +368,26 @@ const UserManagement: React.FC = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Revoke confirmation */}
+      <AlertDialog open={!!revokeTarget} onOpenChange={(open) => !open && setRevokeTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Revoke access: {revokeTarget?.username}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              They are signed out on their next request and their kernel is stopped. The account and its
+              notebooks are kept; use “Set access time” to let them back in.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => revokeTarget && revokeMutation.mutate(revokeTarget.id)}>
+              Revoke
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Promote / Demote confirmation — replaces native window.confirm. */}
       <AlertDialog open={!!roleTarget} onOpenChange={(open) => !open && setRoleTarget(null)}>

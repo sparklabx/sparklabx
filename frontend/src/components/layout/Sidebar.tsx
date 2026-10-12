@@ -72,7 +72,6 @@ export function Sidebar({ collapsed, onCollapse }: SidebarProps) {
             {!collapsed && <span className="flex-1 text-left">Notebooks</span>}
           </button>
 
-          {isSuperAdmin && (<>
           <button
             onClick={() => navigate('/admin/storage')}
             className={cn(
@@ -86,6 +85,8 @@ export function Sidebar({ collapsed, onCollapse }: SidebarProps) {
             {!collapsed && <span className="flex-1 text-left">Storage</span>}
           </button>
 
+          {isSuperAdmin && (
+
           <button
             onClick={() => navigate('/admin/users')}
             className={cn(
@@ -98,7 +99,7 @@ export function Sidebar({ collapsed, onCollapse }: SidebarProps) {
             <Users className="size-4" />
             {!collapsed && <span className="flex-1 text-left">Users</span>}
           </button>
-          </>)}
+          )}
         </div>
       </nav>
 

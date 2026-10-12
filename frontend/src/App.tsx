@@ -29,7 +29,7 @@ const queryClient = new QueryClient({
   },
 });
 
-// Settings, user management and the global storage browser are superadmin-only
+// Settings and user management are superadmin-only
 // (the API enforces it too); everyone else is sent back to their notebooks.
 const SuperAdminOnly: React.FC<{ children: React.ReactElement }> = ({ children }) => {
   const { isSuperAdmin } = useCurrentUser();
@@ -80,7 +80,7 @@ const AdminLayout: React.FC = () => {
             <React.Suspense fallback={<div className="p-10">Loading...</div>}>
               <Routes>
                 <Route path="/" element={<Navigate to="/notebooks" replace />} />
-                <Route path="/admin/storage" element={<SuperAdminOnly><StoragePage /></SuperAdminOnly>} />
+                <Route path="/admin/storage" element={<StoragePage />} />
                 <Route path="/admin/settings/*" element={<SuperAdminOnly><SettingsLayout /></SuperAdminOnly>} />
                 <Route path="/admin/users" element={<SuperAdminOnly><UserManagement /></SuperAdminOnly>} />
                 <Route path="/notebooks" element={<NotebookListPage />} />

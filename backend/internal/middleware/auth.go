@@ -169,7 +169,7 @@ func IsSuperAdmin(c *gin.Context) bool {
 }
 
 // RequireSuperAdmin is a route-level guard that rejects non-superadmin admins
-// with 403: settings, user management and the global MinIO browser. Composes
+// with 403: settings and user management. Composes
 // after RequireAdmin (which sets admin_role on the context).
 func RequireSuperAdmin() gin.HandlerFunc {
 	return func(c *gin.Context) {

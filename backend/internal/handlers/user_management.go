@@ -12,12 +12,28 @@ import (
 
 	"github.com/sparklabx/sparklabx/backend/internal/database"
 	"github.com/sparklabx/sparklabx/backend/internal/middleware"
+	"github.com/sparklabx/sparklabx/backend/internal/services"
 )
 
-type UserManagementHandler struct{}
+type UserManagementHandler struct {
+	kernels services.KernelGateway // stops a user's kernel on revoke/delete
+}
 
-func NewUserManagementHandler() *UserManagementHandler {
-	return &UserManagementHandler{}
+func NewUserManagementHandler(kernels services.KernelGateway) *UserManagementHandler {
+	return &UserManagementHandler{kernels: kernels}
+}
+
+// stopKernel tears down the user's kernel pod/container in the background so a
+// revoked or deleted user stops consuming resources right away, not at idle reap.
+func (h *UserManagementHandler) stopKernel(adminID string) {
+	if h.kernels == nil {
+		return
+	}
+	go func() {
+		if err := h.kernels.Destroy(adminID); err != nil {
+			log.Warn().Err(err).Str("admin_id", adminID).Msg("failed to stop kernel of revoked user")
+		}
+	}()
 }
 
 // ListAdmins returns all admin accounts.
@@ -130,6 +146,7 @@ func (h *UserManagementHandler) DeleteAdmin(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "admin not found"})
 		return
 	}
+	h.stopKernel(id)
 	c.JSON(http.StatusOK, gin.H{"message": "admin deleted"})
 }
 
