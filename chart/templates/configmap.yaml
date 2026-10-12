@@ -23,6 +23,8 @@ data:
   KERNEL_POD_MAX_TOTAL: {{ .Values.kernel.maxTotal | quote }}
   CORS_ORIGINS: {{ .Values.backend.cors.origins | quote }}
   LOG_LEVEL: {{ .Values.backend.logLevel | quote }}
+  JWT_EXPIRE_MINUTES: {{ .Values.backend.jwtExpireMinutes | quote }}
+  SIGNUP_ENABLED: {{ .Values.backend.signupEnabled | quote }}
   ENVIRONMENT: "production"
   SERVICE_PORT: "10000"
   # Generic OIDC SSO (clientSecret lives in the Secret). redirectUrl /

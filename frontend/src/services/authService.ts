@@ -5,6 +5,10 @@ const API_BASE = '/api/v1';
 const TOKEN_KEY = 'sparklabx_token';
 const USER_KEY = 'sparklabx_user';
 const ROLE_KEY = 'sparklabx_role';
+// Why the last session ended (expired trial, pending approval...) — shown once on the login page.
+const LOGOUT_REASON_KEY = 'sparklabx_logout_reason';
+// Backend 401 codes that mean "this session is over", from any endpoint.
+const SESSION_END_CODES = new Set(['session_expired', 'pending_approval', 'access_expired', 'account_removed']);
 
 export interface User {
   id: string;
@@ -13,6 +17,7 @@ export interface User {
   name?: string;
   role: 'admin';
   admin_role?: 'admin' | 'superadmin';
+  access_expires_at?: string | null; // trial end; null/absent = no limit
 }
 
 function safeSetItem(key: string, value: string): void {
@@ -79,8 +84,15 @@ class AuthService {
       (error) => {
         if (error.response?.status === 401) {
           const url = error.config?.url || '';
+          const code = error.response?.data?.code;
           const isAuthEndpoint = url.includes('/login') || url.includes('/auth') || url.includes('/admin/me');
-          if (isAuthEndpoint) {
+          if (code && SESSION_END_CODES.has(code) && this.token) {
+            // Session ended server-side (JWT expired, trial over, account removed):
+            // back to the login page with the reason instead of a half-broken UI.
+            try { sessionStorage.setItem(LOGOUT_REASON_KEY, error.response.data.error || 'Session ended'); } catch { /* noop */ }
+            this.clearAuth();
+            window.location.href = '/';
+          } else if (isAuthEndpoint) {
             this.clearAuth();
           }
         }
@@ -103,7 +115,33 @@ class AuthService {
     safeSetItem(TOKEN_KEY, token);
     safeSetItem(ROLE_KEY, 'admin');
     this.setUser(user as unknown as Record<string, unknown>);
+    await this.checkAuthStatus(); // picks up access_expires_at for the countdown
     return { user };
+  }
+
+  // Public trial sign-up; the account stays pending until a superadmin approves it.
+  async register(form: { username: string; email: string; password: string; note: string }): Promise<string> {
+    const response = await axios.post(`${API_BASE}/auth/register`, form);
+    return response.data.message;
+  }
+
+  // Sliding session: swap the JWT for a fresh one so active users are never logged out.
+  async refreshSession(): Promise<void> {
+    if (!this.token) return;
+    const response = await axios.post(`${API_BASE}/auth/refresh`);
+    this.token = response.data.token;
+    safeSetItem(TOKEN_KEY, response.data.token);
+  }
+
+  // One-shot: the reason the previous session was ended, if any.
+  takeLogoutReason(): string | null {
+    try {
+      const reason = sessionStorage.getItem(LOGOUT_REASON_KEY);
+      sessionStorage.removeItem(LOGOUT_REASON_KEY);
+      return reason;
+    } catch {
+      return null;
+    }
   }
 
   async checkAuthStatus(): Promise<boolean> {
@@ -180,6 +218,7 @@ class AuthService {
   // callers must optional-chain — the type reflects that reality.
   async getAuthConfig(): Promise<{
     oidc?: { enabled?: boolean; provider_name?: string };
+    signup_enabled?: boolean;
   }> {
     const response = await axios.get(`${API_BASE}/auth/config`);
     return response.data;

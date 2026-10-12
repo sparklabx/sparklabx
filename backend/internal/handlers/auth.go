@@ -23,6 +23,7 @@ import (
 	"github.com/sparklabx/sparklabx/backend/internal/config"
 	"github.com/sparklabx/sparklabx/backend/internal/connectorauth"
 	"github.com/sparklabx/sparklabx/backend/internal/database"
+	"github.com/sparklabx/sparklabx/backend/internal/middleware"
 	"github.com/sparklabx/sparklabx/backend/internal/models"
 	"github.com/sparklabx/sparklabx/backend/internal/services"
 )
@@ -83,16 +84,21 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
+	// Only after the password matched, so pending/expired state isn't an account oracle.
+	if denial, err := middleware.CheckAccess(admin.ID.String()); err != nil || denial != nil {
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check account access"})
+			return
+		}
+		c.JSON(http.StatusForbidden, gin.H{"error": denial.Message, "code": denial.Code})
+		return
+	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+	tokenString, err := h.signSession(jwt.MapClaims{
 		"admin_id":       admin.ID.String(),
 		"admin_username": admin.Username,
 		"admin_role":     admin.Role,
-		"exp":            time.Now().Add(time.Duration(h.cfg.JWTExpireMinutes) * time.Minute).Unix(),
-		"iat":            time.Now().Unix(),
 	})
-
-	tokenString, err := token.SignedString([]byte(h.cfg.JWTSecretKey))
 	if err != nil {
 		log.Error().Err(err).Msg("failed to sign JWT token")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
@@ -112,9 +118,9 @@ func (h *AuthHandler) Me(c *gin.Context) {
 	db := database.GetDB()
 	var admin models.Admin
 	err := db.QueryRow(
-		"SELECT id, username, email, COALESCE(role, 'admin'), created_at FROM admins WHERE id = $1",
+		"SELECT id, username, email, COALESCE(role, 'admin'), created_at, access_expires_at FROM admins WHERE id = $1",
 		adminID,
-	).Scan(&admin.ID, &admin.Username, &admin.Email, &admin.Role, &admin.CreatedAt)
+	).Scan(&admin.ID, &admin.Username, &admin.Email, &admin.Role, &admin.CreatedAt, &admin.AccessExpiresAt)
 
 	if err != nil {
 		log.Error().Err(err).Str("admin_id", adminID).Msg("failed to fetch admin")
@@ -304,6 +310,11 @@ func (h *AuthHandler) MicrosoftLogin(c *gin.Context) {
 // OAuth allowlist sentinels — completeOAuthLogin returns these so each caller
 // maps them to its own response style (JSON for Google/Microsoft, redirect for
 // generic OIDC).
+// accessDeniedError carries a pending/expired account out of completeOAuthLogin.
+type accessDeniedError struct{ *middleware.AccessDenial }
+
+func (e *accessDeniedError) Error() string { return e.Message }
+
 var (
 	errOAuthNotConfigured = errors.New("oauth allowlist not configured")
 	errOAuthNotPermitted  = errors.New("email not permitted by allowlist")
@@ -332,6 +343,12 @@ func (h *AuthHandler) completeOAuthLogin(email, name string) (token, adminID, ad
 	if err != nil {
 		return "", "", "", "", fmt.Errorf("admin upsert: %w", err)
 	}
+	if denial, cerr := middleware.CheckAccess(adminID); cerr != nil || denial != nil {
+		if cerr != nil {
+			return "", "", "", "", cerr
+		}
+		return "", "", "", "", &accessDeniedError{denial}
+	}
 
 	claims := jwt.MapClaims{
 		"admin_id":       adminID,
@@ -353,7 +370,10 @@ func (h *AuthHandler) completeOAuthLogin(email, name string) (token, adminID, ad
 // writeOAuthError maps a completeOAuthLogin error to a JSON response for the
 // token-POST providers (Google, Microsoft).
 func writeOAuthError(c *gin.Context, err error, provider string) {
+	var denied *accessDeniedError
 	switch {
+	case errors.As(err, &denied):
+		c.JSON(http.StatusForbidden, gin.H{"error": denied.Message, "code": denied.Code})
 	case errors.Is(err, errOAuthNotConfigured):
 		c.JSON(http.StatusForbidden, gin.H{"error": "OAuth login is not configured. Contact an administrator."})
 	case errors.Is(err, errOAuthNotPermitted):

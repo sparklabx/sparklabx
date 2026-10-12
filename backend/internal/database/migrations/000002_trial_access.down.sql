@@ -1,0 +1,4 @@
+ALTER TABLE admins DROP CONSTRAINT IF EXISTS admins_status_check;
+ALTER TABLE admins DROP COLUMN IF EXISTS signup_note;
+ALTER TABLE admins DROP COLUMN IF EXISTS access_expires_at;
+ALTER TABLE admins DROP COLUMN IF EXISTS status;

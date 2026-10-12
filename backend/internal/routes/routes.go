@@ -43,6 +43,9 @@ func Register(router *gin.Engine, cfg *config.Config, h Handlers) {
 func registerAuth(v1 *gin.RouterGroup, cfg *config.Config, h Handlers) {
 	authLimiter := middleware.RateLimit(10, time.Minute)
 	v1.POST("/admin/login", authLimiter, h.Auth.Login)
+	v1.POST("/auth/register", authLimiter, h.Auth.Register)
+	// Sliding session: the SPA swaps its JWT for a fresh one periodically.
+	v1.POST("/auth/refresh", middleware.RequireAdmin(cfg), h.Auth.RefreshToken)
 	v1.POST("/auth/google", authLimiter, h.Auth.GoogleLogin)
 	v1.POST("/auth/microsoft", authLimiter, h.Auth.MicrosoftLogin)
 	// Generic OIDC SSO (enterprise IdP via env). /auth/config tells the login
@@ -52,36 +55,42 @@ func registerAuth(v1 *gin.RouterGroup, cfg *config.Config, h Handlers) {
 	v1.GET("/auth/oidc/callback", authLimiter, h.Auth.OIDCCallback)
 }
 
-// registerAdmin — admin session: profile, user management, MinIO browser,
-// OAuth allowlist (superadmin writes only).
+// registerAdmin — admin session: profile, own password; everything that shows or
+// changes other users or global config (user management, MinIO browser, OAuth
+// allowlist) is superadmin-only, enforced here and hidden in the UI.
 func registerAdmin(v1 *gin.RouterGroup, cfg *config.Config, h Handlers) {
 	admin := v1.Group("")
 	admin.Use(middleware.RequireAdmin(cfg))
 
 	admin.GET("/admin/me", h.Auth.Me)
-
-	// User management
-	admin.GET("/admin/users", h.User.ListAdmins)
-	admin.POST("/admin/users", h.User.CreateAdmin)
-	admin.DELETE("/admin/users/:id", h.User.DeleteAdmin)
+	// Own password for anyone; other users' passwords checked in the handler.
 	admin.PUT("/admin/users/:id/password", h.User.ResetPassword)
-	admin.PUT("/admin/users/:id/role", h.User.UpdateRole)
 
-	// MinIO browser
-	admin.GET("/minio/buckets", h.Storage.MinIOListBuckets)
-	admin.PUT("/minio/buckets/:bucket", h.Storage.MinIOCreateBucket)
-	admin.DELETE("/minio/buckets/:bucket", h.Storage.MinIODeleteBucket)
-	admin.GET("/minio/buckets/:bucket/objects", h.Storage.MinIOListObjects)
-	admin.POST("/minio/buckets/:bucket/upload", h.Storage.MinIOUploadObject)
-	admin.POST("/minio/buckets/:bucket/folder", h.Storage.MinIOCreateFolder)
-	admin.GET("/minio/buckets/:bucket/download", h.Storage.MinIODownloadObject)
-	admin.DELETE("/minio/buckets/:bucket/objects", h.Storage.MinIODeleteObject)
+	super := admin.Group("")
+	super.Use(middleware.RequireSuperAdmin())
 
-	// OAuth allowlist — superadmin writes only
-	admin.GET("/allowed-domains", h.AllowedDomain.List)
-	admin.POST("/allowed-domains", middleware.RequireSuperAdmin(), h.AllowedDomain.Create)
-	admin.PATCH("/allowed-domains/:id", middleware.RequireSuperAdmin(), h.AllowedDomain.Update)
-	admin.DELETE("/allowed-domains/:id", middleware.RequireSuperAdmin(), h.AllowedDomain.Delete)
+	// User management (+ trial approval / time limit)
+	super.GET("/admin/users", h.User.ListAdmins)
+	super.POST("/admin/users", h.User.CreateAdmin)
+	super.DELETE("/admin/users/:id", h.User.DeleteAdmin)
+	super.PUT("/admin/users/:id/role", h.User.UpdateRole)
+	super.PUT("/admin/users/:id/access", h.User.SetAccess)
+
+	// MinIO browser (whole bucket, every user's prefix)
+	super.GET("/minio/buckets", h.Storage.MinIOListBuckets)
+	super.PUT("/minio/buckets/:bucket", h.Storage.MinIOCreateBucket)
+	super.DELETE("/minio/buckets/:bucket", h.Storage.MinIODeleteBucket)
+	super.GET("/minio/buckets/:bucket/objects", h.Storage.MinIOListObjects)
+	super.POST("/minio/buckets/:bucket/upload", h.Storage.MinIOUploadObject)
+	super.POST("/minio/buckets/:bucket/folder", h.Storage.MinIOCreateFolder)
+	super.GET("/minio/buckets/:bucket/download", h.Storage.MinIODownloadObject)
+	super.DELETE("/minio/buckets/:bucket/objects", h.Storage.MinIODeleteObject)
+
+	// OAuth allowlist (settings)
+	super.GET("/allowed-domains", h.AllowedDomain.List)
+	super.POST("/allowed-domains", h.AllowedDomain.Create)
+	super.PATCH("/allowed-domains/:id", h.AllowedDomain.Update)
+	super.DELETE("/allowed-domains/:id", h.AllowedDomain.Delete)
 }
 
 // registerNotebooks — notebooks, per-user storage, cells, local kernel proxy

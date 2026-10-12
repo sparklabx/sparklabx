@@ -99,8 +99,15 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
   const [showPassword, setShowPassword] = useState(false);
   const [oidcEnabled, setOidcEnabled] = useState(false);
   const [oidcName, setOidcName] = useState('SSO');
+  const [signupEnabled, setSignupEnabled] = useState(false);
+  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [info, setInfo] = useState('');
+  const [reg, setReg] = useState({ username: '', email: '', password: '', confirm: '', note: '' });
 
   useEffect(() => {
+    // Why the previous session ended (trial expired, pending approval, ...).
+    const reason = authService.takeLogoutReason();
+    if (reason) setError(reason);
     // Complete a generic-OIDC redirect: the backend hands the app JWT (or an
     // error message) back in the URL fragment.
     const hash = window.location.hash.replace(/^#/, '');
@@ -127,6 +134,7 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
       .then((cfg) => {
         setOidcEnabled(!!cfg.oidc?.enabled);
         if (cfg.oidc?.provider_name) setOidcName(cfg.oidc.provider_name);
+        setSignupEnabled(!!cfg.signup_enabled);
       })
       .catch(() => { /* /auth/config is optional — hide the button on failure */ });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -149,6 +157,7 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setInfo('');
     setLoading(true);
     try {
       await authService.login(identifier, password);
@@ -156,6 +165,26 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
     } catch (err) {
       const e = err as { response?: { data?: { error?: string } } };
       setError(e.response?.data?.error || 'Login failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setInfo('');
+    setLoading(true);
+    try {
+      const message = await authService.register({
+        username: reg.username, email: reg.email, password: reg.password, note: reg.note,
+      });
+      setInfo(message || 'Registration received. An administrator will review it.');
+      setReg({ username: '', email: '', password: '', confirm: '', note: '' });
+      setMode('login');
+    } catch (err) {
+      const e = err as { response?: { data?: { error?: string } } };
+      setError(e.response?.data?.error || 'Registration failed');
     } finally {
       setLoading(false);
     }
@@ -198,6 +227,54 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
               {error}
             </div>
           )}
+          {info && (
+            <div className="p-2.5 text-sm text-emerald-700 bg-emerald-50 dark:text-emerald-300 dark:bg-emerald-950 rounded-md">
+              {info}
+            </div>
+          )}
+
+          {mode === 'register' ? (
+            <form onSubmit={handleRegister} className="space-y-3">
+              <div className="text-sm font-medium">Request trial access</div>
+              <div className="space-y-1.5">
+                <Label htmlFor="reg-username" className="text-xs">Username</Label>
+                <Input id="reg-username" value={reg.username} autoFocus className="h-9"
+                  placeholder="lowercase letters, digits, . _ -"
+                  onChange={(e) => setReg({ ...reg, username: e.target.value })} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="reg-email" className="text-xs">Email</Label>
+                <Input id="reg-email" type="email" value={reg.email} className="h-9"
+                  onChange={(e) => setReg({ ...reg, email: e.target.value })} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="reg-password" className="text-xs">Password (min. 8 characters)</Label>
+                <Input id="reg-password" type="password" value={reg.password} className="h-9"
+                  onChange={(e) => setReg({ ...reg, password: e.target.value })} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="reg-confirm" className="text-xs">Confirm password</Label>
+                <Input id="reg-confirm" type="password" value={reg.confirm} className="h-9"
+                  onChange={(e) => setReg({ ...reg, confirm: e.target.value })} />
+                {reg.confirm && reg.confirm !== reg.password && (
+                  <p className="text-xs text-destructive">Passwords do not match</p>
+                )}
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="reg-note" className="text-xs">What will you use it for? (optional)</Label>
+                <Input id="reg-note" value={reg.note} className="h-9"
+                  onChange={(e) => setReg({ ...reg, note: e.target.value })} />
+              </div>
+              <Button type="submit" className="w-full h-9"
+                disabled={loading || !reg.username || !reg.email || reg.password.length < 8 || reg.password !== reg.confirm}>
+                {loading ? 'Submitting...' : 'Request access'}
+              </Button>
+              <button type="button" onClick={() => { setMode('login'); setError(''); }}
+                className="w-full text-center text-sm text-muted-foreground hover:text-primary transition-colors">
+                Already have an account? Sign in
+              </button>
+            </form>
+          ) : (<>
 
           {/* OAuth buttons are hidden when their client ID isn't configured —
               this lets a stock self-host work via username/password only. */}
@@ -273,6 +350,14 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
               </Button>
             </form>
           )}
+
+          {signupEnabled && (
+            <button type="button" onClick={() => { setMode('register'); setError(''); setInfo(''); }}
+              className="w-full text-center text-sm text-primary hover:underline">
+              New here? Request trial access
+            </button>
+          )}
+          </>)}
         </CardContent>
       </Card>
     </div>

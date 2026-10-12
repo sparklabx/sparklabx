@@ -8,6 +8,7 @@ import { Sidebar } from './components/layout/Sidebar';
 import { Header } from './components/layout/Header';
 import AdminLogin from './components/Admin/AdminLogin';
 import authService from './services/authService';
+import { useCurrentUser } from './hooks/useCurrentUser';
 import './App.css';
 
 // Lazy-loaded pages (notebook-lite scope: just notebooks + storage + admin)
@@ -28,9 +29,27 @@ const queryClient = new QueryClient({
   },
 });
 
+// Settings, user management and the global storage browser are superadmin-only
+// (the API enforces it too); everyone else is sent back to their notebooks.
+const SuperAdminOnly: React.FC<{ children: React.ReactElement }> = ({ children }) => {
+  const { isSuperAdmin } = useCurrentUser();
+  return isSuperAdmin ? children : <Navigate to="/notebooks" replace />;
+};
+
+// Sliding session: refresh the JWT on load and every 30 min while the tab is open,
+// so an active user is never logged out (expiry is days, not minutes).
+const SESSION_REFRESH_MS = 30 * 60 * 1000;
+
 const AdminLayout: React.FC = () => {
   const [collapsed, setCollapsed] = useState(false);
   const location = useLocation();
+
+  useEffect(() => {
+    const refresh = () => { authService.refreshSession().catch(() => { /* 401 handled by the interceptor */ }); };
+    refresh();
+    const t = window.setInterval(refresh, SESSION_REFRESH_MS);
+    return () => window.clearInterval(t);
+  }, []);
   const isNotebook = location.pathname.startsWith('/notebooks/') && location.pathname !== '/notebooks';
 
   // Keep the backend's OIDC passthrough tokens fresh so per-kernel Trino/SSO
@@ -61,9 +80,9 @@ const AdminLayout: React.FC = () => {
             <React.Suspense fallback={<div className="p-10">Loading...</div>}>
               <Routes>
                 <Route path="/" element={<Navigate to="/notebooks" replace />} />
-                <Route path="/admin/storage" element={<StoragePage />} />
-                <Route path="/admin/settings/*" element={<SettingsLayout />} />
-                <Route path="/admin/users" element={<UserManagement />} />
+                <Route path="/admin/storage" element={<SuperAdminOnly><StoragePage /></SuperAdminOnly>} />
+                <Route path="/admin/settings/*" element={<SuperAdminOnly><SettingsLayout /></SuperAdminOnly>} />
+                <Route path="/admin/users" element={<SuperAdminOnly><UserManagement /></SuperAdminOnly>} />
                 <Route path="/notebooks" element={<NotebookListPage />} />
                 <Route path="/notebooks/:id" element={<NotebookPage />} />
                 <Route path="*" element={<Navigate to="/notebooks" replace />} />

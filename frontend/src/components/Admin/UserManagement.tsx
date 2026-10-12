@@ -6,7 +6,8 @@ import { Card, CardContent } from '../ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from '../ui/dialog';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
-import { Trash2, Plus, Key, Search, Eye, EyeOff, Users, ShieldCheck, ShieldOff } from 'lucide-react';
+import { Trash2, Plus, Key, Search, Eye, EyeOff, Users, ShieldCheck, ShieldOff, Clock, UserCheck } from 'lucide-react';
+import { AccessCountdown } from './AccessCountdown';
 import { toast } from 'sonner';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '../ui/alert-dialog';
@@ -30,7 +31,12 @@ interface Admin {
   email: string;
   role: string;
   created_at: string;
+  status: 'pending' | 'active';
+  access_expires_at: string | null;
+  signup_note: string;
 }
+
+const DEFAULT_TRIAL_HOURS = 4;
 
 const UserManagement: React.FC = () => {
   const queryClient = useQueryClient();
@@ -51,6 +57,24 @@ const UserManagement: React.FC = () => {
   const [resetTarget, setResetTarget] = useState<{ id: string; username: string } | null>(null);
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
+
+  // Approve / set access time dialog
+  const [accessTarget, setAccessTarget] = useState<Admin | null>(null);
+  const [accessHours, setAccessHours] = useState(String(DEFAULT_TRIAL_HOURS));
+  const [noLimit, setNoLimit] = useState(false);
+  const openAccess = (a: Admin) => { setAccessTarget(a); setAccessHours(String(DEFAULT_TRIAL_HOURS)); setNoLimit(false); };
+  const accessMutation = useMutation({
+    mutationFn: async ({ id, hours }: { id: string; hours: number }) => {
+      await axios.put(`/api/v1/admin/users/${id}/access`, { hours });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admins'] });
+      toast.success(accessTarget?.status === 'pending' ? `${accessTarget?.username} approved` : 'Access time updated');
+      setAccessTarget(null);
+    },
+  });
+  const hoursValue = Number(accessHours);
+  const hoursValid = noLimit || (Number.isFinite(hoursValue) && hoursValue > 0 && hoursValue <= 8760);
 
   // Fetch admins
   const { data: admins = [], isLoading: adminsLoading } = useQuery<Admin[]>({
@@ -168,15 +192,17 @@ const UserManagement: React.FC = () => {
                 <tr>
                   <th className="text-left py-3 px-4">Username</th>
                   <th className="text-left py-3 px-4">Email</th>
+                  <th className="text-left py-3 px-4">Status</th>
+                  <th className="text-left py-3 px-4">Time left</th>
                   <th className="text-left py-3 px-4">Created</th>
                   <th className="text-left py-3 pl-8 px-4">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {adminsLoading ? (
-                  <tr><td colSpan={4} className="py-8 text-center text-muted-foreground">Loading...</td></tr>
+                  <tr><td colSpan={6} className="py-8 text-center text-muted-foreground">Loading...</td></tr>
                 ) : filteredAdmins.length === 0 ? (
-                  <tr><td colSpan={4} className="py-8 text-center text-muted-foreground">No users found</td></tr>
+                  <tr><td colSpan={6} className="py-8 text-center text-muted-foreground">No users found</td></tr>
                 ) : filteredAdmins.map(admin => (
                   <tr key={admin.id} className="border-b">
                     <td className="py-3 px-4 font-medium">
@@ -185,10 +211,34 @@ const UserManagement: React.FC = () => {
                         <span className="ml-1.5 text-[9px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-600 font-semibold uppercase">super</span>
                       )}
                     </td>
-                    <td className="py-3 px-4 text-muted-foreground">{admin.email}</td>
+                    <td className="py-3 px-4 text-muted-foreground">
+                      {admin.email}
+                      {admin.signup_note && <div className="text-xs italic truncate max-w-[16rem]" title={admin.signup_note}>“{admin.signup_note}”</div>}
+                    </td>
+                    <td className="py-3 px-4">
+                      {admin.status === 'pending'
+                        ? <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-600 font-semibold uppercase">pending</span>
+                        : <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600 font-semibold uppercase">active</span>}
+                    </td>
+                    <td className="py-3 px-4 font-mono text-xs">
+                      {admin.role === 'superadmin' || admin.status === 'pending' ? <span className="text-muted-foreground">—</span>
+                        : admin.access_expires_at ? <AccessCountdown expiresAt={admin.access_expires_at} />
+                        : <span className="text-muted-foreground">no limit</span>}
+                    </td>
                     <td className="py-3 px-4 text-muted-foreground text-xs">{new Date(admin.created_at).toLocaleDateString()}</td>
                     <td className="py-3 px-4">
                       <div className="flex gap-1">
+                        {isSuperAdmin && admin.role !== 'superadmin' && (
+                          admin.status === 'pending' ? (
+                            <Button size="sm" variant="outline" className="h-7 text-xs" title="Approve" onClick={() => openAccess(admin)}>
+                              <UserCheck className="size-3.5 mr-1" /> Approve
+                            </Button>
+                          ) : (
+                            <Button size="sm" variant="ghost" className="h-7 w-7 p-0" title="Set access time" onClick={() => openAccess(admin)}>
+                              <Clock className="size-3.5" />
+                            </Button>
+                          )
+                        )}
                         {isSuperAdmin && (
                           admin.id !== currentUser?.id ? (
                             <Button size="sm" variant="ghost" className="h-7 w-7 p-0" title={admin.role === 'superadmin' ? 'Demote to admin' : 'Promote to superadmin'}
@@ -261,6 +311,37 @@ const UserManagement: React.FC = () => {
             <Button onClick={() => { if (resetTarget) resetMutation.mutate({ id: resetTarget.id, password: newPassword }); setConfirmNewPassword(''); }}
               disabled={resetMutation.isPending || !newPassword || newPassword !== confirmNewPassword}>
               Reset
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Approve / set access time */}
+      <Dialog open={!!accessTarget} onOpenChange={(open) => !open && setAccessTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{accessTarget?.status === 'pending' ? 'Approve' : 'Set access time'}: {accessTarget?.username}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            {accessTarget?.signup_note && (
+              <p className="text-sm text-muted-foreground italic">“{accessTarget.signup_note}”</p>
+            )}
+            <div className="space-y-2">
+              <Label>Access duration (hours, counted from now)</Label>
+              <Input type="number" min={0.5} step={0.5} value={accessHours} disabled={noLimit}
+                onChange={e => setAccessHours(e.target.value)} />
+              <p className="text-xs text-muted-foreground">When it runs out the user is signed out and can no longer log in.</p>
+            </div>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={noLimit} onChange={e => setNoLimit(e.target.checked)} />
+              No time limit
+            </label>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAccessTarget(null)}>Cancel</Button>
+            <Button disabled={!hoursValid || accessMutation.isPending}
+              onClick={() => accessTarget && accessMutation.mutate({ id: accessTarget.id, hours: noLimit ? 0 : hoursValue })}>
+              {accessTarget?.status === 'pending' ? 'Approve' : 'Save'}
             </Button>
           </DialogFooter>
         </DialogContent>

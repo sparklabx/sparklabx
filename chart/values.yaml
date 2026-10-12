@@ -186,6 +186,11 @@ backend:
   cors:
     origins: "*"          # tighten in production to your real domain
   logLevel: info
+  # Session JWT lifetime. The SPA refreshes it every 30 min while open (sliding),
+  # so this is effectively the idle timeout.
+  jwtExpireMinutes: 10080 # 7 days
+  # Public "Request trial access" form; sign-ups wait for superadmin approval.
+  signupEnabled: true
 
 # ─────────────────────────────────────────────────────────────
 # Generic OIDC SSO (optional). Any enterprise IdP via OpenID Connect

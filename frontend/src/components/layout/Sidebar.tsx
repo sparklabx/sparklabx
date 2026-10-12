@@ -12,6 +12,7 @@ import {
 import authService from '@/services/authService';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useTheme } from '@/components/theme-provider';
+import { AccessCountdown } from '@/components/Admin/AccessCountdown';
 
 interface SidebarProps {
   collapsed: boolean;
@@ -21,7 +22,7 @@ interface SidebarProps {
 export function Sidebar({ collapsed, onCollapse }: SidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
-  const { user: currentUser } = useCurrentUser();
+  const { user: currentUser, isSuperAdmin } = useCurrentUser();
   const { theme } = useTheme();
   const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
 
@@ -71,6 +72,7 @@ export function Sidebar({ collapsed, onCollapse }: SidebarProps) {
             {!collapsed && <span className="flex-1 text-left">Notebooks</span>}
           </button>
 
+          {isSuperAdmin && (<>
           <button
             onClick={() => navigate('/admin/storage')}
             className={cn(
@@ -96,12 +98,26 @@ export function Sidebar({ collapsed, onCollapse }: SidebarProps) {
             <Users className="size-4" />
             {!collapsed && <span className="flex-1 text-left">Users</span>}
           </button>
+          </>)}
         </div>
       </nav>
 
       {/* Bottom Section */}
       <div className="mt-auto px-2 pb-2 space-y-1">
+        {/* Trial countdown (time-boxed accounts only) */}
+        {currentUser?.access_expires_at && !collapsed && (
+          <div className="px-3 py-1.5 text-xs text-muted-foreground flex items-center justify-between">
+            <span>Trial time left</span>
+            <AccessCountdown
+              expiresAt={currentUser.access_expires_at}
+              className="font-mono font-medium"
+              onExpire={() => { void authService.checkAuthStatus().then(() => { window.location.href = '/'; }); }}
+            />
+          </div>
+        )}
+
         {/* Settings */}
+        {isSuperAdmin && (
         <button
           onClick={() => navigate('/admin/settings')}
           className={cn(
@@ -114,6 +130,7 @@ export function Sidebar({ collapsed, onCollapse }: SidebarProps) {
           <Settings className="size-4" />
           {!collapsed && <span>Settings</span>}
         </button>
+        )}
 
         {/* User Profile */}
         <div className={cn(

@@ -117,6 +117,7 @@ func (h *AuthHandler) AuthConfig(c *gin.Context) {
 			"enabled":       h.cfg.OIDCEnabled(),
 			"provider_name": h.cfg.OIDCProviderName,
 		},
+		"signup_enabled": h.cfg.SignupEnabled,
 	})
 }
 
@@ -355,7 +356,10 @@ func (h *AuthHandler) OIDCCallback(c *gin.Context) {
 	// Shared tail with the Google/Microsoft flows (allowlist → upsert → app JWT).
 	appToken, adminID, _, adminRole, err := h.completeOAuthLogin(info.Email, name)
 	if err != nil {
+		var denied *accessDeniedError
 		switch {
+		case errors.As(err, &denied):
+			h.oidcRespond(c, silent, "", denied.Message)
 		case errors.Is(err, errOAuthNotConfigured):
 			h.oidcRespond(c, silent, "", "SSO login is not configured. Contact an administrator.")
 		case errors.Is(err, errOAuthNotPermitted):

@@ -13,6 +13,8 @@ type Admin struct {
 	PasswordHash string    `json:"-"`
 	Role         string    `json:"role"`
 	CreatedAt    time.Time `json:"created_at"`
+	// Trial time limit; nil = none. Only filled by /admin/me.
+	AccessExpiresAt *time.Time `json:"access_expires_at,omitempty"`
 }
 
 type LoginRequest struct {

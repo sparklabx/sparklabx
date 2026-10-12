@@ -48,6 +48,9 @@ func RequireAdmin(cfg *config.Config) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		if abortIfDenied(c, adminID) {
+			return
+		}
 
 		c.Set("admin_id", adminID)
 		c.Set("role", "admin")
@@ -136,6 +139,9 @@ func RequireAuth(cfg *config.Config) gin.HandlerFunc {
 		}
 
 		if adminID, ok := claims["admin_id"].(string); ok {
+			if abortIfDenied(c, adminID) {
+				return
+			}
 			c.Set("admin_id", adminID)
 			c.Set("role", "admin")
 			if u, ok := claims["admin_username"].(string); ok {
@@ -163,13 +169,12 @@ func IsSuperAdmin(c *gin.Context) bool {
 }
 
 // RequireSuperAdmin is a route-level guard that rejects non-superadmin admins
-// with 403. Use to protect settings-write endpoints (cloud creds, allowed
-// domains) where a regular admin shouldn't be able to mutate global config.
-// Composes after RequireAdmin (which sets admin_role on the context).
+// with 403: settings, user management and the global MinIO browser. Composes
+// after RequireAdmin (which sets admin_role on the context).
 func RequireSuperAdmin() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !IsSuperAdmin(c) {
-			c.JSON(http.StatusForbidden, gin.H{"error": "only superadmin can change this setting"})
+			c.JSON(http.StatusForbidden, gin.H{"error": "administrator access required"})
 			c.Abort()
 			return
 		}
@@ -210,7 +215,7 @@ func parseJWT(c *gin.Context, cfg *config.Config) (jwt.MapClaims, error) {
 
 	if err != nil || !token.Valid {
 		log.Warn().Err(err).Msg("invalid JWT token")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token", "code": CodeSessionExpired})
 		c.Abort()
 		return nil, err
 	}
