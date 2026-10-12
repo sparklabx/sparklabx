@@ -70,6 +70,7 @@ req POST /auth/refresh "$T2"; check "expired trial cannot refresh" 401 access_ex
 req POST /admin/login "" '{"username":"t'$U'","password":"wrong-pass"}'; check "wrong password stays generic" 401
 req POST /admin/login "" '{"username":"t'$U'","password":"Password123"}'; check "expired trial cannot log in" 403 access_expired
 
+sleep 61 # stay under the auth rate limit (10 req/min per IP on login/register)
 req PUT /admin/users/$ID/access "$ADMIN" '{"hours":0}'; check "set no limit" 200
 req POST /admin/login "" '{"username":"t'$U'","password":"Password123"}'; check "unlimited user logs in again" 200
 T3=$(echo "$BODY" | j "['token']")
