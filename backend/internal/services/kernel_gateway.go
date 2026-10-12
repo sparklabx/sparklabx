@@ -172,6 +172,11 @@ type KernelGatewaySettings struct {
 	PodMemoryRequest string
 	PodCPULimit      string
 	PodMemoryLimit   string
+
+	// Persistent /workspace/<slug>/local-file (k8s_per_user only); empty SyncImage = off.
+	SyncImage      string
+	Bucket         string
+	LocalFilesSize string
 }
 
 // resolveConnectorsManifest returns the SPARKLABX_CONNECTORS JSON to inject for
@@ -246,6 +251,9 @@ func NewKernelGateway(s KernelGatewaySettings) (KernelGateway, error) {
 			MemoryRequest:              s.PodMemoryRequest,
 			CPULimit:                   s.PodCPULimit,
 			MemoryLimit:                s.PodMemoryLimit,
+			SyncImage:                  s.SyncImage,
+			Bucket:                     s.Bucket,
+			LocalFilesSize:             s.LocalFilesSize,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("init K8sPerUserGateway: %w", err)

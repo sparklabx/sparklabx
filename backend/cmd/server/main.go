@@ -143,11 +143,17 @@ func main() {
 		PodMemoryRequest:           cfg.KernelPodMemoryRequest,
 		PodCPULimit:                cfg.KernelPodCPULimit,
 		PodMemoryLimit:             cfg.KernelPodMemoryLimit,
+		SyncImage:                  cfg.KernelSyncImage,
+		Bucket:                     cfg.MinIOWorkspaceBucket,
+		LocalFilesSize:             cfg.KernelLocalFilesSize,
 	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to initialize kernel gateway")
 	}
 	localKernelHandler := handlers.NewLocalKernelHandler(cfg, kernelGateway)
+	if lf, ok := kernelGateway.(services.LocalFileStore); ok {
+		storageHandler.SetLocalFiles(lf) // "local" scope reads/writes the running kernel directly
+	}
 	handlers.LoadKernelMapFromDB()
 	notebookHandler := handlers.NewNotebookHandler()
 	mailer := services.NewMailer(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.MailFrom)

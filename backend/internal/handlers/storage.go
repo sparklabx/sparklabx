@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -32,6 +33,22 @@ type StorageHandler struct {
 	minioSecretKey      string
 	workspaceBucket     string   // single shared bucket; users isolated via prefix
 	minioBucketVerified sync.Map // bucket name → struct{} once create-or-already-exists succeeded
+	// Live access to a running kernel's /workspace/<slug>/local-file ("local" scope);
+	// nil (non-k8s modes) or no running pod → the MinIO copy local-files/<slug>/.
+	localFiles services.LocalFileStore
+}
+
+// SetLocalFiles wires the kernel gateway's live local-file access (k8s mode).
+func (h *StorageHandler) SetLocalFiles(lf services.LocalFileStore) { h.localFiles = lf }
+
+// livePod returns the caller's admin id when scope "local" should go to their
+// running kernel pod instead of MinIO.
+func (h *StorageHandler) livePod(c *gin.Context, scope string) (string, bool) {
+	if scope != "local" || h.localFiles == nil {
+		return "", false
+	}
+	id := c.GetString("admin_id")
+	return id, id != "" && h.localFiles.LocalFilesLive(c.Request.Context(), id)
 }
 
 func NewStorageHandler(cfg *config.Config) *StorageHandler {
@@ -106,6 +123,7 @@ const publicStoragePrefix = "public/"
 // resolveScope translates a virtual scope name ("my" or "public") into a real
 // (bucket, prefix, canWrite) tuple. Used by MinIO browser endpoints to keep
 // callers blind to the underlying single-bucket layout.
+//   - "local"  → the kernel's local-file folder (live pod, or its MinIO copy), R/W
 //   - "my"     → user's private space, R/W
 //   - "public" → shared read-only space, write requires superadmin
 func (h *StorageHandler) resolveScope(c *gin.Context, scope string) (bucket, prefix string, canWrite bool, err error) {
@@ -116,6 +134,13 @@ func (h *StorageHandler) resolveScope(c *gin.Context, scope string) (bucket, pre
 			return "", "", false, err
 		}
 		return h.workspaceBucket, p, true, nil
+	case "local":
+		// Persisted copy of the kernel's /workspace/<slug>/local-file (see livePod).
+		p, err := h.userPrefix(c)
+		if err != nil {
+			return "", "", false, err
+		}
+		return h.workspaceBucket, services.LocalFilesPrefix + strings.TrimSuffix(strings.TrimPrefix(p, "users/"), "/") + "/", true, nil
 	case "public":
 		// Free-for-all share space — any authenticated user can R/W. Curated
 		// (superadmin-only-write) is reserved for Phase B workspaces with roles.
@@ -358,7 +383,8 @@ func (h *StorageHandler) MinIOListBuckets(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"buckets": []gin.H{
-			{"name": "my", "display": "My Space", "can_write": true},
+			{"name": "local", "display": "Local files", "can_write": true},
+			{"name": "my", "display": "S3 (My Space)", "can_write": true},
 			{"name": "public", "display": "Public", "can_write": true},
 		},
 		"available": true,
@@ -443,6 +469,31 @@ func (h *StorageHandler) MinIOListObjects(c *gin.Context) {
 		return
 	}
 	scope := c.Param("bucket")
+	if uid, ok := h.livePod(c, scope); ok {
+		rel := c.Query("prefix")
+		entries, err := h.localFiles.LocalList(c.Request.Context(), uid, rel)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list local files"})
+			return
+		}
+		base := strings.TrimPrefix(path.Clean("/"+rel), "/")
+		if base != "" {
+			base += "/"
+		}
+		files := make([]s3FileInfo, 0, len(entries))
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name, ".uploading") {
+				continue // in-flight upload (see LocalWrite)
+			}
+			f := s3FileInfo{Key: base + e.Name, Name: e.Name, Size: e.Size, LastModified: e.ModTime.Format(time.RFC3339)}
+			if e.IsDir {
+				f.Key, f.IsFolder, f.Size, f.LastModified = base+e.Name+"/", true, 0, ""
+			}
+			files = append(files, f)
+		}
+		c.JSON(http.StatusOK, gin.H{"files": files, "prefix": rel, "bucket": scope, "live": true})
+		return
+	}
 	bucket, scopePrefix, _, err := h.resolveScope(c, scope)
 	if err != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
@@ -474,6 +525,21 @@ func (h *StorageHandler) MinIOCreateFolder(c *gin.Context) {
 		return
 	}
 	scope := c.Param("bucket")
+	if uid, ok := h.livePod(c, scope); ok {
+		var req struct {
+			Key string `json:"key" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "key required"})
+			return
+		}
+		if err := h.localFiles.LocalMkdir(c.Request.Context(), uid, req.Key); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create folder"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"success": true, "key": req.Key})
+		return
+	}
 	bucket, scopePrefix, canWrite, err := h.resolveScope(c, scope)
 	if err != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
@@ -509,6 +575,34 @@ func (h *StorageHandler) MinIOUploadObject(c *gin.Context) {
 		return
 	}
 	scope := c.Param("bucket")
+	if uid, ok := h.livePod(c, scope); ok {
+		file, header, err := c.Request.FormFile("file")
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "missing file"})
+			return
+		}
+		defer file.Close()
+		subPath := c.PostForm("path")
+		if subPath == "" {
+			subPath = c.Query("path")
+		}
+		rel, err := joinKey("", subPath, header.Filename)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		data, err := io.ReadAll(file)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read file"})
+			return
+		}
+		if err := h.localFiles.LocalWrite(c.Request.Context(), uid, rel, data); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to write to the kernel"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"success": true, "key": rel, "name": header.Filename, "size": len(data)})
+		return
+	}
 	bucket, scopePrefix, canWrite, err := h.resolveScope(c, scope)
 	if err != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
@@ -564,6 +658,20 @@ func (h *StorageHandler) MinIODownloadObject(c *gin.Context) {
 		return
 	}
 	scope := c.Param("bucket")
+	if uid, ok := h.livePod(c, scope); ok {
+		rel := c.Query("key")
+		data, err := h.localFiles.LocalRead(c.Request.Context(), uid, rel)
+		if rel == "" || err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
+			return
+		}
+		if c.Query("preview") == "true" && len(data) > 1024*1024 {
+			data = data[:1024*1024]
+		}
+		c.Header("Content-Disposition", fmt.Sprintf("inline; filename=%q", path.Base(rel)))
+		c.Data(http.StatusOK, http.DetectContentType(data), data)
+		return
+	}
 	bucket, scopePrefix, _, err := h.resolveScope(c, scope)
 	if err != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
@@ -608,6 +716,19 @@ func (h *StorageHandler) MinIODeleteObject(c *gin.Context) {
 		return
 	}
 	scope := c.Param("bucket")
+	if uid, ok := h.livePod(c, scope); ok {
+		rel := c.Query("key")
+		if rel == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "key required"})
+			return
+		}
+		if err := h.localFiles.LocalDelete(c.Request.Context(), uid, rel); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"success": true})
+		return
+	}
 	bucket, scopePrefix, canWrite, err := h.resolveScope(c, scope)
 	if err != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})

@@ -97,6 +97,10 @@ type Config struct {
 	KernelPodMemoryRequest string
 	KernelPodCPULimit      string
 	KernelPodMemoryLimit   string
+	// Persistent /workspace/<slug>/local-file in each kernel pod (k8s_per_user):
+	// MinIO client image used to restore/mirror it; empty disables the feature.
+	KernelSyncImage      string
+	KernelLocalFilesSize string // emptyDir sizeLimit
 
 	// Per-notebook resource presets (k8s_per_user only). When the preset list is
 	// empty the feature is disabled and every pod uses the KernelPod*Limit values
@@ -185,6 +189,8 @@ func Load() *Config {
 		KernelPodMemoryRequest: getEnv("KERNEL_POD_MEMORY_REQUEST", "1Gi"),
 		KernelPodCPULimit:      getEnv("KERNEL_POD_CPU_LIMIT", "2000m"),
 		KernelPodMemoryLimit:   getEnv("KERNEL_POD_MEMORY_LIMIT", "4Gi"),
+		KernelSyncImage:        getEnv("KERNEL_SYNC_IMAGE", "bitnamilegacy/minio-client:2025.7.21"),
+		KernelLocalFilesSize:   getEnv("KERNEL_LOCAL_FILES_SIZE", "5Gi"),
 
 		KernelResourcePresets:       parseResourcePresets(getEnv("KERNEL_RESOURCE_PRESETS", "")),
 		KernelResourceDefaultPreset: getEnv("KERNEL_RESOURCE_DEFAULT_PRESET", ""),

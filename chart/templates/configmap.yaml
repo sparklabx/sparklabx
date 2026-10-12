@@ -21,6 +21,8 @@ data:
   KERNEL_POD_IMAGE: "{{ .Values.image.kernel.repository }}:{{ .Values.image.kernel.tag }}"
   KERNEL_POD_IDLE_MINUTES: {{ .Values.kernel.idleMinutes | quote }}
   KERNEL_POD_MAX_TOTAL: {{ .Values.kernel.maxTotal | quote }}
+  KERNEL_SYNC_IMAGE: {{ .Values.kernel.localFiles.syncImage | quote }}
+  KERNEL_LOCAL_FILES_SIZE: {{ .Values.kernel.localFiles.size | quote }}
   CORS_ORIGINS: {{ .Values.backend.cors.origins | quote }}
   LOG_LEVEL: {{ .Values.backend.logLevel | quote }}
   JWT_EXPIRE_MINUTES: {{ .Values.backend.jwtExpireMinutes | quote }}
