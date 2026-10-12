@@ -21,7 +21,7 @@ import (
 //   - a MinIO user account named after their app username slug
 //   - a randomly-generated secret stored AES-GCM encrypted in the DB
 //   - an inline policy granting R/W only on `<bucket>/users/<slug>/*` and
-//     `<bucket>/public/*`. All other prefixes are implicitly denied.
+//     `<bucket>/local-files/<slug>/*`. All other prefixes are implicitly denied.
 //
 // The kernel pod injects these per-user creds as AWS_ACCESS_KEY_ID /
 // AWS_SECRET_ACCESS_KEY so spark.read.csv("s3a://<bucket>/users/other/...")
@@ -154,10 +154,9 @@ func userPolicyName(slug string) string {
 
 // buildUserPolicy creates an inline policy JSON granting:
 //   - full R/W on bucket/users/<slug>/*
-//   - full R/W on bucket/public/*  (free-for-all share space)
 //   - full R/W on bucket/local-files/<slug>/* (persisted copy of the kernel's
 //     /workspace/<slug>/local-file; not browsable in the UI, which only shows
-//     users/<slug>/ and public/)
+//     users/<slug>/ and the live kernel)
 //   - list bucket scoped to those prefixes (so navigation and sync work)
 //
 // Everything outside those prefixes is implicitly denied. Bucket-level ops
@@ -178,13 +177,12 @@ func buildUserPolicy(bucket, slug string) ([]byte, error) {
 				},
 				"Resource": []string{
 					fmt.Sprintf("arn:aws:s3:::%s/users/%s/*", bucket, slug),
-					fmt.Sprintf("arn:aws:s3:::%s/public/*", bucket),
 					fmt.Sprintf("arn:aws:s3:::%s/%s%s/*", bucket, LocalFilesPrefix, slug),
 				},
 			},
 			{
 				// ListBucket is scoped via prefix — caller can only see entries
-				// under their own users/<slug>/* or public/*.
+				// under their own users/<slug>/* or local-files/<slug>/*.
 				"Effect":   "Allow",
 				"Action":   []string{"s3:ListBucket"},
 				"Resource": fmt.Sprintf("arn:aws:s3:::%s", bucket),
@@ -193,8 +191,6 @@ func buildUserPolicy(bucket, slug string) ([]byte, error) {
 						"s3:prefix": []string{
 							fmt.Sprintf("users/%s/*", slug),
 							fmt.Sprintf("users/%s", slug),
-							"public/*",
-							"public",
 							fmt.Sprintf("%s%s/*", LocalFilesPrefix, slug),
 							fmt.Sprintf("%s%s", LocalFilesPrefix, slug),
 						},
