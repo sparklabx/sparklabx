@@ -835,7 +835,8 @@ func (g *K8sPerUserGateway) addLocalFiles(pod *corev1.Pod, slug string) {
 	local := home + "/local-file/"
 	remote := "s3/" + g.cfg.Bucket + "/" + LocalFilesPrefix + slug + "/"
 	const alias = `export MC_CONFIG_DIR=/tmp/.mc; mc alias set s3 "$S3_ENDPOINT" "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" >/dev/null && `
-	push := "mc mirror --overwrite --remove " + local + " " + remote
+	// *.uploading = in-flight UI uploads (LocalWrite renames them when complete).
+	push := "mc mirror --overwrite --remove --exclude '*.uploading' " + local + " " + remote
 
 	kernel := &pod.Spec.Containers[0]
 	syncEnv := append([]corev1.EnvVar(nil), kernel.Env...) // AWS_* (user creds) + S3_ENDPOINT

@@ -30,7 +30,7 @@ func TestLocalFilesPodSpec(t *testing.T) {
 	if sync.RestartPolicy == nil || *sync.RestartPolicy != corev1.ContainerRestartPolicyAlways {
 		t.Fatal("sync must be a native sidecar (restartPolicy Always)")
 	}
-	if !strings.Contains(sync.Command[2], "mc mirror --overwrite --remove /workspace/alice/local-file/ s3/workspace/local-files/alice/ --watch") {
+	if !strings.Contains(sync.Command[2], "mc mirror --overwrite --remove --exclude '*.uploading' /workspace/alice/local-file/ s3/workspace/local-files/alice/ --watch") {
 		t.Fatalf("sync command: %s", sync.Command[2])
 	}
 	if sync.Lifecycle == nil || sync.Lifecycle.PreStop == nil {

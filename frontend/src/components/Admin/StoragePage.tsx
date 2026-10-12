@@ -222,7 +222,7 @@ const StoragePage: React.FC = () => {
                     <HardDrive className="h-3.5 w-3.5 shrink-0" />
                   )}
                   <span className="truncate">
-                    {b.display || (b.name === 'my' ? 'My Space' : b.name === 'public' ? 'Public' : b.name)}
+                    {b.display || (b.name === 'my' ? 'S3' : b.name === 'public' ? 'Public' : b.name)}
                   </span>
                 </button>
                 {/* System buckets ('my', 'public') are not user-managed
