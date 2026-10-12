@@ -31,6 +31,21 @@ ROW=$(echo "$BODY" | python3 -c "import json,sys; u=[u for u in json.load(sys.st
 [ "$ROW" = "pending demo" ] && echo "PASS listed as pending with note" || { echo "FAIL row=$ROW"; fail=1; }
 req PUT /admin/users/$RID/access "$ADMIN" '{}'; check "approve registration (default 4h)" 200
 req POST /admin/login "" '{"username":"'$U'","password":"Password123"}'; check "registered user has no password login" 401
+# Reject: request removed (can re-apply), applicant mailed.
+req POST /auth/register "" '{"email":"r'$U'@ex.com"}'; check "register second applicant" 201
+req GET /admin/users "$ADMIN"
+RJ=$(echo "$BODY" | python3 -c "import json,sys; print([u['id'] for u in json.load(sys.stdin) if u['email']=='r$U@ex.com'][0])")
+req POST /admin/users/$RJ/reject "$ADMIN"; check "reject pending request" 200
+req POST /admin/users/$RJ/reject "$ADMIN"; check "reject is pending-only / idempotent" 404
+req POST /admin/users/$RID/reject "$ADMIN"; check "cannot reject an approved user" 404
+req POST /auth/register "" '{"email":"r'$U'@ex.com"}'; check "rejected email can apply again" 201
+# Mail (only when a Mailpit API is given, e.g. MAILPIT=http://localhost:18025)
+if [ -n "${MAILPIT:-}" ]; then
+  sleep 2
+  mails=$(curl -s "$MAILPIT/api/v1/messages" | python3 -c "import json,sys; print('\n'.join(m['To'][0]['Address']+'|'+m['Subject'] for m in json.load(sys.stdin)['messages']))")
+  echo "$mails" | grep -q "^$U@ex.com|Your SparkLabX trial is approved" && echo "PASS approval mail sent" || { echo "FAIL approval mail: $mails"; fail=1; }
+  echo "$mails" | grep -q "^r$U@ex.com|Your SparkLabX trial request" && echo "PASS rejection mail sent" || { echo "FAIL rejection mail: $mails"; fail=1; }
+fi
 
 # Time-boxed session: a password user created by the superadmin (Google login can't run headless).
 req POST /admin/users "$ADMIN" '{"username":"t'$U'","email":"t'$U'@ex.com","password":"Password123"}'; check "superadmin creates user" 201

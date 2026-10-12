@@ -111,6 +111,15 @@ secrets:
     clientSecret: ""
     tenantId: ""
 
+  # Approve/reject notification mail over SMTP (STARTTLS), e.g. AWS SES
+  # (email-smtp.<region>.amazonaws.com:587). Leave host blank to disable.
+  smtp:
+    host: ""
+    port: 587
+    username: ""
+    password: ""
+    from: ""              # e.g. "SparkLabX <support@sparklabx.com>"
+
 # ─────────────────────────────────────────────────────────────
 # Postgres
 #
@@ -191,6 +200,8 @@ backend:
   jwtExpireMinutes: 10080 # 7 days
   # Public "Request trial access" form; sign-ups wait for superadmin approval.
   signupEnabled: true
+  # Public URL used in notification mail links. Default: https://<ingress.host>.
+  appUrl: ""
 
 # ─────────────────────────────────────────────────────────────
 # Generic OIDC SSO (optional). Any enterprise IdP via OpenID Connect

@@ -150,7 +150,11 @@ func main() {
 	localKernelHandler := handlers.NewLocalKernelHandler(cfg, kernelGateway)
 	handlers.LoadKernelMapFromDB()
 	notebookHandler := handlers.NewNotebookHandler()
-	userHandler := handlers.NewUserManagementHandler(kernelGateway)
+	mailer := services.NewMailer(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.MailFrom)
+	if mailer == nil {
+		log.Info().Msg("SMTP not configured; approve/reject mails are disabled")
+	}
+	userHandler := handlers.NewUserManagementHandler(kernelGateway, mailer, cfg.AppURL)
 	allowedDomainHandler := handlers.NewAllowedDomainHandler()
 
 	if cfg.Environment == "production" {

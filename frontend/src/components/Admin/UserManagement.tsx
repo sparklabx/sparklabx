@@ -83,6 +83,16 @@ const UserManagement: React.FC = () => {
       setRevokeTarget(null);
     },
   });
+  // Reject a pending sign-up: request removed, applicant notified by mail.
+  const [rejectTarget, setRejectTarget] = useState<Admin | null>(null);
+  const rejectMutation = useMutation({
+    mutationFn: async (id: string) => { await axios.post(`/api/v1/admin/users/${id}/reject`); },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admins'] });
+      toast.success(`Request from ${rejectTarget?.email} rejected`);
+      setRejectTarget(null);
+    },
+  });
   const isExpired = (a: Admin) => !!a.access_expires_at && new Date(a.access_expires_at).getTime() <= Date.now();
 
   const hoursValue = Number(accessHours);
@@ -244,9 +254,15 @@ const UserManagement: React.FC = () => {
                       <div className="flex gap-1">
                         {isSuperAdmin && admin.role !== 'superadmin' && (
                           admin.status === 'pending' ? (
-                            <Button size="sm" variant="outline" className="h-7 text-xs" title="Approve" onClick={() => openAccess(admin)}>
-                              <UserCheck className="size-3.5 mr-1" /> Approve
-                            </Button>
+                            <>
+                              <Button size="sm" variant="outline" className="h-7 text-xs" title="Approve" onClick={() => openAccess(admin)}>
+                                <UserCheck className="size-3.5 mr-1" /> Approve
+                              </Button>
+                              <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive hover:text-destructive" title="Reject"
+                                onClick={() => setRejectTarget(admin)}>
+                                Reject
+                              </Button>
+                            </>
                           ) : (
                             <>
                               <Button size="sm" variant="ghost" className="h-7 w-7 p-0" title="Set access time" onClick={() => openAccess(admin)}>
@@ -368,6 +384,25 @@ const UserManagement: React.FC = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Reject confirmation */}
+      <AlertDialog open={!!rejectTarget} onOpenChange={(open) => !open && setRejectTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reject request from {rejectTarget?.email}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The request is removed and the applicant receives an email that it was not approved.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => rejectTarget && rejectMutation.mutate(rejectTarget.id)}>
+              Reject
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Revoke confirmation */}
       <AlertDialog open={!!revokeTarget} onOpenChange={(open) => !open && setRevokeTarget(null)}>

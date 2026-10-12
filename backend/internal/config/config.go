@@ -18,6 +18,14 @@ type Config struct {
 	// Public trial sign-up form (accounts wait for superadmin approval).
 	SignupEnabled bool
 
+	// Notification mail (approve/reject). Empty SMTPHost = no mail.
+	SMTPHost     string
+	SMTPPort     int
+	SMTPUsername string
+	SMTPPassword string
+	MailFrom     string // "SparkLabX <support@sparklabx.com>"
+	AppURL       string // public URL used in mail links
+
 	// Seed admin
 	SeedAdminUsername string
 	SeedAdminEmail    string
@@ -118,6 +126,12 @@ func Load() *Config {
 		JWTSecretKey:     getEnv("JWT_SECRET_KEY", ""),
 		JWTExpireMinutes: getEnvInt("JWT_EXPIRE_MINUTES", 7*24*60),
 		SignupEnabled:    getEnv("SIGNUP_ENABLED", "true") == "true",
+		SMTPHost:         getEnv("SMTP_HOST", ""),
+		SMTPPort:         getEnvInt("SMTP_PORT", 587),
+		SMTPUsername:     getEnv("SMTP_USERNAME", ""),
+		SMTPPassword:     getEnv("SMTP_PASSWORD", ""),
+		MailFrom:         getEnv("MAIL_FROM", ""),
+		AppURL:           strings.TrimRight(getEnv("APP_URL", ""), "/"),
 
 		SeedAdminUsername: getEnv("SEED_ADMIN_USERNAME", ""),
 		SeedAdminEmail:    getEnv("SEED_ADMIN_EMAIL", ""),

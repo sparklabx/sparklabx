@@ -25,6 +25,7 @@ data:
   LOG_LEVEL: {{ .Values.backend.logLevel | quote }}
   JWT_EXPIRE_MINUTES: {{ .Values.backend.jwtExpireMinutes | quote }}
   SIGNUP_ENABLED: {{ .Values.backend.signupEnabled | quote }}
+  APP_URL: {{ .Values.backend.appUrl | default $appURL | quote }}
   ENVIRONMENT: "production"
   SERVICE_PORT: "10000"
   # Generic OIDC SSO (clientSecret lives in the Secret). redirectUrl /

@@ -87,6 +87,7 @@ func registerAdmin(v1 *gin.RouterGroup, cfg *config.Config, h Handlers) {
 	super.PUT("/admin/users/:id/role", h.User.UpdateRole)
 	super.PUT("/admin/users/:id/access", h.User.SetAccess)
 	super.POST("/admin/users/:id/revoke", h.User.Revoke)
+	super.POST("/admin/users/:id/reject", h.User.Reject)
 
 	// OAuth allowlist (settings)
 	super.GET("/allowed-domains", h.AllowedDomain.List)

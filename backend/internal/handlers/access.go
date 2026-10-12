@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"database/sql"
+	"errors"
 	"net/http"
 	"regexp"
 	"strings"
@@ -124,21 +126,37 @@ func (h *UserManagementHandler) SetAccess(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "hours must be between 0 (no limit) and 8760"})
 		return
 	}
-	var expires interface{} // NULL = no limit
+	var expires *time.Time // nil = no limit
 	if hours > 0 {
-		expires = time.Now().Add(time.Duration(hours * float64(time.Hour)))
+		t := time.Now().Add(time.Duration(hours * float64(time.Hour)))
+		expires = &t
 	}
-	res, err := database.GetDB().Exec(
-		"UPDATE admins SET status = 'active', access_expires_at = $1 WHERE id = $2 AND COALESCE(role, 'admin') <> 'superadmin'",
+	// Old status from the same statement, to mail only on pending -> active.
+	var email, oldStatus string
+	err := database.GetDB().QueryRow(
+		`UPDATE admins a SET status = 'active', access_expires_at = $1
+		 FROM (SELECT id, status FROM admins WHERE id = $2 FOR UPDATE) old
+		 WHERE a.id = old.id AND COALESCE(a.role, 'admin') <> 'superadmin'
+		 RETURNING a.email, old.status`,
 		expires, c.Param("id"),
-	)
+	).Scan(&email, &oldStatus)
+	if errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found (superadmins have no time limit)"})
+		return
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update access"})
 		return
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "user not found (superadmins have no time limit)"})
-		return
+	if oldStatus == "pending" {
+		until := "with no time limit"
+		if expires != nil {
+			until = "until " + expires.UTC().Format("2006-01-02 15:04 UTC")
+		}
+		h.mailer.SendAsync(email, "Your SparkLabX trial is approved",
+			"Hello,\n\nYour SparkLabX trial request has been approved. You can use SparkLabX "+until+".\n\n"+
+				"Sign in with Google using this email address ("+email+"):\n"+h.appURL+"\n\n"+
+				"Need help or more time? Reply to support@sparklabx.com.\n\nThe SparkLabX team\n")
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "access updated", "access_expires_at": expires})
 }
@@ -162,4 +180,26 @@ func (h *UserManagementHandler) Revoke(c *gin.Context) {
 	}
 	h.stopKernel(id)
 	c.JSON(http.StatusOK, gin.H{"message": "access revoked"})
+}
+
+// Reject declines a pending sign-up: the request is removed (the email can apply
+// again) and the applicant is told by mail.
+// POST /api/v1/admin/users/:id/reject   (superadmin)
+func (h *UserManagementHandler) Reject(c *gin.Context) {
+	var email string
+	err := database.GetDB().QueryRow(
+		"DELETE FROM admins WHERE id = $1 AND status = 'pending' RETURNING email", c.Param("id"),
+	).Scan(&email)
+	if errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no pending request with this id"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to reject request"})
+		return
+	}
+	h.mailer.SendAsync(email, "Your SparkLabX trial request",
+		"Hello,\n\nThank you for your interest in SparkLabX. Unfortunately we cannot approve your trial request at this time.\n\n"+
+			"Questions? Reply to support@sparklabx.com.\n\nThe SparkLabX team\n")
+	c.JSON(http.StatusOK, gin.H{"message": "request rejected"})
 }

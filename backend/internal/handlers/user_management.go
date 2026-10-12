@@ -17,10 +17,12 @@ import (
 
 type UserManagementHandler struct {
 	kernels services.KernelGateway // stops a user's kernel on revoke/delete
+	mailer  *services.Mailer       // approve/reject notifications; nil = off
+	appURL  string
 }
 
-func NewUserManagementHandler(kernels services.KernelGateway) *UserManagementHandler {
-	return &UserManagementHandler{kernels: kernels}
+func NewUserManagementHandler(kernels services.KernelGateway, mailer *services.Mailer, appURL string) *UserManagementHandler {
+	return &UserManagementHandler{kernels: kernels, mailer: mailer, appURL: appURL}
 }
 
 // stopKernel tears down the user's kernel pod/container in the background so a
