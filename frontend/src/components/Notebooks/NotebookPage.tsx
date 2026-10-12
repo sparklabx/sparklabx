@@ -349,9 +349,6 @@ export default function NotebookPage() {
         .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "${endpoint.startsWith('https') ? 'true' : 'false'}")`
                 : '';
 
-            // Resolve private + public storage roots. Path API returns both for the
-            // new prefix model; old API only returns `path` (legacy = private).
-            const publicPath = (pathInfo as any)?.public_path || '';
 
             // Pin this notebook's Spark UI to a deterministic port — multiple
             // kernels share one per-user container, so they must not all land on
@@ -431,7 +428,8 @@ export default function NotebookPage() {
                 // or use the sidebar's Copy Path button to get the exact URL.
                 const pathBlock = path
                     ? `print('📂 Storage spaces:')
-print('   • Private (R/W):  ${path}')${publicPath ? `\nprint('   • Public  (R):    ${publicPath}')` : ''}
+print('   • Private (R/W):  ${path}')
+print('   • Local files:    local-file/  (kept between sessions)')
 print('   Use the Files sidebar 📋 Copy Path button to grab exact URLs.')
 `
                     : '';
@@ -547,7 +545,8 @@ except Exception as _e:
                 // sidebar's Copy Path button.
                 const pathBlock = path
                     ? `println("📂 Storage spaces:")
-println("   • Private (R/W):  ${path}")${publicPath ? `\nprintln("   • Public  (R):    ${publicPath}")` : ''}
+println("   • Private (R/W):  ${path}")
+println("   • Local files:    local-file/  (kept between sessions)")
 println("   Use the Files sidebar 📋 Copy Path button to grab exact URLs.")`
                     : '';
 

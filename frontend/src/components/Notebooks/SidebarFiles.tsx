@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Upload, FileText, Trash2, Download, FolderOpen, Copy, RefreshCw, ChevronLeft, FolderPlus, HardDrive, Globe, Lock, Laptop } from 'lucide-react';
+import { Upload, FileText, Trash2, Download, FolderOpen, Copy, RefreshCw, ChevronLeft, FolderPlus, HardDrive, Lock, Laptop } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Input as DialogInput } from '@/components/ui/input';
@@ -9,10 +9,10 @@ import * as minioService from '@/services/minioStorageService';
 import { Button } from '@/components/ui/button';
 
 // Scope is the virtual bucket name surfaced by the backend: "local" (the kernel's
-// /workspace/<user>/local-file, the default), "my" (S3) or "public".
+// /workspace/<user>/local-file, the default) or "my" (the user's S3 prefix).
 // Sidebar never sees the real bucket or user prefix — backend hides them.
-type Scope = 'local' | 'my' | 'public';
-const toScope = (name: string | null): Scope => (name === 'my' || name === 'public' ? name : 'local');
+type Scope = 'local' | 'my';
+const toScope = (name: string | null): Scope => (name === 'my' ? 'my' : 'local');
 
 interface ScopeMeta {
     name: Scope;
@@ -57,12 +57,11 @@ export const SidebarFiles: React.FC = () => {
             const { buckets } = await minioService.listBuckets();
             const pathInfo = await getUserDataPath();
             const privateRoot = (pathInfo as any)?.private_path || pathInfo?.path || '';
-            const publicRoot = (pathInfo as any)?.public_path || '';
             const enriched: ScopeMeta[] = buckets.map(b => ({
                 name: toScope(b.name),
-                display: b.display || (b.name === 'public' ? 'Public' : b.name === 'my' ? 'S3' : 'Local files'),
-                can_write: b.can_write ?? (b.name !== 'public'),
-                s3a_root: b.name === 'public' ? publicRoot : b.name === 'my' ? privateRoot : 'local-file/',
+                display: b.display || (b.name === 'my' ? 'S3' : 'Local files'),
+                can_write: b.can_write ?? true,
+                s3a_root: b.name === 'my' ? privateRoot : 'local-file/',
             }));
             setScopes(enriched);
         })();
@@ -160,7 +159,7 @@ export const SidebarFiles: React.FC = () => {
             {/* Scope tabs */}
             <div className="flex border-b border-border">
                 {scopes.map(s => {
-                    const Icon = s.name === 'public' ? Globe : s.name === 'my' ? HardDrive : Laptop;
+                    const Icon = s.name === 'my' ? HardDrive : Laptop;
                     const active = activeScope === s.name;
                     return (
                         <button

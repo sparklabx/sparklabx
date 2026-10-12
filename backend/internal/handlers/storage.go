@@ -118,14 +118,11 @@ func (h *StorageHandler) userPrefix(c *gin.Context) (string, error) {
 	return "users/" + username + "/", nil
 }
 
-const publicStoragePrefix = "public/"
-
-// resolveScope translates a virtual scope name ("my" or "public") into a real
+// resolveScope translates a virtual scope name ("local" or "my") into a real
 // (bucket, prefix, canWrite) tuple. Used by MinIO browser endpoints to keep
 // callers blind to the underlying single-bucket layout.
 //   - "local"  → the kernel's local-file folder (live pod, or its MinIO copy), R/W
 //   - "my"     → user's private space, R/W
-//   - "public" → shared read-only space, write requires superadmin
 func (h *StorageHandler) resolveScope(c *gin.Context, scope string) (bucket, prefix string, canWrite bool, err error) {
 	switch scope {
 	case "my":
@@ -141,10 +138,6 @@ func (h *StorageHandler) resolveScope(c *gin.Context, scope string) (bucket, pre
 			return "", "", false, err
 		}
 		return h.workspaceBucket, services.LocalFilesPrefix + strings.TrimSuffix(strings.TrimPrefix(p, "users/"), "/") + "/", true, nil
-	case "public":
-		// Free-for-all share space — any authenticated user can R/W. Curated
-		// (superadmin-only-write) is reserved for Phase B workspaces with roles.
-		return h.workspaceBucket, publicStoragePrefix, true, nil
 	default:
 		return "", "", false, fmt.Errorf("unknown scope: %s", scope)
 	}
@@ -152,7 +145,7 @@ func (h *StorageHandler) resolveScope(c *gin.Context, scope string) (bucket, pre
 
 // joinKey safely joins a scope prefix with a user-supplied relative path,
 // rejecting absolute paths and "..". subPath/filename are TRUSTED from caller
-// but validated to prevent prefix escape (e.g., user sending "../public/x").
+// but validated to prevent prefix escape (e.g., user sending "../other/x").
 func joinKey(prefix, subPath, filename string) (string, error) {
 	combined := subPath + filename
 	if strings.Contains(combined, "..") {
@@ -165,7 +158,7 @@ func joinKey(prefix, subPath, filename string) (string, error) {
 }
 
 // stripPrefix removes a leading prefix from file keys so the frontend never
-// sees the underlying users/<username>/ or public/ layout.
+// sees the underlying users/<username>/ layout.
 func stripPrefix(files []s3FileInfo, prefix string) []s3FileInfo {
 	out := make([]s3FileInfo, 0, len(files))
 	for _, f := range files {
@@ -196,12 +189,10 @@ func (h *StorageHandler) GetUserDataPath(c *gin.Context) {
 		return
 	}
 	privatePath := fmt.Sprintf("s3a://%s/%s", bucket, prefix)
-	publicPath := fmt.Sprintf("s3a://%s/%s", bucket, publicStoragePrefix)
 	c.JSON(http.StatusOK, gin.H{
 		// `path` kept for backward-compat with existing frontend; equals private path.
 		"path":         privatePath,
 		"private_path": privatePath,
-		"public_path":  publicPath,
 		"bucket":       bucket,
 		"prefix":       prefix,
 		"region":       "us-east-1",
@@ -366,7 +357,7 @@ func (h *StorageHandler) DownloadUserFile(c *gin.Context) {
 }
 
 // ============================================================
-// MinIO Browser Endpoints — scope-based ("my", "public")
+// MinIO Browser Endpoints — scope-based ("local", "my")
 // ============================================================
 //
 // Frontend addresses storage by SCOPE, not real bucket name. Routes look like
@@ -374,8 +365,7 @@ func (h *StorageHandler) DownloadUserFile(c *gin.Context) {
 // translates "my" → workspace bucket + users/<username>/ prefix.
 
 // MinIOListBuckets returns the virtual scopes available to the caller.
-// Both scopes always exist; UI labels distinguish them. `canWrite` is hinted
-// for the public scope so the UI can disable upload/delete for non-superadmin.
+// Both scopes always exist; "local" first (the default tab).
 func (h *StorageHandler) MinIOListBuckets(c *gin.Context) {
 	if !h.minioEnabled() {
 		c.JSON(http.StatusOK, gin.H{"buckets": []interface{}{}, "available": false})
@@ -385,7 +375,6 @@ func (h *StorageHandler) MinIOListBuckets(c *gin.Context) {
 		"buckets": []gin.H{
 			{"name": "local", "display": "Local files", "can_write": true},
 			{"name": "my", "display": "S3", "can_write": true},
-			{"name": "public", "display": "Public", "can_write": true},
 		},
 		"available": true,
 	})
@@ -460,7 +449,7 @@ func (h *StorageHandler) MinIODeleteBucket(c *gin.Context) {
 	c.JSON(http.StatusForbidden, gin.H{"error": "deleting buckets is disabled"})
 }
 
-// MinIOListObjects lists objects under the caller's scope ("my" or "public").
+// MinIOListObjects lists objects under the caller's scope ("local" or "my").
 // The full real-bucket prefix is hidden from the response — client sees keys
 // relative to the scope root (e.g. "datasets/x.csv" not "users/trung.nt/datasets/x.csv").
 func (h *StorageHandler) MinIOListObjects(c *gin.Context) {

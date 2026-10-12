@@ -73,6 +73,9 @@ func TestUserPolicyCoversLocalFiles(t *testing.T) {
 	if strings.Contains(string(b), "local-files/*") {
 		t.Fatal("policy must not grant other users' local files")
 	}
+	if strings.Contains(string(b), "public") {
+		t.Fatal("the shared public/ space was removed: no grant on it")
+	}
 }
 
 func TestLocalPathStaysInRoot(t *testing.T) {

@@ -134,16 +134,15 @@ const StoragePage: React.FC = () => {
     setCurrentPath(parts.length > 0 ? parts.join('/') + '/' : '');
   };
 
-  // Real s3a:// roots for the 'my' / 'public' logical buckets. Without
+  // Real s3a:// root for the 'my' logical bucket. Without
   // these the copied path would be s3a://my/... which isn't a real
   // bucket name and Spark can't read it.
-  const [s3aRoots, setS3aRoots] = useState<{ private: string; public: string }>({ private: '', public: '' });
+  const [s3aRoots, setS3aRoots] = useState<{ private: string }>({ private: '' });
   useEffect(() => {
     (async () => {
       const info = await getUserDataPath().catch(() => null);
       const priv = (info as any)?.private_path || info?.path || '';
-      const pub = (info as any)?.public_path || '';
-      setS3aRoots({ private: priv, public: pub });
+      setS3aRoots({ private: priv });
     })();
   }, []);
 
@@ -160,9 +159,6 @@ const StoragePage: React.FC = () => {
     if (bucket === 'local') return `local-file/${key}`;
     if (bucket === 'my' && s3aRoots.private) {
       return s3aRoots.private.replace(/\/$/, '') + '/' + key;
-    }
-    if (bucket === 'public' && s3aRoots.public) {
-      return s3aRoots.public.replace(/\/$/, '') + '/' + key;
     }
     return `s3a://${bucket}/${key}`;
   };
@@ -214,21 +210,19 @@ const StoragePage: React.FC = () => {
                   className="flex items-center gap-2 flex-1 min-w-0 text-left"
                   title={b.name}
                 >
-                  {b.name === 'public' ? (
-                    <Globe className="h-3.5 w-3.5 shrink-0" />
-                  ) : b.name === 'local' ? (
+                  {b.name === 'local' ? (
                     <Laptop className="h-3.5 w-3.5 shrink-0" />
                   ) : (
                     <HardDrive className="h-3.5 w-3.5 shrink-0" />
                   )}
                   <span className="truncate">
-                    {b.display || (b.name === 'my' ? 'S3' : b.name === 'public' ? 'Public' : b.name)}
+                    {b.display || (b.name === 'my' ? 'S3' : b.name)}
                   </span>
                 </button>
-                {/* System buckets ('my', 'public') are not user-managed
+                {/* System buckets ('local', 'my') are not user-managed
                     and shouldn't be deletable from the UI — backend
                     recreates them on next start anyway. */}
-                {b.name !== 'my' && b.name !== 'public' && (
+                {b.name !== 'my' && b.name !== 'local' && (
                   <Button size="sm" variant="ghost" className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 text-destructive"
                     onClick={(e) => {
                       e.stopPropagation();
