@@ -384,7 +384,7 @@ func (h *StorageHandler) MinIOListBuckets(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"buckets": []gin.H{
 			{"name": "local", "display": "Local files", "can_write": true},
-			{"name": "my", "display": "S3 (My Space)", "can_write": true},
+			{"name": "my", "display": "S3", "can_write": true},
 			{"name": "public", "display": "Public", "can_write": true},
 		},
 		"available": true,

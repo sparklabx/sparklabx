@@ -9,7 +9,7 @@ import * as minioService from '@/services/minioStorageService';
 import { Button } from '@/components/ui/button';
 
 // Scope is the virtual bucket name surfaced by the backend: "local" (the kernel's
-// /workspace/<user>/local-file, the default), "my" (S3 My Space) or "public".
+// /workspace/<user>/local-file, the default), "my" (S3) or "public".
 // Sidebar never sees the real bucket or user prefix — backend hides them.
 type Scope = 'local' | 'my' | 'public';
 const toScope = (name: string | null): Scope => (name === 'my' || name === 'public' ? name : 'local');
@@ -60,7 +60,7 @@ export const SidebarFiles: React.FC = () => {
             const publicRoot = (pathInfo as any)?.public_path || '';
             const enriched: ScopeMeta[] = buckets.map(b => ({
                 name: toScope(b.name),
-                display: b.display || (b.name === 'public' ? 'Public' : b.name === 'my' ? 'My Space' : 'Local files'),
+                display: b.display || (b.name === 'public' ? 'Public' : b.name === 'my' ? 'S3' : 'Local files'),
                 can_write: b.can_write ?? (b.name !== 'public'),
                 s3a_root: b.name === 'public' ? publicRoot : b.name === 'my' ? privateRoot : 'local-file/',
             }));
