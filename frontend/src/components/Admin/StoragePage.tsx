@@ -6,7 +6,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { ConfirmDeleteDialog } from '../ui/confirm-delete-dialog';
 import {
   Upload, FileText, Trash2, Download, FolderOpen, Copy, RefreshCw,
-  ChevronLeft, Database, FolderPlus, Plus, HardDrive, Globe, Search, Eye,
+  ChevronLeft, Database, FolderPlus, Plus, HardDrive, Globe, Search, Eye, Laptop,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import axios from 'axios';
@@ -155,6 +155,9 @@ const StoragePage: React.FC = () => {
 
   // Resolve a bucket+key pair to its real s3a:// URI.
   const buildS3aPath = (bucket: string, key: string): string => {
+    // Local files live in the kernel at /workspace/<user>/local-file = the notebook's
+    // cwd + "local-file/", so this path works as-is in pandas/open().
+    if (bucket === 'local') return `local-file/${key}`;
     if (bucket === 'my' && s3aRoots.private) {
       return s3aRoots.private.replace(/\/$/, '') + '/' + key;
     }
@@ -213,11 +216,13 @@ const StoragePage: React.FC = () => {
                 >
                   {b.name === 'public' ? (
                     <Globe className="h-3.5 w-3.5 shrink-0" />
+                  ) : b.name === 'local' ? (
+                    <Laptop className="h-3.5 w-3.5 shrink-0" />
                   ) : (
                     <HardDrive className="h-3.5 w-3.5 shrink-0" />
                   )}
                   <span className="truncate">
-                    {b.name === 'my' ? 'My Space' : b.name === 'public' ? 'Public' : b.name}
+                    {b.display || (b.name === 'my' ? 'My Space' : b.name === 'public' ? 'Public' : b.name)}
                   </span>
                 </button>
                 {/* System buckets ('my', 'public') are not user-managed
@@ -353,7 +358,7 @@ const StoragePage: React.FC = () => {
                       <td className="px-4 py-2 text-right">
                         <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                           <Button size="sm" variant="ghost" className="h-7 w-7 p-0"
-                            onClick={() => copyPath(buildS3aPath(selectedBucket, f.key))} title="Copy S3 path">
+                            onClick={() => copyPath(buildS3aPath(selectedBucket, f.key))} title={selectedBucket === 'local' ? 'Copy notebook path' : 'Copy S3 path'}>
                             <Copy className="h-3.5 w-3.5" />
                           </Button>
                           {!f.is_folder && /\.(csv|tsv|json|jsonl|parquet)$/i.test(f.name) && (
