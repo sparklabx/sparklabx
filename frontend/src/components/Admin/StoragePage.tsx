@@ -12,6 +12,7 @@ import { toast } from 'sonner';
 import axios from 'axios';
 import * as minioService from '../../services/minioStorageService';
 import { getUserDataPath } from '../../services/notebookStorageService';
+import { BucketIcon } from '../ui/bucket-icon';
 import { parseCsv, parseJsonTable } from '../../lib/dataUtils';
 
 const StoragePage: React.FC = () => {
@@ -154,9 +155,9 @@ const StoragePage: React.FC = () => {
 
   // Resolve a bucket+key pair to its real s3a:// URI.
   const buildS3aPath = (bucket: string, key: string): string => {
-    // Local files live in the kernel at /workspace/<user>/local-file = the notebook's
-    // cwd + "local-file/", so this path works as-is in pandas/open().
-    if (bucket === 'local') return `local-file/${key}`;
+    // Local files root = the kernel's working directory, so (like Jupyter) the
+    // relative key works as-is in pandas/open().
+    if (bucket === 'local') return key;
     if (bucket === 'my' && s3aRoots.private) {
       return s3aRoots.private.replace(/\/$/, '') + '/' + key;
     }
@@ -212,6 +213,8 @@ const StoragePage: React.FC = () => {
                 >
                   {b.name === 'local' ? (
                     <Laptop className="h-3.5 w-3.5 shrink-0" />
+                  ) : b.name === 'my' ? (
+                    <BucketIcon className="h-3.5 w-3.5 shrink-0" />
                   ) : (
                     <HardDrive className="h-3.5 w-3.5 shrink-0" />
                   )}

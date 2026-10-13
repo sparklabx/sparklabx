@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -820,7 +821,7 @@ func (g *K8sPerUserGateway) buildPodSpec(userID, podName string, res podSizes) *
 }
 
 // addLocalFiles gives the kernel a persistent /workspace/<slug>/local-file and makes
-// /workspace/<slug> its working directory. No PVC and no privileged container: the
+// it the working directory. No PVC and no privileged container: the
 // directory is a pod-local emptyDir, restored from <bucket>/local-files/<slug>/ by an
 // init container and mirrored back on every change by a native sidecar (mc mirror
 // --watch, inotify). Both use the user's own MinIO creds, so the per-user IAM policy
@@ -836,7 +837,13 @@ func (g *K8sPerUserGateway) addLocalFiles(pod *corev1.Pod, slug string) {
 	remote := "s3/" + g.cfg.Bucket + "/" + LocalFilesPrefix + slug + "/"
 	const alias = `export MC_CONFIG_DIR=/tmp/.mc; mc alias set s3 "$S3_ENDPOINT" "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" >/dev/null && `
 	// *.uploading = in-flight UI uploads (LocalWrite renames them when complete).
-	push := "mc mirror --overwrite --remove --exclude '*.uploading' " + local + " " + remote
+	// Never persisted: in-flight UI uploads (LocalWrite renames them when complete) and the
+	// scratch Spark/Jupyter drop into the working directory (= local-file/).
+	excludes := ""
+	for _, p := range LocalFilesIgnored {
+		excludes += " --exclude '" + p + "'"
+	}
+	push := "mc mirror --overwrite --remove" + excludes + " " + local + " " + remote
 
 	kernel := &pod.Spec.Containers[0]
 	syncEnv := append([]corev1.EnvVar(nil), kernel.Env...) // AWS_* (user creds) + S3_ENDPOINT
@@ -886,7 +893,9 @@ func (g *K8sPerUserGateway) addLocalFiles(pod *corev1.Pod, slug string) {
 		},
 	)
 	kernel.VolumeMounts = append(kernel.VolumeMounts, mount...)
-	kernel.WorkingDir = home
+	// Jupyter-style: the kernel's working directory IS the Local files root, so a file
+	// shown there as /data.csv is just pd.read_csv("data.csv") in the notebook.
+	kernel.WorkingDir = strings.TrimSuffix(local, "/")
 	// Room for the sidecar's final mirror (the kernel itself has nothing to drain).
 	pod.Spec.TerminationGracePeriodSeconds = ptrInt64(30)
 }

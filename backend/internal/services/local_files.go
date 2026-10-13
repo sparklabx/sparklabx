@@ -41,6 +41,21 @@ type LocalEntry struct {
 
 const kernelContainer = "jupyter-kernel"
 
+// LocalFilesIgnored are names under local-file/ that are neither mirrored to MinIO nor
+// listed in the UI: in-flight uploads, and scratch Spark/Jupyter write to the working
+// directory (which is local-file/). Patterns use mc --exclude / path.Match syntax.
+var LocalFilesIgnored = []string{"*.uploading", "spark-warehouse", "spark-warehouse/*", "metastore_db", "metastore_db/*", "derby.log", ".ipynb_checkpoints", ".ipynb_checkpoints/*"}
+
+// IsLocalFileIgnored reports whether a directory entry name is hidden from the UI.
+func IsLocalFileIgnored(name string) bool {
+	for _, p := range LocalFilesIgnored {
+		if ok, _ := path.Match(p, name); ok {
+			return true
+		}
+	}
+	return false
+}
+
 // localRoot returns the pod name and its local-file root ("/workspace/<slug>/local-file")
 // if the pod is running and ready with local files enabled.
 func (g *K8sPerUserGateway) localRoot(ctx context.Context, userID string) (string, string, bool) {
@@ -53,7 +68,11 @@ func (g *K8sPerUserGateway) localRoot(ctx context.Context, userID string) (strin
 		if c.Name == kernelContainer && c.WorkingDir != "" {
 			for _, s := range pod.Status.ContainerStatuses {
 				if s.Name == kernelContainer && s.Ready {
-					return name, c.WorkingDir + "/local-file", true
+					root := c.WorkingDir // = local-file (older pods: its parent)
+					if !strings.HasSuffix(root, "/local-file") {
+						root += "/local-file"
+					}
+					return name, root, true
 				}
 			}
 		}

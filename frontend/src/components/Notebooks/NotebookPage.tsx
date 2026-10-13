@@ -429,7 +429,7 @@ export default function NotebookPage() {
                 const pathBlock = path
                     ? `print('📂 Storage spaces:')
 print('   • Private (R/W):  ${path}')
-print('   • Local files:    local-file/  (kept between sessions)')
+print('   • Local files:    current folder, e.g. pd.read_csv("data.csv")  (kept between sessions)')
 print('   Use the Files sidebar 📋 Copy Path button to grab exact URLs.')
 `
                     : '';
@@ -546,7 +546,7 @@ except Exception as _e:
                 const pathBlock = path
                     ? `println("📂 Storage spaces:")
 println("   • Private (R/W):  ${path}")
-println("   • Local files:    local-file/  (kept between sessions)")
+println("   • Local files:    current folder (kept between sessions)")
 println("   Use the Files sidebar 📋 Copy Path button to grab exact URLs.")`
                     : '';
 

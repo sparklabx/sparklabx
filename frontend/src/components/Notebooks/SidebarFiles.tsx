@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Upload, FileText, Trash2, Download, FolderOpen, Copy, RefreshCw, ChevronLeft, FolderPlus, HardDrive, Lock, Laptop } from 'lucide-react';
+import { Upload, FileText, Trash2, Download, FolderOpen, Copy, RefreshCw, ChevronLeft, FolderPlus, Lock, Laptop } from 'lucide-react';
+import { BucketIcon } from '@/components/ui/bucket-icon';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Input as DialogInput } from '@/components/ui/input';
@@ -18,7 +19,7 @@ interface ScopeMeta {
     name: Scope;
     display: string;
     can_write: boolean;
-    s3a_root: string;   // path prefix for Copy Path: s3a:// URI, or "local-file/" (relative to the notebook's cwd)
+    s3a_root: string;   // path prefix for Copy Path: s3a:// URI; "" for local (paths are relative to the kernel's cwd)
 }
 
 export const SidebarFiles: React.FC = () => {
@@ -61,7 +62,7 @@ export const SidebarFiles: React.FC = () => {
                 name: toScope(b.name),
                 display: b.display || (b.name === 'my' ? 'S3' : 'Local files'),
                 can_write: b.can_write ?? true,
-                s3a_root: b.name === 'my' ? privateRoot : 'local-file/',
+                s3a_root: b.name === 'my' ? privateRoot : '',
             }));
             setScopes(enriched);
         })();
@@ -143,6 +144,9 @@ export const SidebarFiles: React.FC = () => {
     // Build full s3a:// URI for a key in the current scope. Falls back to "/key"
     // if the scope root hasn't loaded yet — defaultFS will still resolve it.
     const buildFullPath = (key: string) => {
+        // Local files: the kernel's cwd is the Local files root, so (like Jupyter) the
+        // notebook path is just the relative key: pd.read_csv("data/x.csv").
+        if (activeScope === 'local') return key;
         const root = currentScope?.s3a_root || '';
         return root ? `${root}${key}` : `/${key}`;
     };
@@ -159,7 +163,7 @@ export const SidebarFiles: React.FC = () => {
             {/* Scope tabs */}
             <div className="flex border-b border-border">
                 {scopes.map(s => {
-                    const Icon = s.name === 'my' ? HardDrive : Laptop;
+                    const Icon = s.name === 'my' ? BucketIcon : Laptop;
                     const active = activeScope === s.name;
                     return (
                         <button
