@@ -162,6 +162,8 @@ func main() {
 	}
 	userHandler := handlers.NewUserManagementHandler(kernelGateway, mailer, cfg.AppURL)
 	handlers.StartExpiredKernelSweeper(kernelGateway)
+	services.StartUsageCollector(kernelGateway)
+	usageHandler := handlers.NewUsageHandler(kernelGateway)
 	allowedDomainHandler := handlers.NewAllowedDomainHandler()
 
 	if cfg.Environment == "production" {
@@ -207,6 +209,7 @@ func main() {
 		LocalKernel:   localKernelHandler,
 		User:          userHandler,
 		AllowedDomain: allowedDomainHandler,
+		Usage:         usageHandler,
 	})
 
 	addr := ":" + cfg.ServicePort

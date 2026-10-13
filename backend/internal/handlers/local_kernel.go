@@ -1011,7 +1011,9 @@ func (h *LocalKernelHandler) WebSocket(c *gin.Context) {
 			// Sniff execute_request so the recorder knows which cell
 			// each subsequent iopub message belongs to.
 			if msgType == websocket.TextMessage {
-				captureExecuteRequest(kernelID, msg)
+				if captureExecuteRequest(kernelID, msg) {
+					services.RecordCellRun(userID)
+				}
 			}
 			if err := backendConn.WriteMessage(msgType, msg); err != nil {
 				errChan <- err
@@ -1047,9 +1049,11 @@ func (h *LocalKernelHandler) WebSocket(c *gin.Context) {
 // execute_request carrying metadata.sparklabx_cell_id, register the
 // (msg_id → cell_id) mapping on the kernel's recorder so iopub
 // messages from this execution can be routed to the right cell.
-func captureExecuteRequest(kernelID string, msg []byte) {
+// captureExecuteRequest registers the cell of an execute_request with the recorder
+// and reports whether msg was an execute_request (counted for the Usage page).
+func captureExecuteRequest(kernelID string, msg []byte) bool {
 	if !bytes.Contains(msg, []byte(`"execute_request"`)) {
-		return
+		return false
 	}
 	var parsed struct {
 		Header struct {
@@ -1060,15 +1064,15 @@ func captureExecuteRequest(kernelID string, msg []byte) {
 			CellID string `json:"sparklabx_cell_id"`
 		} `json:"metadata"`
 	}
-	if err := json.Unmarshal(msg, &parsed); err != nil {
-		return
+	if err := json.Unmarshal(msg, &parsed); err != nil || parsed.Header.MsgType != "execute_request" {
+		return false
 	}
-	if parsed.Header.MsgType != "execute_request" || parsed.Metadata.CellID == "" {
-		return
+	if parsed.Metadata.CellID != "" {
+		if r := services.GetRecorder(kernelID); r != nil {
+			r.RegisterExecution(parsed.Header.MsgID, parsed.Metadata.CellID)
+		}
 	}
-	if r := services.GetRecorder(kernelID); r != nil {
-		r.RegisterExecution(parsed.Header.MsgID, parsed.Metadata.CellID)
-	}
+	return true
 }
 
 // ActiveExecutions returns the in-flight executions known to the

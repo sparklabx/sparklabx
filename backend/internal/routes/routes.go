@@ -23,6 +23,7 @@ type Handlers struct {
 	LocalKernel   *handlers.LocalKernelHandler
 	User          *handlers.UserManagementHandler
 	AllowedDomain *handlers.AllowedDomainHandler
+	Usage         *handlers.UsageHandler
 }
 
 // Register mounts /health and the whole /api/v1 surface onto router.
@@ -88,6 +89,9 @@ func registerAdmin(v1 *gin.RouterGroup, cfg *config.Config, h Handlers) {
 	super.PUT("/admin/users/:id/access", h.User.SetAccess)
 	super.POST("/admin/users/:id/revoke", h.User.Revoke)
 	super.POST("/admin/users/:id/reject", h.User.Reject)
+
+	// Usage page: concurrency, engagement, per-user activity and abuse flags
+	super.GET("/admin/usage", h.Usage.Get)
 
 	// OAuth allowlist (settings)
 	super.GET("/allowed-domains", h.AllowedDomain.List)

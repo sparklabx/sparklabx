@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -67,5 +68,25 @@ func abortIfDenied(c *gin.Context, adminID string) bool {
 		c.Abort()
 		return true
 	}
+	touchLastSeen(adminID)
 	return false
+}
+
+var (
+	seenMu   sync.Mutex
+	lastSeen = map[string]time.Time{}
+)
+
+// touchLastSeen records activity for the Usage page (online = seen in the last 5 min),
+// at most once a minute per user so requests don't each cost a write.
+func touchLastSeen(adminID string) {
+	now := time.Now()
+	seenMu.Lock()
+	if now.Sub(lastSeen[adminID]) < time.Minute {
+		seenMu.Unlock()
+		return
+	}
+	lastSeen[adminID] = now
+	seenMu.Unlock()
+	go database.GetDB().Exec("UPDATE admins SET last_seen_at = NOW() WHERE id = $1", adminID) //nolint:errcheck // best effort
 }

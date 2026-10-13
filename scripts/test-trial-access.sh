@@ -56,7 +56,8 @@ req POST /admin/login "" '{"username":"t'$U'","password":"Password123"}'; check 
 T=$(echo "$BODY" | j "['token']")
 req GET /admin/me "$T"; check "me" 200; [ -n "$(echo "$BODY" | j "['access_expires_at']")" ] && echo "PASS me has access_expires_at" || { echo "FAIL no access_expires_at"; fail=1; }
 req GET /notebooks "$T"; check "trial user lists notebooks" 200
-for p in /admin/users /allowed-domains; do req GET $p "$T"; check "trial user blocked from $p" 403; done
+for p in /admin/users /allowed-domains /admin/usage; do req GET $p "$T"; check "trial user blocked from $p" 403; done
+req GET /admin/usage "$ADMIN"; check "superadmin reads usage" 200
 req GET /minio/buckets "$T"; check "trial user lists own storage scopes" 200
 req GET /notebooks/storage/files "$T"; check "trial user lists notebook files" 200
 req GET /connectors "$T"; check "trial user lists data sources" 200

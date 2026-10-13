@@ -15,6 +15,7 @@ import './App.css';
 const SettingsLayout = React.lazy(() => import('./components/Admin/Settings/SettingsLayout'));
 const StoragePage = React.lazy(() => import('./components/Admin/StoragePage'));
 const UserManagement = React.lazy(() => import('./components/Admin/UserManagement'));
+const UsagePage = React.lazy(() => import('./components/Admin/UsagePage'));
 const NotebookListPage = React.lazy(() => import('./components/Notebooks/NotebookListPage'));
 const NotebookPage = React.lazy(() => import('./components/Notebooks/NotebookPage'));
 
@@ -83,6 +84,7 @@ const AdminLayout: React.FC = () => {
                 <Route path="/admin/storage" element={<StoragePage />} />
                 <Route path="/admin/settings/*" element={<SuperAdminOnly><SettingsLayout /></SuperAdminOnly>} />
                 <Route path="/admin/users" element={<SuperAdminOnly><UserManagement /></SuperAdminOnly>} />
+                <Route path="/admin/usage" element={<SuperAdminOnly><UsagePage /></SuperAdminOnly>} />
                 <Route path="/notebooks" element={<NotebookListPage />} />
                 <Route path="/notebooks/:id" element={<NotebookPage />} />
                 <Route path="*" element={<Navigate to="/notebooks" replace />} />
