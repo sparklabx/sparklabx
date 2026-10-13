@@ -16,7 +16,7 @@ func TestLocalFilesPodSpec(t *testing.T) {
 	pod := g.buildPodSpec("user-1", "kernel-x", g.resolveSpec(nil))
 
 	k := pod.Spec.Containers[0]
-	if k.WorkingDir != "/workspace/alice" || len(k.VolumeMounts) != 1 || k.VolumeMounts[0].MountPath != "/workspace" {
+	if k.WorkingDir != "/workspace/alice/local-file" || len(k.VolumeMounts) != 1 || k.VolumeMounts[0].MountPath != "/workspace" {
 		t.Fatalf("kernel workdir/mount: %q %+v", k.WorkingDir, k.VolumeMounts)
 	}
 	if len(pod.Spec.InitContainers) != 2 {
@@ -30,7 +30,8 @@ func TestLocalFilesPodSpec(t *testing.T) {
 	if sync.RestartPolicy == nil || *sync.RestartPolicy != corev1.ContainerRestartPolicyAlways {
 		t.Fatal("sync must be a native sidecar (restartPolicy Always)")
 	}
-	if !strings.Contains(sync.Command[2], "mc mirror --overwrite --remove --exclude '*.uploading' /workspace/alice/local-file/ s3/workspace/local-files/alice/ --watch") {
+	if !strings.Contains(sync.Command[2], "--exclude 'spark-warehouse'") || !strings.Contains(sync.Command[2], "--exclude '*.uploading'") ||
+		!strings.Contains(sync.Command[2], " /workspace/alice/local-file/ s3/workspace/local-files/alice/ --watch") {
 		t.Fatalf("sync command: %s", sync.Command[2])
 	}
 	if sync.Lifecycle == nil || sync.Lifecycle.PreStop == nil {
@@ -106,5 +107,16 @@ func TestParseFindOutput(t *testing.T) {
 	}
 	if len(parseFindOutput("")) != 0 {
 		t.Fatal("empty output must give no entries")
+	}
+}
+
+func TestIsLocalFileIgnored(t *testing.T) {
+	for name, want := range map[string]bool{
+		"data.csv.uploading": true, "spark-warehouse": true, "metastore_db": true, "derby.log": true,
+		".ipynb_checkpoints": true, "data.csv": false, "warehouse": false, "my-derby.log": false,
+	} {
+		if got := IsLocalFileIgnored(name); got != want {
+			t.Fatalf("IsLocalFileIgnored(%q) = %v, want %v", name, got, want)
+		}
 	}
 }

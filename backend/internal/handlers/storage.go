@@ -471,8 +471,8 @@ func (h *StorageHandler) MinIOListObjects(c *gin.Context) {
 		}
 		files := make([]s3FileInfo, 0, len(entries))
 		for _, e := range entries {
-			if strings.HasSuffix(e.Name, ".uploading") {
-				continue // in-flight upload (see LocalWrite)
+			if services.IsLocalFileIgnored(e.Name) {
+				continue // in-flight upload or Spark/Jupyter scratch
 			}
 			f := s3FileInfo{Key: base + e.Name, Name: e.Name, Size: e.Size, LastModified: e.ModTime.Format(time.RFC3339)}
 			if e.IsDir {
