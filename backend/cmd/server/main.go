@@ -158,8 +158,9 @@ func main() {
 	notebookHandler := handlers.NewNotebookHandler()
 	mailer := services.NewMailer(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.MailFrom)
 	if mailer == nil {
-		log.Info().Msg("SMTP not configured; approve/reject mails are disabled")
+		log.Info().Msg("SMTP not configured; approve/reject/sign-up mails are disabled")
 	}
+	authHandler.Mailer = mailer
 	userHandler := handlers.NewUserManagementHandler(kernelGateway, mailer, cfg.AppURL)
 	handlers.StartExpiredKernelSweeper(kernelGateway)
 	services.StartUsageCollector(kernelGateway)

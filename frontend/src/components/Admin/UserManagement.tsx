@@ -33,6 +33,7 @@ interface Admin {
   created_at: string;
   status: 'pending' | 'active';
   access_expires_at: string | null;
+  access_hours: number | null; // granted, the clock starts at the first sign-in
   signup_note: string;
 }
 
@@ -247,6 +248,7 @@ const UserManagement: React.FC = () => {
                     <td className="py-3 px-4 font-mono text-xs">
                       {admin.role === 'superadmin' || admin.status === 'pending' ? <span className="text-muted-foreground">—</span>
                         : admin.access_expires_at ? <AccessCountdown expiresAt={admin.access_expires_at} />
+                        : admin.access_hours ? <span className="text-muted-foreground" title="The clock starts at their first sign-in">{admin.access_hours}h · not signed in yet</span>
                         : <span className="text-muted-foreground">no limit</span>}
                     </td>
                     <td className="py-3 px-4 text-muted-foreground text-xs">{new Date(admin.created_at).toLocaleDateString()}</td>
@@ -365,7 +367,7 @@ const UserManagement: React.FC = () => {
               <p className="text-sm text-muted-foreground italic">“{accessTarget.signup_note}”</p>
             )}
             <div className="space-y-2">
-              <Label>Access duration (hours, counted from now)</Label>
+              <Label>Access duration (hours, counted from the first sign-in, or from now if they have signed in already)</Label>
               <Input type="number" min={0.5} step={0.5} value={accessHours} disabled={noLimit}
                 onChange={e => setAccessHours(e.target.value)} />
               <p className="text-xs text-muted-foreground">When it runs out the user is signed out and can no longer log in.</p>

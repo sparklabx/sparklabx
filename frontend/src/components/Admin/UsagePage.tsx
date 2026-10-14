@@ -8,7 +8,7 @@ import { AccessCountdown } from './AccessCountdown';
 interface Point { ts: string; online: number; kernels: number; cpu_cores: number; mem_bytes: number }
 interface UsageUser {
   id: string; username: string; email: string; role: string; status: string;
-  access_expires_at: string | null; created_at: string; last_seen_at: string | null;
+  access_expires_at: string | null; access_hours: number | null; created_at: string; last_seen_at: string | null;
   online: boolean; kernel_running: boolean; cpu_now: number; mem_now: number;
   today_active_minutes: number; active_days_7d: number; active_minutes_7d: number;
   kernel_minutes_7d: number; cpu_core_hours_7d: number; cells_7d: number; cells_total: number;
@@ -158,7 +158,7 @@ const UsagePage: React.FC = () => {
                 <td className="py-2.5 px-3 text-right text-xs">{u.cells_7d} / {u.cells_total}</td>
                 <td className="py-2.5 px-3 text-right text-xs">{u.cpu_core_hours_7d.toFixed(1)} core-h</td>
                 <td className="py-2.5 px-3 text-xs font-mono">
-                  {u.role === 'superadmin' ? '—' : u.access_expires_at ? <AccessCountdown expiresAt={u.access_expires_at} /> : <span className="text-muted-foreground">no limit</span>}
+                  {u.role === 'superadmin' ? '—' : u.access_expires_at ? <AccessCountdown expiresAt={u.access_expires_at} /> : u.access_hours ? <span className="text-muted-foreground">{u.access_hours}h · not signed in yet</span> : <span className="text-muted-foreground">no limit</span>}
                 </td>
                 <td className="py-2.5 px-3">
                   <div className="flex flex-wrap gap-1">

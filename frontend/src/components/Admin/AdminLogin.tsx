@@ -111,6 +111,7 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
     // Why the previous session ended (trial expired, pending approval, ...).
     const reason = authService.takeLogoutReason();
     if (reason) setError(reason);
+    if (reason && /expired/i.test(reason) && /trial/i.test(reason)) setMode('register'); // trial over: offer to ask for more time
     // Complete a generic-OIDC redirect: the backend hands the app JWT (or an
     // error message) back in the URL fragment.
     const hash = window.location.hash.replace(/^#/, '');
@@ -156,6 +157,12 @@ const LoginForm: React.FC<LoginProps> = ({ onSuccess }) => {
         setMode('register');
         setInfo('');
         setError('No trial request for this Google account yet. Request access below, then sign in with Google once approved.');
+        return;
+      }
+      if (e.response?.data?.code === 'access_expired') {
+        setMode('register');
+        setInfo('');
+        setError('Your trial has ended. Request more time below; you will get an email once it is approved.');
         return;
       }
       setError(e.response?.data?.error || 'Google login failed');

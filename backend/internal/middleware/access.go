@@ -33,9 +33,11 @@ type AccessDenial struct {
 func CheckAccess(adminID string) (*AccessDenial, error) {
 	var role, status string
 	var expires sql.NullTime
-	err := database.GetDB().QueryRow(
-		"SELECT COALESCE(role, 'admin'), status, access_expires_at FROM admins WHERE id = $1", adminID,
-	).Scan(&role, &status, &expires)
+	var pendingHours sql.NullFloat64
+	db := database.GetDB()
+	err := db.QueryRow(
+		"SELECT COALESCE(role, 'admin'), status, access_expires_at, access_hours FROM admins WHERE id = $1", adminID,
+	).Scan(&role, &status, &expires, &pendingHours)
 	if errors.Is(err, sql.ErrNoRows) {
 		return &AccessDenial{CodeAccountRemoved, "this account no longer exists"}, nil
 	}
@@ -47,6 +49,18 @@ func CheckAccess(adminID string) (*AccessDenial, error) {
 	}
 	if status == "pending" {
 		return &AccessDenial{CodePendingApproval, "your registration is waiting for administrator approval"}, nil
+	}
+	// First sign-in after approval: the trial clock starts now (see SetAccess).
+	// The access_hours IS NOT NULL guard makes concurrent first requests start it once
+	// (ErrNoRows = another request just did; it was approved, so let this one through).
+	if pendingHours.Valid {
+		err := db.QueryRow(
+			`UPDATE admins SET access_expires_at = NOW() + access_hours * INTERVAL '1 hour', access_hours = NULL, last_seen_at = NOW()
+			 WHERE id = $1 AND access_hours IS NOT NULL RETURNING access_expires_at`, adminID,
+		).Scan(&expires)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
 	}
 	if expires.Valid && !time.Now().Before(expires.Time) {
 		return &AccessDenial{CodeAccessExpired, "your trial access has expired"}, nil

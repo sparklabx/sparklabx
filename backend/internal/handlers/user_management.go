@@ -42,7 +42,7 @@ func (h *UserManagementHandler) stopKernel(adminID string) {
 // GET /api/v1/admin/users
 func (h *UserManagementHandler) ListAdmins(c *gin.Context) {
 	db := database.GetDB()
-	rows, err := db.Query(`SELECT id, username, email, COALESCE(role, 'admin'), created_at, status, access_expires_at, signup_note
+	rows, err := db.Query(`SELECT id, username, email, COALESCE(role, 'admin'), created_at, status, access_expires_at, access_hours, signup_note
 		FROM admins ORDER BY status = 'pending' DESC, created_at`)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list admins"})
@@ -58,12 +58,13 @@ func (h *UserManagementHandler) ListAdmins(c *gin.Context) {
 		CreatedAt       string     `json:"created_at"`
 		Status          string     `json:"status"`
 		AccessExpiresAt *time.Time `json:"access_expires_at"`
+		AccessHours     *float64   `json:"access_hours"` // granted, starts at first sign-in
 		SignupNote      string     `json:"signup_note"`
 	}
 	var admins []Admin
 	for rows.Next() {
 		var a Admin
-		if err := rows.Scan(&a.ID, &a.Username, &a.Email, &a.Role, &a.CreatedAt, &a.Status, &a.AccessExpiresAt, &a.SignupNote); err != nil {
+		if err := rows.Scan(&a.ID, &a.Username, &a.Email, &a.Role, &a.CreatedAt, &a.Status, &a.AccessExpiresAt, &a.AccessHours, &a.SignupNote); err != nil {
 			log.Error().Err(err).Msg("failed to scan admin")
 			continue
 		}

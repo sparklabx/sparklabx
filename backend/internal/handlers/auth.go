@@ -50,6 +50,8 @@ type AuthHandler struct {
 	cfg  *config.Config
 	iam  *services.MinIOIAM  // nil if MinIO not configured — provisioning skipped
 	keys *connectorauth.Keys // signs app-minted connector tokens; nil → app-jwt disabled
+
+	Mailer *services.Mailer // new sign-up notices to superadmins; nil = off
 }
 
 func NewAuthHandler(cfg *config.Config, iam *services.MinIOIAM) *AuthHandler {

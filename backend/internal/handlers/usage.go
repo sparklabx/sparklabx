@@ -45,6 +45,7 @@ type usageUser struct {
 	Role            string     `json:"role"`
 	Status          string     `json:"status"`
 	AccessExpiresAt *time.Time `json:"access_expires_at"`
+	AccessHours     *float64   `json:"access_hours"`
 	CreatedAt       time.Time  `json:"created_at"`
 	LastSeenAt      *time.Time `json:"last_seen_at"`
 	Online          bool       `json:"online"`
@@ -92,7 +93,7 @@ func (h *UsageHandler) Get(c *gin.Context) {
 
 	users := []usageUser{}
 	rows, err = db.Query(`
-		SELECT a.id, a.username, a.email, COALESCE(a.role, 'admin'), a.status, a.access_expires_at, a.created_at, a.last_seen_at,
+		SELECT a.id, a.username, a.email, COALESCE(a.role, 'admin'), a.status, a.access_expires_at, a.access_hours, a.created_at, a.last_seen_at,
 		       COALESCE(a.last_seen_at > NOW() - interval '5 minutes', false),
 		       EXISTS (SELECT 1 FROM user_kernel_pods p WHERE p.user_id = a.id::text AND p.status = 'ready'),
 		       COALESCE(SUM(d.active_minutes) FILTER (WHERE d.day = CURRENT_DATE), 0),
@@ -115,7 +116,7 @@ func (h *UsageHandler) Get(c *gin.Context) {
 	for rows.Next() {
 		var u usageUser
 		var cpuSec float64
-		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &u.Status, &u.AccessExpiresAt, &u.CreatedAt, &u.LastSeenAt,
+		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &u.Status, &u.AccessExpiresAt, &u.AccessHours, &u.CreatedAt, &u.LastSeenAt,
 			&u.Online, &u.KernelRunning, &u.TodayActiveMin, &u.ActiveDays7d, &u.ActiveMin7d, &u.KernelMin7d, &cpuSec,
 			&u.Cells7d, &u.CellsTotal, &u.ActiveDaysTotal); err != nil {
 			continue
